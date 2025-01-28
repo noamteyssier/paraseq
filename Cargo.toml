@@ -1,0 +1,15 @@
+[package]
+name = "paraseq"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+buffer-redux = "1.0.2"
+memchr = "2.7.4"
+thiserror = "2.0.11"
+
+[profile.release]
+debug = true
+# lto = true
+# codegen-units = 1
