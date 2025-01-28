@@ -76,7 +76,7 @@ impl RecordSet {
     }
 
     /// Main function to fill the record set
-    pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> io::Result<bool> {
+    pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
         // Clear previous data
         self.clear();
 
@@ -129,7 +129,7 @@ impl RecordSet {
                     self.find_newlines();
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             }
         }
 
@@ -141,7 +141,7 @@ impl RecordSet {
     }
 
     // Split out record processing to separate function
-    fn process_records<R: io::Read>(&mut self, reader: &mut Reader<R>) -> io::Result<bool> {
+    fn process_records<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
         let available_complete = self.newlines.len() / 4;
         let records_to_process = available_complete.min(self.capacity);
 
