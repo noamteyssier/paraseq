@@ -25,14 +25,15 @@ impl<R: io::Read> Reader<R> {
 
 #[derive(Debug)]
 pub struct RecordSet {
-    // Main buffer for records
+    /// Main buffer for records
     buffer: Vec<u8>,
-    // Store newlines in buffer
+    /// Store newlines in buffer
     newlines: Vec<usize>,
-    // Track the last byte position we've searched for newlines
+    /// Track the last byte position we've searched for newlines
     last_searched_pos: usize,
-    // Position tracking for complete records
+    /// Position tracking for complete records
     positions: Vec<Positions>,
+    /// Maximum number of records to store
     capacity: usize,
     /// Average number of bytes per record
     avg_record_size: usize,
