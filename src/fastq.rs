@@ -36,15 +36,6 @@ pub struct RecordSet {
     avg_record_size: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Positions {
-    start: usize,
-    seq_start: usize,
-    sep_start: usize,
-    qual_start: usize,
-    end: usize,
-}
-
 impl RecordSet {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -55,6 +46,13 @@ impl RecordSet {
             capacity,
             avg_record_size: 1024, // 1KB default
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.newlines.clear();
+        self.positions.clear();
+        self.last_searched_pos = 0;
     }
 
     /// Find all newlines currently in the buffer starting from the last searched position
@@ -77,10 +75,7 @@ impl RecordSet {
     /// Main function to fill the record set
     pub fn fill<R: std::io::Read>(&mut self, reader: &mut Reader<R>) -> std::io::Result<bool> {
         // Clear previous data
-        self.buffer.clear();
-        self.newlines.clear();
-        self.positions.clear();
-        self.last_searched_pos = 0;
+        self.clear();
 
         // First, copy any overflow from previous read
         if !reader.overflow.is_empty() {
@@ -202,6 +197,15 @@ impl RecordSet {
             qual: &self.buffer[pos.qual_start..pos.end - 1],
         })
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Positions {
+    start: usize,
+    seq_start: usize,
+    sep_start: usize,
+    qual_start: usize,
+    end: usize,
 }
 
 #[derive(Debug)]
