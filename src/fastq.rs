@@ -1,11 +1,13 @@
-pub struct Reader<R: std::io::Read> {
+use std::io;
+
+pub struct Reader<R: io::Read> {
     // Small buffer to hold incomplete records between reads
     overflow: Vec<u8>,
     reader: R,
     eof: bool,
 }
 
-impl<R: std::io::Read> Reader<R> {
+impl<R: io::Read> Reader<R> {
     pub fn new(reader: R) -> Self {
         Self {
             overflow: Vec::with_capacity(1024), // Start small, can tune this
@@ -39,7 +41,7 @@ pub struct RecordSet {
 impl RecordSet {
     pub fn new(capacity: usize) -> Self {
         Self {
-            buffer: Vec::with_capacity(64 * 1024), // 256KB default
+            buffer: Vec::with_capacity(256 * 1024), // 256KB default
             newlines: Vec::new(),
             last_searched_pos: 0,
             positions: Vec::with_capacity(capacity),
@@ -73,7 +75,7 @@ impl RecordSet {
     }
 
     /// Main function to fill the record set
-    pub fn fill<R: std::io::Read>(&mut self, reader: &mut Reader<R>) -> std::io::Result<bool> {
+    pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> io::Result<bool> {
         // Clear previous data
         self.clear();
 
@@ -125,7 +127,7 @@ impl RecordSet {
                     current_pos += n;
                     self.find_newlines();
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             }
         }
@@ -138,10 +140,7 @@ impl RecordSet {
     }
 
     // Split out record processing to separate function
-    fn process_records<R: std::io::Read>(
-        &mut self,
-        reader: &mut Reader<R>,
-    ) -> std::io::Result<bool> {
+    fn process_records<R: io::Read>(&mut self, reader: &mut Reader<R>) -> io::Result<bool> {
         let available_complete = self.newlines.len() / 4;
         let records_to_process = available_complete.min(self.capacity);
 
@@ -182,12 +181,10 @@ impl RecordSet {
         Ok(!self.positions.is_empty())
     }
     // Iterator over complete records
-    pub fn iter(&self) -> impl Iterator<Item = Record<'_>> {
-        self.positions.iter().map(move |&pos| Record {
-            id: &self.buffer[pos.start + 1..pos.seq_start - 1],
-            seq: &self.buffer[pos.seq_start..pos.sep_start - 1],
-            qual: &self.buffer[pos.qual_start..pos.end - 1],
-        })
+    pub fn iter(&self) -> impl Iterator<Item = Result<RefRecord<'_>, Error>> {
+        self.positions
+            .iter()
+            .map(move |&pos| RefRecord::new(&self.buffer, pos))
     }
 }
 
@@ -200,9 +197,133 @@ struct Positions {
     end: usize,
 }
 
-#[derive(Debug)]
-pub struct Record<'a> {
-    pub id: &'a [u8],
-    pub seq: &'a [u8],
-    pub qual: &'a [u8],
+#[derive(Debug, Clone)]
+pub struct RefRecord<'a> {
+    buffer: &'a [u8],
+    positions: Positions,
+}
+impl<'a> RefRecord<'a> {
+    fn new(buffer: &'a [u8], positions: Positions) -> Result<Self, Error> {
+        let ref_record = Self { buffer, positions };
+        ref_record.validate_record()?;
+        Ok(ref_record)
+    }
+
+    /// Validate the record for correctness
+    ///
+    /// 1. Check that positions are within bounds
+    /// 2. Check that the record starts with '@'
+    /// 3. Check that the separator line starts with '+'
+    /// 4. Check that sequence and quality lengths match
+    fn validate_record(&self) -> Result<(), Error> {
+        // Check that record boundaries are within buffer
+        if self.positions.start >= self.buffer.len() || self.positions.end > self.buffer.len() {
+            return Err(Error::UnboundedPositions);
+        }
+
+        // Check that record starts with '@'
+        if self.buffer[self.positions.start] != b'@' {
+            return Err(Error::InvalidHeader);
+        }
+
+        // Check that separator starts with '+'
+        if self.buffer[self.positions.sep_start] != b'+' {
+            return Err(Error::InvalidSeparator);
+        }
+
+        // Check that sequence and quality lengths match
+        if self.positions.sep_start - self.positions.seq_start
+            != self.positions.end - self.positions.qual_start
+        {
+            return Err(Error::UnequalLengths);
+        }
+
+        Ok(())
+    }
+
+    /// Access the ID bytes
+    #[inline]
+    pub fn id(&self) -> &[u8] {
+        self.access_buffer(
+            self.positions.start + 1, // Skip '@'
+            self.positions.seq_start,
+        )
+    }
+
+    /// Access the sequence bytes
+    #[inline]
+    pub fn seq(&self) -> &[u8] {
+        self.access_buffer(self.positions.seq_start, self.positions.sep_start)
+    }
+
+    /// Access the separator bytes
+    #[inline]
+    pub fn sep(&self) -> &[u8] {
+        self.access_buffer(self.positions.sep_start, self.positions.qual_start)
+    }
+
+    /// Access the quality bytes
+    #[inline]
+    pub fn qual(&self) -> &[u8] {
+        self.access_buffer(self.positions.qual_start, self.positions.end)
+    }
+
+    /// Performs the actual buffer access
+    #[inline(always)]
+    fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
+        unsafe {
+            // SAFETY: We've checked that left and right are within bounds
+            self.buffer.get_unchecked(left..right - 1)
+        }
+    }
+
+    /// Convert ID to string reference (UTF-8)
+    ///
+    /// # Safety
+    /// Will panic if ID is not valid UTF-8
+    pub fn id_str(&self) -> &str {
+        std::str::from_utf8(self.id()).unwrap()
+    }
+
+    /// Convert sequence to string reference (UTF-8)
+    ///
+    /// # Safety
+    /// Will panic if sequence is not valid UTF-8
+    pub fn seq_str(&self) -> &str {
+        std::str::from_utf8(self.seq()).unwrap()
+    }
+
+    /// Convert separator to string reference (UTF-8)
+    ///
+    /// # Safety
+    /// Will panic if separator is not valid UTF-8
+    pub fn sep_str(&self) -> &str {
+        std::str::from_utf8(self.sep()).unwrap()
+    }
+
+    /// Convert quality to string reference (UTF-8)
+    ///
+    /// # Safety
+    /// Will panic if quality is not valid UTF-8
+    pub fn qual_str(&self) -> &str {
+        std::str::from_utf8(self.qual()).unwrap()
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("Error reading from buffer: {0}")]
+    Io(#[from] io::Error),
+
+    #[error("Invalid header")]
+    InvalidHeader,
+
+    #[error("Invalid separator")]
+    InvalidSeparator,
+
+    #[error("Unbounded positions")]
+    UnboundedPositions,
+
+    #[error("Sequence and quality lengths do not match")]
+    UnequalLengths,
 }
