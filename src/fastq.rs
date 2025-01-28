@@ -170,19 +170,11 @@ impl RecordSet {
             self.update_avg_record_size(last_complete_newline);
 
             // Move remaining partial data to overflow
-            // println!(
-            //     "COPYING {} bytes to overflow (complete records)",
-            //     self.buffer.len() - last_complete_newline
-            // );
             reader
                 .overflow
                 .extend_from_slice(&self.buffer[last_complete_newline..]);
             self.buffer.truncate(last_complete_newline);
         } else if !self.buffer.is_empty() {
-            // println!(
-            //     "COPYING {} bytes to overflow (no complete records)",
-            //     self.buffer.len()
-            // );
             reader.overflow.extend_from_slice(&self.buffer);
             self.buffer.clear();
         }
