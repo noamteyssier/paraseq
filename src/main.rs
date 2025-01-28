@@ -7,7 +7,7 @@ fn main() -> Result<()> {
     let path = "./data/example.fastq";
     let file = File::open(path)?;
     let mut reader = Reader::new(file);
-    let mut rset = RecordSet::new(1000);
+    let mut rset = RecordSet::new(1024);
 
     let mut num_records = 0;
     while rset.fill(&mut reader)? {
