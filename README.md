@@ -46,9 +46,9 @@ use paraseq::fastq::{Reader, RecordSet};
 use paraseq::fastx::Record;
 
 fn main() -> Result<(), paraseq::fastq::Error> {
-let file = File::open("./data/sample.fastq")?;
-let mut reader = Reader::new(file);
-let mut record_set = RecordSet::new(1024); // Buffer up to 1024 records
+    let file = File::open("./data/sample.fastq")?;
+    let mut reader = Reader::new(file);
+    let mut record_set = RecordSet::new(1024); // Buffer up to 1024 records
 
     while record_set.fill(&mut reader)? {
         for record in record_set.iter() {
@@ -112,9 +112,9 @@ struct MyPairedProcessor {
 }
 
 impl PairedParallelProcessor for MyPairedProcessor {
-fn process_record_pair<R: Record>(&mut self, r1: R, r2: R) -> Result<(), ProcessError> {
-    // Process paired records in parallel
-    Ok(())
+    fn process_record_pair<R: Record>(&mut self, r1: R, r2: R) -> Result<(), ProcessError> {
+        // Process paired records in parallel
+        Ok(())
     }
 }
 
