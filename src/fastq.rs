@@ -1,5 +1,7 @@
 use std::io;
 
+use crate::fastx::Record;
+
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
     reader: R,
@@ -284,41 +286,9 @@ impl<'a> RefRecord<'a> {
             self.buffer.get_unchecked(left..right - 1)
         }
     }
-
-    /// Convert ID to string reference (UTF-8)
-    ///
-    /// # Safety
-    /// Will panic if ID is not valid UTF-8
-    pub fn id_str(&self) -> &str {
-        std::str::from_utf8(self.id()).unwrap()
-    }
-
-    /// Convert sequence to string reference (UTF-8)
-    ///
-    /// # Safety
-    /// Will panic if sequence is not valid UTF-8
-    pub fn seq_str(&self) -> &str {
-        std::str::from_utf8(self.seq()).unwrap()
-    }
-
-    /// Convert separator to string reference (UTF-8)
-    ///
-    /// # Safety
-    /// Will panic if separator is not valid UTF-8
-    pub fn sep_str(&self) -> &str {
-        std::str::from_utf8(self.sep()).unwrap()
-    }
-
-    /// Convert quality to string reference (UTF-8)
-    ///
-    /// # Safety
-    /// Will panic if quality is not valid UTF-8
-    pub fn qual_str(&self) -> &str {
-        std::str::from_utf8(self.qual()).unwrap()
-    }
 }
 
-impl crate::fastx::Record for RefRecord<'_> {
+impl Record for RefRecord<'_> {
     fn id(&self) -> &[u8] {
         self.id()
     }
