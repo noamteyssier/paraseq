@@ -3,7 +3,7 @@ use std::{io, sync::Arc, thread};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 
-use crate::parallel::error::{ProcessError, Result};
+use crate::parallel::error::{ProcessError, RecordPair, Result};
 use crate::parallel::{PairedParallelProcessor, PairedParallelReader};
 
 /// Type alias for synchronized record sets containing pairs of records
@@ -53,9 +53,13 @@ where
                 tx.send(Some(current_idx))?;
                 current_idx = (current_idx + 1) % record_sets.len();
             }
-            (Ok(true), Ok(false)) | (Ok(false), Ok(true)) => {
-                // Record count mismatch between files
-                return Err(ProcessError::PairedRecordMismatch);
+            (Ok(true), Ok(false)) => {
+                // Record count mismatch between files // R2 has less records
+                return Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
+            }
+            (Ok(false), Ok(true)) => {
+                // Record count mismatch between files // R1 has less records
+                return Err(ProcessError::PairedRecordMismatch(RecordPair::R1));
             }
             _ => break, // EOF on either file
         }
@@ -150,8 +154,17 @@ macro_rules! impl_paired_parallel_reader {
                                             (Some(r1), Some(r2)) => {
                                                 processor.process_record_pair(r1?, r2?)?;
                                             }
-                                            (Some(_), None) | (None, Some(_)) => {
-                                                return Err(ProcessError::PairedRecordMismatch);
+                                            (Some(_), None) => {
+                                                // Record count mismatch between files // R2 has less records
+                                                return Err(ProcessError::PairedRecordMismatch(
+                                                    RecordPair::R2,
+                                                ));
+                                            }
+                                            (None, Some(_)) => {
+                                                // Record count mismatch between files // R1 has less records
+                                                return Err(ProcessError::PairedRecordMismatch(
+                                                    RecordPair::R1,
+                                                ));
                                             }
                                             (None, None) => break,
                                         }

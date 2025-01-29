@@ -1,5 +1,7 @@
-use crossbeam_channel::SendError;
 use std::error::Error as StdError;
+use std::fmt;
+
+use crossbeam_channel::SendError;
 use thiserror::Error;
 
 // Convenience Result type alias
@@ -17,8 +19,8 @@ pub enum ProcessError {
     InvalidThreadCount,
 
     /// Record synchronization error between paired files
-    #[error("Record synchronization error between paired files")]
-    PairedRecordMismatch,
+    #[error("Record synchronization error between paired files. {0} has less records.")]
+    PairedRecordMismatch(RecordPair),
 
     /// Error sending data between threads
     #[error("Channel error: {0}")]
@@ -39,6 +41,21 @@ pub enum ProcessError {
     /// Error from FASTQ processing
     #[error("FASTQ error: {0}")]
     FastqError(#[from] crate::fastq::Error),
+}
+
+/// Enum for identifying record pairs
+#[derive(Debug)]
+pub enum RecordPair {
+    R1,
+    R2,
+}
+impl fmt::Display for RecordPair {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            RecordPair::R1 => write!(f, "R1"),
+            RecordPair::R2 => write!(f, "R2"),
+        }
+    }
 }
 
 /// Trait for converting arbitrary errors into ProcessError
