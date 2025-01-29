@@ -41,7 +41,7 @@ where
         let mut record_set = record_sets[current_idx].lock();
         if read_fn(&mut reader, &mut record_set)? {
             drop(record_set);
-            tx.send(Some(current_idx)).unwrap();
+            tx.send(Some(current_idx))?;
             current_idx = (current_idx + 1) % record_sets.len();
         } else {
             break;
@@ -50,7 +50,7 @@ where
 
     // Signal completion
     for _ in 0..num_threads {
-        tx.send(None).unwrap();
+        tx.send(None)?;
     }
 
     Ok(())

@@ -1,3 +1,4 @@
+use crossbeam_channel::SendError;
 use std::error::Error as StdError;
 use thiserror::Error;
 
@@ -18,6 +19,10 @@ pub enum ProcessError {
     /// Record synchronization error between paired files
     #[error("Record synchronization error between paired files")]
     PairedRecordMismatch,
+
+    /// Error sending data between threads
+    #[error("Channel error: {0}")]
+    SendError(#[from] SendError<Option<usize>>),
 
     /// Error reading from input
     #[error("I/O error: {0}")]

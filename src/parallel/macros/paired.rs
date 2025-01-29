@@ -50,7 +50,7 @@ where
         ) {
             (Ok(true), Ok(true)) => {
                 drop(record_set_pair);
-                tx.send(Some(current_idx)).unwrap();
+                tx.send(Some(current_idx))?;
                 current_idx = (current_idx + 1) % record_sets.len();
             }
             (Ok(true), Ok(false)) | (Ok(false), Ok(true)) => {
@@ -63,7 +63,7 @@ where
 
     // Signal completion to all workers
     for _ in 0..num_threads {
-        tx.send(None).unwrap();
+        tx.send(None)?;
     }
 
     Ok(())
