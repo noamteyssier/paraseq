@@ -55,7 +55,7 @@ where
             }
             (Ok(true), Ok(false)) | (Ok(false), Ok(true)) => {
                 // Record count mismatch between files
-                return Err(ProcessError::RecordCountMismatch);
+                return Err(ProcessError::PairedRecordMismatch);
             }
             _ => break, // EOF on either file
         }
@@ -151,7 +151,7 @@ macro_rules! impl_paired_parallel_reader {
                                                 processor.process_record_pair(r1?, r2?)?;
                                             }
                                             (Some(_), None) | (None, Some(_)) => {
-                                                return Err(ProcessError::RecordCountMismatch);
+                                                return Err(ProcessError::PairedRecordMismatch);
                                             }
                                             (None, None) => break,
                                         }

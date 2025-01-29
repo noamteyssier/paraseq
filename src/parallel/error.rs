@@ -1,49 +1,35 @@
 use std::error::Error as StdError;
-use std::fmt;
+use thiserror::Error;
+
+// Convenience Result type alias
+pub type Result<T> = std::result::Result<T, ProcessError>;
 
 /// Error type for parallel processing operations
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum ProcessError {
     /// Error occurred during parallel processing
+    #[error("Processing error: {0}")]
     Process(Box<dyn StdError + Send + Sync>),
+
     /// Invalid number of threads specified
+    #[error("Invalid thread count specified")]
     InvalidThreadCount,
-    /// Error in channel communication
-    ChannelError,
-    /// Record count mismatch between paired files
-    RecordCountMismatch,
+
+    /// Record synchronization error between paired files
+    #[error("Record synchronization error between paired files")]
+    PairedRecordMismatch,
+
     /// Error reading from input
-    IoError(std::io::Error),
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
+
     /// Error from FASTA processing
-    FastaError(crate::fasta::Error),
+    #[error("FASTA error: {0}")]
+    FastaError(#[from] crate::fasta::Error),
+
     /// Error from FASTQ processing
-    FastqError(crate::fastq::Error),
-}
-
-impl fmt::Display for ProcessError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessError::Process(e) => write!(f, "Processing error: {}", e),
-            ProcessError::InvalidThreadCount => write!(f, "Invalid thread count specified"),
-            ProcessError::ChannelError => write!(f, "Channel communication error"),
-            ProcessError::RecordCountMismatch => write!(f, "Record count mismatch"),
-            ProcessError::IoError(e) => write!(f, "I/O error: {}", e),
-            ProcessError::FastaError(e) => write!(f, "FASTA error: {}", e),
-            ProcessError::FastqError(e) => write!(f, "FASTQ error: {}", e),
-        }
-    }
-}
-
-impl StdError for ProcessError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            ProcessError::Process(e) => Some(e.as_ref()),
-            ProcessError::IoError(e) => Some(e),
-            ProcessError::FastaError(e) => Some(e),
-            ProcessError::FastqError(e) => Some(e),
-            _ => None,
-        }
-    }
+    #[error("FASTQ error: {0}")]
+    FastqError(#[from] crate::fastq::Error),
 }
 
 /// Trait for converting arbitrary errors into ProcessError
@@ -61,36 +47,10 @@ where
     }
 }
 
-// Implement specific conversions
-impl From<std::io::Error> for ProcessError {
-    fn from(err: std::io::Error) -> Self {
-        ProcessError::IoError(err)
-    }
-}
-
-impl From<crate::fasta::Error> for ProcessError {
-    fn from(err: crate::fasta::Error) -> Self {
-        ProcessError::FastaError(err)
-    }
-}
-
-impl From<crate::fastq::Error> for ProcessError {
-    fn from(err: crate::fastq::Error) -> Self {
-        ProcessError::FastqError(err)
-    }
-}
-
 // Feature-gated anyhow support
 #[cfg(feature = "anyhow")]
-mod anyhow_support {
-    use super::*;
-
-    impl From<anyhow::Error> for ProcessError {
-        fn from(err: anyhow::Error) -> Self {
-            ProcessError::Process(err.into())
-        }
+impl From<anyhow::Error> for ProcessError {
+    fn from(err: anyhow::Error) -> Self {
+        ProcessError::Process(err.into())
     }
 }
-
-// Convenience Result type alias
-pub type Result<T> = std::result::Result<T, ProcessError>;
