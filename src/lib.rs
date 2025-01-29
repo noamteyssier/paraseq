@@ -149,6 +149,18 @@
 //! ## Contributing
 //!
 //! Contributions are welcome! Please feel free to submit a Pull Request.
+//!
+//! ## Similar Projects
+//!
+//! This work is inspired by the following projects:
+//!
+//! - [seq_io](https://github.com/markschl/seq_io)
+//! - [fastq](https://github.com/aseyboldt/fastq-rs)
+//!
+//! This project aims to be directed more specifically at ergonomically processing of paired records in parallel and is optimized mainly for FASTQ files.
+//! It can be faster than seq_io for some use cases, but it is not as feature-rich or rigorously tested, and it does not support multi-line FASTA files.
+//!
+//! If the libraries assumptions do not fit your use case, you may want to consider using seq_io or fastq instead.
 
 pub mod fasta;
 pub mod fastq;
