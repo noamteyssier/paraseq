@@ -25,6 +25,32 @@ impl<R: io::Read> Reader<R> {
     pub fn exhausted(&self) -> bool {
         self.eof && self.overflow.is_empty()
     }
+
+    /// Take back all bytes from the record set and prepend them to the overflow buffer
+    ///
+    /// This is an expensive operation and should be used sparingly.
+    pub fn reload(&mut self, rset: &mut RecordSet) {
+        // A complete slice of the record sets buffer
+        let buffer_slice = &rset.buffer;
+
+        // Get buffer lengths of incoming and existing data
+        let num_incoming = buffer_slice.len();
+        let num_existing = self.overflow.len();
+
+        // Allocate space in the overflow buffer for incoming bytes
+        let required_space = num_existing + num_incoming;
+        self.overflow
+            .resize(self.overflow.capacity().max(required_space), 0);
+
+        // Move current bytes to end of overflow buffer
+        self.overflow.copy_within(..num_existing, num_incoming);
+
+        // Copy incoming bytes to the beginning of the overflow buffer
+        self.overflow[..num_incoming].copy_from_slice(buffer_slice);
+
+        // Clear the record set
+        rset.clear();
+    }
 }
 
 #[derive(Debug)]
