@@ -141,14 +141,20 @@ macro_rules! impl_paired_parallel_reader {
                                 worker_processor,
                                 thread_id,
                                 |record_set_pair, processor| {
-                                    let records1 = record_set_pair.0.iter();
-                                    let records2 = record_set_pair.1.iter();
+                                    let mut records1 = record_set_pair.0.iter();
+                                    let mut records2 = record_set_pair.1.iter();
 
-                                    // Process pairs of records
-                                    for (r1, r2) in records1.zip(records2) {
-                                        let r1 = r1?;
-                                        let r2 = r2?;
-                                        processor.process_record_pair(r1, r2)?;
+                                    // Process records in pairs
+                                    loop {
+                                        match (records1.next(), records2.next()) {
+                                            (Some(r1), Some(r2)) => {
+                                                processor.process_record_pair(r1?, r2?)?;
+                                            }
+                                            (Some(_), None) | (None, Some(_)) => {
+                                                return Err(ProcessError::RecordCountMismatch);
+                                            }
+                                            (None, None) => break,
+                                        }
                                     }
                                     Ok(())
                                 },
