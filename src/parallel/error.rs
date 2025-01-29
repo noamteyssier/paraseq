@@ -24,6 +24,10 @@ pub enum ProcessError {
     #[error("Channel error: {0}")]
     SendError(#[from] SendError<Option<usize>>),
 
+    /// Error joining threads
+    #[error("Thread join error.")]
+    JoinError,
+
     /// Error reading from input
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),

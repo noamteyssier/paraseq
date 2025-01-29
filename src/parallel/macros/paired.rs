@@ -165,11 +165,19 @@ macro_rules! impl_paired_parallel_reader {
                     }
 
                     // Wait for reader thread
-                    reader_handle.join().unwrap()?;
+                    match reader_handle.join() {
+                        Ok(Ok(())) => (),
+                        Ok(Err(e)) => return Err(e),
+                        Err(_) => return Err(ProcessError::JoinError),
+                    }
 
                     // Wait for worker threads
                     for handle in handles {
-                        handle.join().unwrap()?;
+                        match handle.join() {
+                            Ok(Ok(())) => (),
+                            Ok(Err(e)) => return Err(e),
+                            Err(_) => return Err(ProcessError::JoinError),
+                        }
                     }
 
                     Ok(())
