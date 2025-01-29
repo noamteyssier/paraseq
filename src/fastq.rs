@@ -328,3 +328,197 @@ pub enum Error {
     #[error("Sequence and quality lengths do not match")]
     UnequalLengths,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    // Helper function to create a valid FASTQ record
+    fn create_test_record(id: &str, seq: &str, sep: &str, qual: &str) -> String {
+        format!("@{}\n{}\n+{}\n{}\n", id, seq, sep, qual)
+    }
+
+    #[test]
+    fn test_basic_record_parsing() {
+        let record = create_test_record("test1", "ACTG", "", "IIII");
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed_record = record_set.iter().next().unwrap().unwrap();
+
+        assert_eq!(parsed_record.id_str(), "test1");
+        assert_eq!(parsed_record.seq_str(), "ACTG");
+        assert_eq!(parsed_record.qual_str(), "IIII");
+    }
+
+    #[test]
+    fn test_multiple_records() {
+        let records = [
+            create_test_record("test1", "ACTG", "", "IIII"),
+            create_test_record("test2", "TGCA", "", "HHHH"),
+        ]
+        .join("");
+
+        let mut reader = Reader::new(Cursor::new(records));
+        let mut record_set = RecordSet::new(2);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let records: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id_str(), "test1");
+        assert_eq!(records[1].id_str(), "test2");
+    }
+
+    #[test]
+    fn test_invalid_header() {
+        let record = format!("X{}\n", create_test_record("test1", "ACTG", "", "IIII"));
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert!(matches!(
+            record_set.iter().next().unwrap().unwrap_err(),
+            Error::InvalidHeader
+        ));
+    }
+
+    #[test]
+    fn test_invalid_separator() {
+        let record = format!("@{}\n{}\n{}\n{}\n", "test1", "ACTG", "X", "IIII");
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert!(matches!(
+            record_set.iter().next().unwrap().unwrap_err(),
+            Error::InvalidSeparator
+        ));
+    }
+
+    #[test]
+    fn test_unequal_lengths() {
+        let record = create_test_record("test1", "ACTG", "", "III");
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert!(matches!(
+            record_set.iter().next().unwrap().unwrap_err(),
+            Error::UnequalLengths
+        ));
+    }
+
+    #[test]
+    fn test_buffer_overflow() {
+        // Create a record that's larger than the default buffer
+        let long_seq = "A".repeat(300 * 1024); // 300KB sequence
+        let long_qual = "I".repeat(300 * 1024); // 300KB quality scores
+        let record = create_test_record("test1", &long_seq, "", &long_qual);
+
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed_record = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed_record.seq().len(), long_seq.len());
+    }
+
+    #[test]
+    fn test_partial_record() {
+        let partial_record = "@test1\nACTG\n+\nIII"; // Missing final newline
+        let mut reader = Reader::new(Cursor::new(partial_record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(!record_set.fill(&mut reader).unwrap());
+        assert!(record_set.iter().next().is_none());
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let mut reader = Reader::new(Cursor::new(""));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(!record_set.fill(&mut reader).unwrap());
+        assert!(record_set.iter().next().is_none());
+    }
+
+    #[test]
+    fn test_reader_exhausted() {
+        let record = create_test_record("test1", "ACTG", "", "IIII");
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert!(!record_set.fill(&mut reader).unwrap());
+        assert!(reader.exhausted());
+    }
+
+    #[test]
+    fn test_capacity_limit() {
+        let records = (0..10)
+            .map(|i| create_test_record(&format!("test{}", i), "ACTG", "", "IIII"))
+            .collect::<String>();
+
+        let mut reader = Reader::new(Cursor::new(records));
+        let mut record_set = RecordSet::new(5); // Only process 5 records at a time
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert_eq!(record_set.iter().count(), 5);
+
+        // Should be able to read the next batch
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert_eq!(record_set.iter().count(), 5);
+    }
+
+    #[test]
+    fn test_record_spanning_buffers() {
+        // Create two records where the second one might span buffer boundaries
+        let records = [
+            create_test_record("test1", "ACTG", "", "IIII"),
+            create_test_record("test2", &"A".repeat(1024), "", &"I".repeat(1024)),
+        ]
+        .join("");
+
+        let mut reader = Reader::new(Cursor::new(records));
+        let mut record_set = RecordSet::new(2);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed_records: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+        assert_eq!(parsed_records.len(), 2);
+        assert_eq!(parsed_records[1].seq().len(), 1024);
+    }
+
+    #[test]
+    fn test_invalid_utf8() {
+        // Create a valid record structure but with invalid UTF-8 in the sequence
+        // @test1\nA<invalid-utf8>CTG\n+\nI<invalid-utf8>III\n
+        let record = vec![
+            b'@', b't', b'e', b's', b't', b'1', b'\n', // header
+            b'A', 0xFF, b'C', b'T', b'G', b'\n', // sequence with invalid UTF-8
+            b'+', b'\n', // separator
+            b'I', 0xFF, b'I', b'I', b'I', b'\n', // quality
+        ];
+
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed_record = record_set.iter().next().unwrap().unwrap();
+        assert!(std::str::from_utf8(parsed_record.seq()).is_err());
+    }
+    #[test]
+    fn test_clear_record_set() {
+        let record = create_test_record("test1", "ACTG", "", "IIII");
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        record_set.clear();
+        assert_eq!(record_set.iter().count(), 0);
+        assert_eq!(record_set.buffer.len(), 0);
+        assert_eq!(record_set.newlines.len(), 0);
+    }
+}
