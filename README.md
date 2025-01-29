@@ -145,12 +145,6 @@ fn main() -> Result<(), ProcessError> {
 - **Thread Count**: For optimal performance, use thread count equal to or slightly less than available CPU cores.
 - **Memory Usage**: Memory usage scales with thread count × record capacity × average record size.
 
-## Building
-
-```bash
-cargo build --release
-```
-
 For optimal performance, the project uses native CPU optimizations. You can customize this in `.cargo/config.toml`.
 
 ## License
