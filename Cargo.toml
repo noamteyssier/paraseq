@@ -17,3 +17,6 @@ debug = true
 [features]
 default = ["anyhow"]
 anyhow = ["dep:anyhow"]
+
+[dev-dependencies]
+niffler = "2.7.0"
