@@ -150,7 +150,7 @@
 //!
 //! ## License
 //!
-//! <!-- Add your chosen license here -->
+//! MIT
 //!
 //! ## Contributing
 //!
