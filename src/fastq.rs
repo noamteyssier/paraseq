@@ -94,12 +94,13 @@ impl RecordSet {
     }
 
     /// Find all newlines currently in the buffer starting from the last searched position
-    fn find_newlines(&mut self) {
-        let buffer = &self.buffer;
-        memchr::memchr_iter(b'\n', &buffer[self.last_searched_pos..]).for_each(|i| {
+    /// and ending at the effective end of the buffer
+    fn find_newlines(&mut self, current_pos: usize) {
+        let search_buffer = &self.buffer[self.last_searched_pos..current_pos];
+        memchr::memchr_iter(b'\n', search_buffer).for_each(|i| {
             self.newlines.push(i + self.last_searched_pos + 1);
         });
-        self.last_searched_pos = self.buffer.len();
+        self.last_searched_pos = current_pos;
     }
 
     /// Update the internal average record size
@@ -120,7 +121,7 @@ impl RecordSet {
             self.buffer.extend_from_slice(&reader.overflow);
             reader.overflow.clear();
         }
-        self.find_newlines(); // Find newlines in overflow
+        self.find_newlines(self.buffer.len()); // Find newlines in overflow
 
         // Determine the number of putative complete records in the buffer
         let initial_complete_records = self.newlines.len() / 4;
@@ -161,7 +162,7 @@ impl RecordSet {
                 }
                 Ok(n) => {
                     current_pos += n;
-                    self.find_newlines();
+                    self.find_newlines(current_pos);
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e.into()),
@@ -537,5 +538,22 @@ mod tests {
         assert_eq!(record_set.iter().count(), 0);
         assert_eq!(record_set.buffer.len(), 0);
         assert_eq!(record_set.newlines.len(), 0);
+    }
+
+    #[test]
+    fn test_passthrough_read() {
+        let record = create_test_record("test1", "ACTG", "", "IIII");
+        let rdr = Cursor::new(record);
+        let (pass, _comp) = niffler::get_reader(Box::new(rdr)).unwrap();
+        let mut reader = Reader::new(pass);
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed_record = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed_record.id_str(), "test1");
+        assert_eq!(parsed_record.seq_str(), "ACTG");
+        assert_eq!(parsed_record.qual_str(), "IIII");
+
+        assert!(!record_set.fill(&mut reader).unwrap());
     }
 }
