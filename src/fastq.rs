@@ -1,9 +1,11 @@
 use std::io;
 
 pub struct Reader<R: io::Read> {
-    // Small buffer to hold incomplete records between reads
-    overflow: Vec<u8>,
+    /// Handle to the underlying reader (byte stream)
     reader: R,
+    /// Small buffer to hold incomplete records between reads
+    overflow: Vec<u8>,
+    /// Flag to indicate end of file
     eof: bool,
 }
 
