@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 // use anyhow::Result;
 use paraseq::{
-    fastq::Reader,
+    fasta, fastq,
     fastx::Record,
     parallel::{ParallelProcessor, ParallelReader, ProcessError},
 };
@@ -58,11 +58,18 @@ fn main() -> Result<(), ProcessError> {
         .parse::<usize>()
         .unwrap_or(1);
 
-    let file = File::open(path)?;
-    let reader = Reader::new(file);
+    let file = File::open(&path)?;
     let processor = SeqSum::default();
 
-    reader.process_parallel(processor.clone(), num_threads)?;
+    if path.ends_with(".fastq") {
+        let reader = fastq::Reader::new(file);
+        reader.process_parallel(processor.clone(), num_threads)?;
+    } else if path.ends_with(".fasta") {
+        let reader = fasta::Reader::new(file);
+        reader.process_parallel(processor.clone(), num_threads)?;
+    } else {
+        panic!("Unknown file format {}", path);
+    }
 
     println!("num_records: {}", processor.get_num_records());
     println!("byte_sum: {}", processor.get_byte_sum());
