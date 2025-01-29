@@ -10,6 +10,8 @@ pub enum ProcessError {
     InvalidThreadCount,
     /// Error in channel communication
     ChannelError,
+    /// Record count mismatch between paired files
+    RecordCountMismatch,
     /// Error reading from input
     IoError(std::io::Error),
     /// Error from FASTA processing
@@ -24,6 +26,7 @@ impl fmt::Display for ProcessError {
             ProcessError::Process(e) => write!(f, "Processing error: {}", e),
             ProcessError::InvalidThreadCount => write!(f, "Invalid thread count specified"),
             ProcessError::ChannelError => write!(f, "Channel communication error"),
+            ProcessError::RecordCountMismatch => write!(f, "Record count mismatch"),
             ProcessError::IoError(e) => write!(f, "I/O error: {}", e),
             ProcessError::FastaError(e) => write!(f, "FASTA error: {}", e),
             ProcessError::FastqError(e) => write!(f, "FASTQ error: {}", e),

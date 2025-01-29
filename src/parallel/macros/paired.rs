@@ -53,6 +53,10 @@ where
                 tx.send(Some(current_idx)).unwrap();
                 current_idx = (current_idx + 1) % record_sets.len();
             }
+            (Ok(true), Ok(false)) | (Ok(false), Ok(true)) => {
+                // Record count mismatch between files
+                return Err(ProcessError::RecordCountMismatch);
+            }
             _ => break, // EOF on either file
         }
     }
