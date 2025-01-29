@@ -1,7 +1,6 @@
-use anyhow::Result;
 use std::{fs::File, io::Read};
 
-fn run_paraseq_fastq<R: Read>(rdr: R) -> Result<()> {
+fn run_paraseq_fastq<R: Read>(rdr: R) -> Result<(), paraseq::fastq::Error> {
     let mut reader = paraseq::fastq::Reader::new(rdr);
     let mut rset = paraseq::fastq::RecordSet::new(1024);
 
@@ -19,7 +18,7 @@ fn run_paraseq_fastq<R: Read>(rdr: R) -> Result<()> {
     Ok(())
 }
 
-fn run_paraseq_fasta<R: Read>(rdr: R) -> Result<()> {
+fn run_paraseq_fasta<R: Read>(rdr: R) -> Result<(), paraseq::fasta::Error> {
     let mut reader = paraseq::fasta::Reader::new(rdr);
     let mut rset = paraseq::fasta::RecordSet::new(1024);
 
@@ -37,16 +36,21 @@ fn run_paraseq_fasta<R: Read>(rdr: R) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() {
     let path = std::env::args().nth(1).unwrap();
-    let file = File::open(&path)?;
+    let file = File::open(&path).expect("Could not open file");
 
-    if path.ends_with(".fastq") {
-        run_paraseq_fastq(file)?;
-    } else if path.ends_with(".fasta") {
-        run_paraseq_fasta(file)?;
+    if path.ends_with(".fasta") {
+        match run_paraseq_fasta(file) {
+            Ok(_) => (),
+            Err(e) => eprintln!("Error processing fasta: {}", e),
+        }
+    } else if path.ends_with(".fastq") {
+        match run_paraseq_fastq(file) {
+            Ok(_) => (),
+            Err(e) => eprintln!("Error processing fastq: {}", e),
+        }
     } else {
         eprintln!("Unknown file format");
     }
-    Ok(())
 }

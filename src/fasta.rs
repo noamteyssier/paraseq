@@ -41,6 +41,12 @@ pub struct RecordSet {
     avg_record_size: usize,
 }
 
+impl Default for RecordSet {
+    fn default() -> Self {
+        Self::new(1024)
+    }
+}
+
 impl RecordSet {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -265,6 +271,20 @@ impl<'a> RefRecord<'a> {
     /// Will panic if sequence is not valid UTF-8
     pub fn seq_str(&self) -> &str {
         std::str::from_utf8(self.seq()).unwrap()
+    }
+}
+
+impl crate::fastx::Record for RefRecord<'_> {
+    fn id(&self) -> &[u8] {
+        self.id()
+    }
+
+    fn seq(&self) -> &[u8] {
+        self.seq()
+    }
+
+    fn qual(&self) -> Option<&[u8]> {
+        None
     }
 }
 
