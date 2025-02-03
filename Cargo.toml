@@ -2,6 +2,13 @@
 name = "paraseq"
 version = "0.1.1"
 edition = "2021"
+authors = ["Noam Teyssier"]
+keywords = ["fasta", "fastq", "parser", "parallel", "paired"]
+license = "MIT"
+repository = "https://github.com/noamteyssier/paraseq"
+description = "A minimal-copy parser for FASTA and FASTQ files built for paired parallel processing."
+readme = "README.md"
+documentation = "https://docs.rs/paraseq"
 
 [dependencies]
 anyhow = { version = "1.0.95", optional = true }
