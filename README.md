@@ -5,7 +5,8 @@ A high-performance Rust library for parallel processing of FASTA/FASTQ sequence 
 ## Features
 
 - **Efficient Record Buffering**: Uses RecordSets as the primary unit of buffering, with each set managing its own memory and dynamically adapting to record sizes
-- **Zero-Copy Parsing**: Employs reference-based record parsing to avoid unnecessary allocations
+- **Zero-Copy Records**: Records are reference-based and avoid unnecessary allocations.
+- **Minimal-Copy Processing**: Minimizes copies between buffers by accurately estimating required space
 - **Parallel Processing**: Built-in support for both single-file and paired-end parallel processing
 - **Adaptive Buffer Management**: Automatically adjusts buffer sizes based on observed record sizes
 - **SIMD-Accelerated Parsing**: Uses `memchr` for optimized newline scanning
@@ -37,6 +38,8 @@ paraseq takes a unique approach to sequence file parsing:
 - Support for both single-end and paired-end processing
 
 ## Usage
+
+Check out the `examples` directory for more detailed examples or the [API documentation](https://docs.rs/paraseq) for more information.
 
 ### Basic Usage
 
@@ -166,3 +169,7 @@ This project aims to be directed more specifically at ergonomically processing o
 It can be faster than seq_io for some use cases, but it is not as feature-rich or rigorously tested, and it does not support multi-line FASTA files.
 
 If the libraries assumptions do not fit your use case, you may want to consider using seq_io or fastq instead.
+
+## Benchmarks
+
+For performance benchmarks, see the following repository: [paraseq-benchmarks](https://github.com/noamteyssier/paraseq_benchmark).
