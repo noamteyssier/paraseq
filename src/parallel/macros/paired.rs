@@ -114,6 +114,9 @@ macro_rules! impl_paired_parallel_reader {
                 if num_threads == 0 {
                     return Err(ProcessError::InvalidThreadCount);
                 }
+                if num_threads == 1 {
+                    return self.process_sequential_paired(reader2, processor);
+                }
                 let record_sets = create_paired_record_sets::<$record_set>(num_threads);
                 let (tx, rx) = create_channels(num_threads * 2);
 
@@ -196,6 +199,43 @@ macro_rules! impl_paired_parallel_reader {
                     Ok(())
                 })?;
 
+                Ok(())
+            }
+
+            fn process_sequential_paired<T>(self, reader2: Self, mut processor: T) -> Result<()>
+            where
+                T: PairedParallelProcessor,
+            {
+                let mut reader1 = self;
+                let mut reader2 = reader2;
+                let mut record_set1 = <$record_set>::default();
+                let mut record_set2 = <$record_set>::default();
+
+                loop {
+                    match (
+                        record_set1.fill(&mut reader1)?,
+                        record_set2.fill(&mut reader2)?,
+                    ) {
+                        (true, true) => {
+                            for (record1, record2) in record_set1.iter().zip(record_set2.iter()) {
+                                let record1 = record1?;
+                                let record2 = record2?;
+                                processor.process_record_pair(record1, record2)?;
+                            }
+                            processor.on_batch_complete()?;
+                        }
+                        (true, false) => {
+                            // Record count mismatch between files // R2 has less records
+                            return Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
+                        }
+                        (false, true) => {
+                            // Record count mismatch between files // R1 has less records
+                            return Err(ProcessError::PairedRecordMismatch(RecordPair::R1));
+                        }
+                        (false, false) => break,
+                    }
+                }
+                processor.on_thread_complete()?;
                 Ok(())
             }
         }
