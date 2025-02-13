@@ -89,8 +89,15 @@ macro_rules! impl_parallel_reader {
                 T: ParallelProcessor,
             {
                 if num_threads == 0 {
+                    // Do not allow zero threads
                     return Err(ProcessError::InvalidThreadCount);
                 }
+
+                if num_threads == 1 {
+                    // Process sequentially if only one thread to avoid background reader
+                    return self.process_sequential(processor);
+                }
+
                 let record_sets = create_record_sets::<$record_set>(num_threads);
                 let (tx, rx) = create_channels(num_threads * 2);
 
@@ -152,6 +159,25 @@ macro_rules! impl_parallel_reader {
                     Ok(())
                 })?;
 
+                Ok(())
+            }
+
+            fn process_sequential<T>(self, mut processor: T) -> Result<()>
+            where
+                T: ParallelProcessor,
+            {
+                let mut reader = self;
+                let mut record_set = <$record_set>::default();
+
+                while record_set.fill(&mut reader)? {
+                    for record in record_set.iter() {
+                        let record = record?;
+                        processor.process_record(record)?;
+                    }
+                    processor.on_batch_complete()?;
+                }
+
+                processor.on_thread_complete()?;
                 Ok(())
             }
         }
