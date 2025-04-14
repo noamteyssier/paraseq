@@ -126,6 +126,40 @@
 //!     Ok(())
 //! }
 //! ```
+//! ### Interleaved Processing
+//!
+//! ```rust
+//! use std::fs::File;
+//! use paraseq::{
+//!     fastq,
+//!     fastx::Record,
+//!     parallel::{InterleavedParallelProcessor, InterleavedParallelReader, ProcessError},
+//! };
+//!
+//! #[derive(Clone, Default)]
+//! struct MyInterleavedProcessor {
+//!     // Your processing state here
+//! }
+//!
+//! impl InterleavedParallelProcessor for MyInterleavedProcessor {
+//!     fn process_interleaved_pair<R: Record>(&mut self, r1: R, r2: R) -> Result<(), ProcessError> {
+//!         // Process interleaved paired records in parallel
+//!         Ok(())
+//!     }
+//! }
+//!
+//! fn main() -> Result<(), ProcessError> {
+//!     let file = File::open("./data/r1.fastq")?;
+//!
+//!     let reader = fastq::Reader::new(file);
+//!     let processor = MyInterleavedProcessor::default();
+//!     let num_threads = 8;
+//!
+//!     reader.process_parallel_interleaved(processor, num_threads)?;
+//!     Ok(())
+//! }
+//! ```
+//!
 //!
 //! ## Limitations
 //!

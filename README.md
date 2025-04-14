@@ -7,7 +7,7 @@ A high-performance Rust library for parallel processing of FASTA/FASTQ sequence 
 - **Efficient Record Buffering**: Uses RecordSets as the primary unit of buffering, with each set managing its own memory and dynamically adapting to record sizes
 - **Zero-Copy Records**: Records are reference-based and avoid unnecessary allocations.
 - **Minimal-Copy Processing**: Minimizes copies between buffers by accurately estimating required space
-- **Parallel Processing**: Built-in support for both single-file and paired-end parallel processing
+- **Parallel Processing**: Built-in support for both single-file, paired-end, and interleaved parallel processing
 - **Adaptive Buffer Management**: Automatically adjusts buffer sizes based on observed record sizes
 - **SIMD-Accelerated Parsing**: Uses `memchr` for optimized newline scanning
 - **Error Handling**: Comprehensive error types for robust error handling and recovery
@@ -131,6 +131,40 @@ fn main() -> Result<(), ProcessError> {
     let num_threads = 8;
 
     reader1.process_parallel_paired(reader2, processor, num_threads)?;
+    Ok(())
+}
+```
+
+### Interleaved Processing
+
+```rust
+use std::fs::File;
+use paraseq::{
+    fastq,
+    fastx::Record,
+    parallel::{InterleavedParallelProcessor, InterleavedParallelReader, ProcessError},
+};
+
+#[derive(Clone, Default)]
+struct MyInterleavedProcessor {
+    // Your processing state here
+}
+
+impl InterleavedParallelProcessor for MyInterleavedProcessor {
+    fn process_interleaved_pair<R: Record>(&mut self, r1: R, r2: R) -> Result<(), ProcessError> {
+        // Process interleaved paired records in parallel
+        Ok(())
+    }
+}
+
+fn main() -> Result<(), ProcessError> {
+    let file = File::open("./data/interleaved.fastq")?;
+
+    let reader = fastq::Reader::new(file);
+    let processor = MyInterleavedProcessor::default();
+    let num_threads = 8;
+
+    reader.process_parallel_interleaved(processor, num_threads)?;
     Ok(())
 }
 ```
