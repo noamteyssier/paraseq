@@ -48,6 +48,9 @@ impl<R: io::Read> Reader<R> {
         // Copy incoming bytes to the beginning of the overflow buffer
         self.overflow[..num_incoming].copy_from_slice(buffer_slice);
 
+        // Truncate the overflow buffer at the end of expected bytes (handles cases where unexpected null bytes are introduced)
+        self.overflow.truncate(required_space);
+
         // Clear the record set
         rset.clear();
     }
