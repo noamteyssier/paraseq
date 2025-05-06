@@ -57,6 +57,8 @@ fn main() -> Result<(), paraseq::fastq::Error> {
 
 To distribute processing across multiple threads you can implement the `ParallelProcessor` trait on your arbitrary struct.
 
+For an example of a single-end parallel processor see the [parallel example](./examples/parallel.rs).
+
 ```rust
 use std::fs::File;
 use paraseq::{
@@ -92,6 +94,8 @@ fn main() -> Result<(), ProcessError> {
 ### Paired-End Processing
 
 Paired end processing is as simple as single-end processing, but involves implementing the `PairedParallelProcessor` trait on your struct.
+
+For an example of paired parallel processing see the [paired example](./examples/paired_parallel.rs).
 
 ```rust
 use std::fs::File;
@@ -130,6 +134,8 @@ fn main() -> Result<(), ProcessError> {
 ### Interleaved Processing
 
 Interleaved processing is also supported by implementing the `InterleavedParallelProcessor` trait on your struct.
+
+For an example of interleaved parallel processing see the [interleaved example](./examples/interleaved.rs).
 
 ```rust
 use std::fs::File;
