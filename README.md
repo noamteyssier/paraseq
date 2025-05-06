@@ -11,7 +11,9 @@ It adaptively manages buffer sizes based on observed record sizes, estimating th
 `paraseq` is most efficient in cases where the variance in record sizes is low as it can accurately minimize the number of copies between buffers.
 
 It matches performance of non-record-set parsers (like [`seq_io`](https://docs.rs/seq_io) and [`needletail`](https://docs.rs/needletail)), but can get higher-throughput in record-set contexts (i.e. multi-threaded contexts) by skipping a full copy of the input.
-See [benchmarks](https://github.com/noamteyssier/paraseq_benchmark) for more details.
+
+![[https://github.com/noamteyssier/paraseq_benchmark/raw/main/notebooks/throughput.svg]]
+See [benchmarking repo](https://github.com/noamteyssier/paraseq_benchmark) for benchmarking implementation.
 
 If you're interested in reading more about it, I wrote a small [blog post](https://noamteyssier.github.io/2025-02-03/) discussing its design and motivation.
 
