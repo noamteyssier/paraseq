@@ -2,46 +2,34 @@
 
 A high-performance Rust library for parallel processing of FASTA/FASTQ sequence files, optimized for modern hardware and large datasets.
 
-## Features
+## Summary
 
-- **Efficient Record Buffering**: Uses RecordSets as the primary unit of buffering, with each set managing its own memory and dynamically adapting to record sizes
-- **Zero-Copy Records**: Records are reference-based and avoid unnecessary allocations.
-- **Minimal-Copy Processing**: Minimizes copies between buffers by accurately estimating required space
-- **Parallel Processing**: Built-in support for both single-file, paired-end, and interleaved parallel processing
-- **Adaptive Buffer Management**: Automatically adjusts buffer sizes based on observed record sizes
-- **SIMD-Accelerated Parsing**: Uses `memchr` for optimized newline scanning
-- **Error Handling**: Comprehensive error types for robust error handling and recovery
-- **Flexible Processing**: Supports both FASTA and FASTQ formats with the same interface
-- **Thread Safety**: Thread-safe design for parallel processing with minimal synchronization
+`paraseq` is built specifically for processing paired-end FASTA/FASTQ sequences in a parallel manner.
+It uses `RecordSets` as the primary unit of buffering, with each set _directly reading_ a fixed number of records from the input stream.
+To handle incomplete records it uses the shared `Reader` as an overflow buffer.
+It adaptively manages buffer sizes based on observed record sizes, estimating the required space for the number of records in the set and minimizing the number of copies between buffers.
+`paraseq` is most efficient in cases where the variance in record sizes is low as it can accurately minimize the number of copies between buffers.
 
-## Design
+It matches performance of non-record-set parsers (like [`seq_io`](https://docs.rs/seq_io) and [`needletail`](https://docs.rs/needletail)), but can get higher-throughput in record-set contexts (i.e. multi-threaded contexts) by skipping a full copy of the input.
 
-paraseq takes a unique approach to sequence file parsing:
+![throughput](https://github.com/noamteyssier/paraseq_benchmark/raw/main/notebooks/throughput.svg)
+See [benchmarking repo](https://github.com/noamteyssier/paraseq_benchmark) for benchmarking implementation.
 
-1. **RecordSet-Centric Design**: Unlike traditional parsers that work on individual records, paraseq operates on sets of records. Each RecordSet:
-
-- Maintains its own buffer
-- First fills from overflow bytes (incomplete records from previous reads)
-- Dynamically expands to accommodate its target capacity
-- Uses runtime statistics to optimize buffer sizes
-
-2. **Optimized Memory Management**:
-
-- Tracks average record sizes to predict optimal buffer allocations
-- Minimizes copies between buffers by accurately estimating required space
-- Uses a smart overflow system for handling records that span buffer boundaries
-
-3. **Parallel Processing Architecture**:
-
-- Double-buffering design for optimal throughput
-- Lock-free communication between reader and worker threads
-- Support for both single-end and paired-end processing
+If you're interested in reading more about it, I wrote a small [blog post](https://noamteyssier.github.io/2025-02-03/) discussing its design and motivation.
 
 ## Usage
 
-Check out the `examples` directory for more detailed examples or the [API documentation](https://docs.rs/paraseq) for more information.
+The benefit of using `paraseq` is that it makes it easy to distribute paired-end records to per-record and per-batch processing functions.
+
+### Code Examples
+
+Check out the [`examples`](https://github.com/noamteyssier/paraseq/tree/main/examples) directory for code examples or the [API documentation](https://docs.rs/paraseq) for more information.
+
+Feel free to also explore [seqpls](https://github.com/noamteyssier/seqpls) a parallel paired-end FASTA/FASTQ sequence grepper to see how `paraseq` can be used in a non-toy example.
 
 ### Basic Usage
+
+This is a simple example using `paraseq` in a single-threaded context.
 
 ```rust
 use std::fs::File;
@@ -67,12 +55,16 @@ fn main() -> Result<(), paraseq::fastq::Error> {
 
 ### Parallel Processing
 
+To distribute processing across multiple threads you can implement the `ParallelProcessor` trait on your arbitrary struct.
+
+For an example of a single-end parallel processor see the [parallel example](https://github.com/noamteyssier/paraseq/blob/main/examples/parallel.rs).
+
 ```rust
 use std::fs::File;
 use paraseq::{
-fastq,
-fastx::Record,
-parallel::{ParallelProcessor, ParallelReader, ProcessError},
+    fastq,
+    fastx::Record,
+    parallel::{ParallelProcessor, ParallelReader, ProcessError},
 };
 
 #[derive(Clone, Default)]
@@ -100,6 +92,10 @@ fn main() -> Result<(), ProcessError> {
 ```
 
 ### Paired-End Processing
+
+Paired end processing is as simple as single-end processing, but involves implementing the `PairedParallelProcessor` trait on your struct.
+
+For an example of paired parallel processing see the [paired example](https://github.com/noamteyssier/paraseq/blob/main/examples/paired_parallel.rs).
 
 ```rust
 use std::fs::File;
@@ -137,6 +133,10 @@ fn main() -> Result<(), ProcessError> {
 
 ### Interleaved Processing
 
+Interleaved processing is also supported by implementing the `InterleavedParallelProcessor` trait on your struct.
+
+For an example of interleaved parallel processing see the [interleaved example](https://github.com/noamteyssier/paraseq/blob/main/examples/interleaved.rs).
+
 ```rust
 use std::fs::File;
 use paraseq::{
@@ -171,18 +171,11 @@ fn main() -> Result<(), ProcessError> {
 
 ## Limitations
 
-- **Record Size Variance**: This library is optimized for sequence files where records have similar sizes. It may not perform well with files that have large discrepancies in record sizes, as the buffer size predictions become less accurate.
-- **Multiline FASTA**: The library does not support multiline FASTA format. All sequences must be on a single line.
-- **Memory Usage**: Since each RecordSet maintains its own buffer, memory usage scales with the number of threads and record capacity.
+1. In cases where records have high variance in size, the buffer size predictions will become inaccurate and the shared `Reader` overflow buffer will incur more copy operations. This may lead to suboptimal performance.
 
-## Performance Considerations
+2. This library currently does not support multiline FASTA.
 
-- **Buffer Sizes**: Default RecordSet buffer is 256KB, which works well for most use cases. Adjust based on your specific needs.
-- **Record Capacity**: Choose RecordSet capacity based on your processing patterns. Higher capacities reduce system calls but increase memory usage.
-- **Thread Count**: For optimal performance, use thread count equal to or slightly less than available CPU cores.
-- **Memory Usage**: Memory usage scales with thread count × record capacity × average record size.
-
-For optimal performance, the project uses native CPU optimizations. You can customize this in `.cargo/config.toml`.
+3. Each `RecordSet` maintains its own buffer, so memory usage practically scales with the number of threads and record capacity. This shouldn't be a concern unless you're running this on a system with very limited memory.
 
 ## License
 
@@ -200,10 +193,6 @@ This work is inspired by the following projects:
 - [fastq](https://github.com/aseyboldt/fastq-rs)
 
 This project aims to be directed more specifically at ergonomically processing of paired records in parallel and is optimized mainly for FASTQ files.
-It can be faster than seq_io for some use cases, but it is not as feature-rich or rigorously tested, and it does not support multi-line FASTA files.
+It can be faster than `seq_io` for some use cases, but it is not as feature-rich or rigorously tested, and it does not support multi-line FASTA files.
 
-If the libraries assumptions do not fit your use case, you may want to consider using seq_io or fastq instead.
-
-## Benchmarks
-
-For performance benchmarks, see the following repository: [paraseq-benchmarks](https://github.com/noamteyssier/paraseq_benchmark).
+If the libraries assumptions do not fit your use case, you may want to consider using `seq_io` or `fastq` instead.
