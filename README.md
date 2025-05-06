@@ -17,7 +17,11 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 
 The benefit of using `paraseq` is that it makes it easy to distribute paired-end records to per-record and per-batch processing functions.
 
-Check out the `examples` directory for more detailed examples or the [API documentation](https://docs.rs/paraseq) for more information.
+### Code Examples
+
+Check out the [`examples`](https://github.com/noamteyssier/paraseq/tree/main/examples) directory for code examples or the [API documentation](https://docs.rs/paraseq) for more information.
+
+Feel free to also explore [seqpls](https://github.com/noamteyssier/seqpls) a parallel paired-end FASTA/FASTQ sequence grepper to see how `paraseq` can be used in a non-toy example.
 
 ### Basic Usage
 
