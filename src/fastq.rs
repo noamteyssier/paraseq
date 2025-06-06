@@ -327,6 +327,10 @@ impl Record for RefRecord<'_> {
         std::borrow::Cow::Borrowed(self.seq())
     }
 
+    fn seq_raw(&self) -> &[u8] {
+        self.seq()
+    }
+
     fn qual(&self) -> Option<&[u8]> {
         Some(self.qual())
     }

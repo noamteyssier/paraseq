@@ -207,7 +207,7 @@ impl RecordSet {
         } else {
             0
         };
-        
+
         let records_to_process = available_complete.min(self.capacity);
 
         if records_to_process > 0 {
@@ -318,25 +318,35 @@ impl<'a> RefRecord<'a> {
     /// Access the sequence bytes (handling multiline sequences)
     #[inline]
     pub fn seq(&self) -> Cow<[u8]> {
-        let seq_region = &self.buffer[self.positions.seq_start..self.positions.end];
-        
-        // Count newlines in the sequence region
-        let newline_count = memchr::memchr_iter(b'\n', seq_region).count();
-        
-        if newline_count == 0 {
+        let seq_region = self.seq_raw();
+
+        // // Count newlines in the sequence region
+        // let newline_count = memchr::memchr_iter(b'\n', seq_region).count();
+        let newlines = memchr::memchr_iter(b'\n', seq_region).collect::<Vec<_>>();
+
+        if newlines.len() == 0 {
             // No newlines - can borrow directly
             Cow::Borrowed(seq_region)
-        } else if newline_count == 1 && seq_region.ends_with(b"\n") {
+        } else if newlines.len() == 1 && seq_region.ends_with(b"\n") {
             // Single line with only trailing newline - can borrow without the newline
             Cow::Borrowed(&seq_region[..seq_region.len() - 1])
         } else {
             // Multiline sequence - need to filter out all newlines
-            let filtered: Vec<u8> = seq_region.iter()
-                .filter(|&&b| b != b'\n')
-                .copied()
-                .collect();
+            let mut filtered = Vec::with_capacity(seq_region.len() - newlines.len());
+            let mut start = 0;
+            for &end in &newlines {
+                filtered.extend_from_slice(&seq_region[start..end]);
+                start = end + 1;
+            }
+            if start < seq_region.len() {
+                filtered.extend_from_slice(&seq_region[start..]);
+            }
             Cow::Owned(filtered)
         }
+    }
+
+    fn seq_raw(&self) -> &[u8] {
+        &self.buffer[self.positions.seq_start..self.positions.end]
     }
 
     /// Performs the actual buffer access
@@ -356,6 +366,10 @@ impl Record for RefRecord<'_> {
 
     fn seq(&self) -> Cow<[u8]> {
         self.seq()
+    }
+
+    fn seq_raw(&self) -> &[u8] {
+        self.seq_raw()
     }
 
     fn qual(&self) -> Option<&[u8]> {
@@ -450,7 +464,7 @@ mod tests {
 
         assert!(record_set.fill(&mut reader).unwrap());
         let record = record_set.iter().next().unwrap().unwrap();
-        
+
         // For single-line sequences, we should get borrowed data
         let seq = record.seq();
         match seq {
@@ -470,7 +484,7 @@ mod tests {
 
         assert!(record_set.fill(&mut reader).unwrap());
         let record = record_set.iter().next().unwrap().unwrap();
-        
+
         // For multiline sequences, we should get owned data
         let seq = record.seq();
         match seq {
@@ -525,10 +539,10 @@ mod tests {
         assert_eq!(records.len(), 3);
         assert_eq!(records[0].id_str(), "single");
         assert_eq!(records[0].seq_str(), "ACTG");
-        
+
         assert_eq!(records[1].id_str(), "multiline");
         assert_eq!(records[1].seq_str(), "TGCAGGCCAAAA");
-        
+
         assert_eq!(records[2].id_str(), "another_single");
         assert_eq!(records[2].seq_str(), "TTTT");
     }
