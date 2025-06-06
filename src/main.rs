@@ -13,8 +13,8 @@ fn run_paraseq_fastq<R: Read>(rdr: R) -> Result<(), paraseq::fastq::Error> {
             num_nucleotides += record.seq().len();
         }
     }
-    eprintln!("num_records: {}", num_records);
-    eprintln!("num_nucleotides: {}", num_nucleotides);
+    eprintln!("num_records: {num_records}");
+    eprintln!("num_nucleotides: {num_nucleotides}");
     Ok(())
 }
 
@@ -31,8 +31,8 @@ fn run_paraseq_fasta<R: Read>(rdr: R) -> Result<(), paraseq::fasta::Error> {
             num_nucleotides += record.seq().len();
         }
     }
-    eprintln!("num_records: {}", num_records);
-    eprintln!("num_nucleotides: {}", num_nucleotides);
+    eprintln!("num_records: {num_records}");
+    eprintln!("num_nucleotides: {num_nucleotides}");
     Ok(())
 }
 
@@ -42,13 +42,13 @@ fn main() {
 
     if path.ends_with(".fasta") {
         match run_paraseq_fasta(file) {
-            Ok(_) => (),
-            Err(e) => eprintln!("Error processing fasta: {}", e),
+            Ok(()) => (),
+            Err(e) => eprintln!("Error processing fasta: {e}"),
         }
     } else if path.ends_with(".fastq") {
         match run_paraseq_fastq(file) {
-            Ok(_) => (),
-            Err(e) => eprintln!("Error processing fastq: {}", e),
+            Ok(()) => (),
+            Err(e) => eprintln!("Error processing fastq: {e}"),
         }
     } else {
         eprintln!("Unknown file format");

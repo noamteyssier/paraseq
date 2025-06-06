@@ -80,6 +80,7 @@ impl Default for RecordSet {
 }
 
 impl RecordSet {
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             buffer: Vec::with_capacity(256 * 1024), // 256KB default
@@ -223,8 +224,7 @@ impl RecordSet {
 
                 // Find the end of the header line (first newline after '>')
                 let seq_start = memchr::memchr(b'\n', &self.buffer[record_start..record_end])
-                    .map(|pos| record_start + pos + 1)
-                    .unwrap_or(record_end);
+                    .map_or(record_end, |pos| record_start + pos + 1);
 
                 self.positions.push(Positions {
                     start: record_start,
@@ -308,6 +308,7 @@ impl<'a> RefRecord<'a> {
 
     /// Access the ID bytes
     #[inline]
+    #[must_use]
     pub fn id(&self) -> &[u8] {
         self.access_buffer(
             self.positions.start + 1, // Skip '>'
@@ -317,6 +318,7 @@ impl<'a> RefRecord<'a> {
 
     /// Access the sequence bytes (handling multiline sequences)
     #[inline]
+    #[must_use]
     pub fn seq(&self) -> Cow<[u8]> {
         let seq_region = self.seq_raw();
 
@@ -396,7 +398,7 @@ mod tests {
 
     // Helper function to create a valid FASTA record
     fn create_test_record(id: &str, seq: &str) -> String {
-        format!(">{}\n{}\n", id, seq)
+        format!(">{id}\n{seq}\n")
     }
 
     #[test]

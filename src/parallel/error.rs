@@ -58,7 +58,7 @@ impl fmt::Display for RecordPair {
     }
 }
 
-/// Trait for converting arbitrary errors into ProcessError
+/// Trait for converting arbitrary errors into `ProcessError`
 pub trait IntoProcessError {
     fn into_process_error(self) -> ProcessError;
 }
