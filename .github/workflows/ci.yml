@@ -41,17 +41,17 @@ jobs:
       - name: Build examples
         run: cargo build --release --examples
       - name: Test naive example with FASTQ
-        run: cargo run --release --example naive -- data/example.fastq
+        run: cargo run --release --example naive -- data/sample.fastq
       - name: Test naive example with FASTA
-        run: cargo run --release --example naive -- data/example.fasta
+        run: cargo run --release --example naive -- data/sample.fasta
       - name: Test parallel example with FASTQ (1 thread)
-        run: cargo run --release --example parallel -- data/example.fastq 1
+        run: cargo run --release --example parallel -- data/sample.fastq 1
       - name: Test parallel example with FASTQ (2 threads)
-        run: cargo run --release --example parallel -- data/example.fastq 2
+        run: cargo run --release --example parallel -- data/sample.fastq 2
       - name: Test parallel example with FASTA (1 thread)
-        run: cargo run --release --example parallel -- data/example.fasta 1
+        run: cargo run --release --example parallel -- data/sample.fasta 1
       - name: Test parallel example with FASTA (2 threads)
-        run: cargo run --release --example parallel -- data/example.fasta 2
+        run: cargo run --release --example parallel -- data/sample.fasta 2
       - name: Test interleaved example
         run: cargo run --release --example interleaved -- data/interleaved.fastq
       - name: Test multiline FASTA example
