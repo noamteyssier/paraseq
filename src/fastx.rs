@@ -1,6 +1,8 @@
+use std::borrow::Cow;
+
 pub trait Record {
     fn id(&self) -> &[u8];
-    fn seq(&self) -> &[u8];
+    fn seq(&self) -> Cow<[u8]>;
     fn qual(&self) -> Option<&[u8]>;
 
     /// Convert ID to string reference (UTF-8)
@@ -11,12 +13,15 @@ pub trait Record {
         std::str::from_utf8(self.id()).unwrap()
     }
 
-    /// Convert sequence to string reference (UTF-8)
+    /// Convert sequence to string (UTF-8)
     ///
     /// # Safety
     /// Will panic if sequence is not valid UTF-8
-    fn seq_str(&self) -> &str {
-        std::str::from_utf8(self.seq()).unwrap()
+    fn seq_str(&self) -> String {
+        match self.seq() {
+            Cow::Borrowed(bytes) => std::str::from_utf8(bytes).unwrap().to_string(),
+            Cow::Owned(bytes) => String::from_utf8(bytes).unwrap(),
+        }
     }
 
     /// Convert quality to string reference (UTF-8)
