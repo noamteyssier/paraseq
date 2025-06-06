@@ -173,7 +173,7 @@ fn main() -> Result<(), ProcessError> {
 
 1. In cases where records have high variance in size, the buffer size predictions will become inaccurate and the shared `Reader` overflow buffer will incur more copy operations. This may lead to suboptimal performance.
 
-2. This library currently does not support multiline FASTA.
+2. ~~This library currently does not support multiline FASTA.~~ **Multiline FASTA is now supported!** The library automatically handles both single-line and multiline FASTA sequences, using zero-copy borrowing for single-line sequences and efficient concatenation for multiline sequences.
 
 3. Each `RecordSet` maintains its own buffer, so memory usage practically scales with the number of threads and record capacity. This shouldn't be a concern unless you're running this on a system with very limited memory.
 
@@ -193,6 +193,6 @@ This work is inspired by the following projects:
 - [fastq](https://github.com/aseyboldt/fastq-rs)
 
 This project aims to be directed more specifically at ergonomically processing of paired records in parallel and is optimized mainly for FASTQ files.
-It can be faster than `seq_io` for some use cases, but it is not as feature-rich or rigorously tested, and it does not support multi-line FASTA files.
+It can be faster than `seq_io` for some use cases, but it is not as feature-rich or rigorously tested. However, it now supports both single-line and multi-line FASTA files with optimized performance.
 
 If the libraries assumptions do not fit your use case, you may want to consider using `seq_io` or `fastq` instead.
