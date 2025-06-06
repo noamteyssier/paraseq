@@ -113,10 +113,10 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Test reloading parallel example with FASTQ (1 thread)
-        run: cargo run --release --example reloading-parallel -- data/sample.fastq 1
+        run: cargo run --release --example reloading_parallel -- data/sample.fastq 1
       - name: Test reloading parallel example with FASTQ (2 threads)
-        run: cargo run --release --example reloading-parallel -- data/sample.fastq 2
+        run: cargo run --release --example reloading_parallel -- data/sample.fastq 2
       - name: Test reloading parallel example with FASTA (1 thread)
-        run: cargo run --release --example reloading-parallel -- data/sample.fasta 1
+        run: cargo run --release --example reloading_parallel -- data/sample.fasta 1
       - name: Test reloading parallel example with FASTA (2 threads)
-        run: cargo run --release --example reloading-parallel -- data/sample.fasta 2
+        run: cargo run --release --example reloading_parallel -- data/sample.fasta 2
