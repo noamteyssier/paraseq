@@ -1,6 +1,6 @@
-use std::fs::File;
 use paraseq::fasta::{Reader, RecordSet};
 use paraseq::fastx::Record;
+use std::fs::File;
 
 fn main() -> Result<(), paraseq::fasta::Error> {
     println!("Demonstrating multiline FASTA parsing with paraseq");
@@ -20,29 +20,29 @@ fn main() -> Result<(), paraseq::fasta::Error> {
             record_count += 1;
 
             println!("Record {}: {}", record_count, record.id_str());
-            
+
             // Get the sequence using Cow - this will be borrowed for single-line
             // sequences and owned for multiline sequences that need newline filtering
             let sequence = record.seq();
-            
+
             println!("  Sequence length: {} bp", sequence.len());
-            
+
             // Show first 50 characters of sequence
             let seq_str = record.seq_str();
             let preview = if seq_str.len() > 50 {
                 format!("{}...", &seq_str[..50])
             } else {
-                seq_str.clone()
+                seq_str.to_string()
             };
             println!("  Sequence preview: {}", preview);
-            
+
             // Demonstrate that multiline sequences are properly concatenated
             if sequence.contains(&b'\n') {
                 println!("  ERROR: Sequence still contains newlines!");
             } else {
                 println!("  ✓ Sequence properly processed (no newlines)");
             }
-            
+
             println!();
         }
     }
