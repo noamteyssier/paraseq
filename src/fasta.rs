@@ -324,7 +324,7 @@ impl<'a> RefRecord<'a> {
         // let newline_count = memchr::memchr_iter(b'\n', seq_region).count();
         let newlines = memchr::memchr_iter(b'\n', seq_region).collect::<Vec<_>>();
 
-        if newlines.len() == 0 {
+        if newlines.is_empty() {
             // No newlines - can borrow directly
             Cow::Borrowed(seq_region)
         } else if newlines.len() == 1 && seq_region.ends_with(b"\n") {
