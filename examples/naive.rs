@@ -1,4 +1,5 @@
-use std::{fs::File, io::Read};
+use std::fs::File;
+use std::io::Read;
 
 use anyhow::Result;
 use paraseq::fastq;
@@ -16,7 +17,7 @@ fn naive_fastq<R: Read>(rdr: R) -> Result<()> {
             num_records += 1;
         }
     }
-    eprintln!("Number of records: {}", num_records);
+    eprintln!("Number of records: {num_records}");
 
     Ok(())
 }
@@ -34,7 +35,7 @@ fn naive_fasta<R: Read>(rdr: R) -> Result<()> {
             num_records += 1;
         }
     }
-    eprintln!("Number of records: {}", num_records);
+    eprintln!("Number of records: {num_records}");
 
     Ok(())
 }

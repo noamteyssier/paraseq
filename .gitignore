@@ -3,3 +3,6 @@ Cargo.lock
 profile.json
 **fastq
 **fasta
+**bq
+**vbq
+**vqi

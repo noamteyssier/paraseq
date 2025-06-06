@@ -22,9 +22,11 @@ pub struct SeqSum {
     pub global_num_records: Arc<Mutex<u64>>,
 }
 impl SeqSum {
+    #[must_use]
     pub fn get_num_records(&self) -> u64 {
         *self.global_num_records.lock()
     }
+    #[must_use]
     pub fn get_byte_sum(&self) -> u64 {
         *self.global_byte_sum.lock()
     }
@@ -33,7 +35,10 @@ impl ParallelProcessor for SeqSum {
     fn process_record<Rf: Record>(&mut self, record: Rf) -> Result<(), ProcessError> {
         for _ in 0..100 {
             // Simulate some work
-            record.seq().iter().for_each(|b| self.byte_sum += *b as u64);
+            record
+                .seq()
+                .iter()
+                .for_each(|b| self.byte_sum += u64::from(*b));
         }
         self.num_records += 1;
         Ok(())
@@ -68,7 +73,7 @@ fn main() -> Result<(), ProcessError> {
         let reader = fasta::Reader::new(file);
         reader.process_parallel(processor.clone(), num_threads)?;
     } else {
-        panic!("Unknown file format {}", path);
+        panic!("Unknown file format {path}");
     }
 
     println!("num_records: {}", processor.get_num_records());

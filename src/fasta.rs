@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io;
 
 use crate::fastx::Record;
@@ -60,9 +61,9 @@ impl<R: io::Read> Reader<R> {
 pub struct RecordSet {
     /// Main buffer for records
     buffer: Vec<u8>,
-    /// Store newlines in buffer
-    newlines: Vec<usize>,
-    /// Track the last byte position we've searched for newlines
+    /// Store positions of '>' characters (record starts)
+    record_starts: Vec<usize>,
+    /// Track the last byte position we've searched for record starts
     last_searched_pos: usize,
     /// Position tracking for complete records
     positions: Vec<Positions>,
@@ -79,10 +80,11 @@ impl Default for RecordSet {
 }
 
 impl RecordSet {
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             buffer: Vec::with_capacity(256 * 1024), // 256KB default
-            newlines: Vec::new(),
+            record_starts: Vec::new(),
             last_searched_pos: 0,
             positions: Vec::with_capacity(capacity),
             capacity,
@@ -92,17 +94,22 @@ impl RecordSet {
 
     pub fn clear(&mut self) {
         self.buffer.clear();
-        self.newlines.clear();
+        self.record_starts.clear();
         self.positions.clear();
         self.last_searched_pos = 0;
     }
 
-    /// Find all newlines currently in the buffer starting from the last searched position
+    /// Find all record starts ('>' characters) currently in the buffer starting from the last searched position
     /// and ending at the effective end of the buffer
-    fn find_newlines(&mut self, current_pos: usize) {
+    /// Only considers '>' characters that are at the beginning of lines
+    fn find_record_starts(&mut self, current_pos: usize) {
         let search_buffer = &self.buffer[self.last_searched_pos..current_pos];
-        memchr::memchr_iter(b'\n', search_buffer).for_each(|i| {
-            self.newlines.push(i + self.last_searched_pos + 1);
+        memchr::memchr_iter(b'>', search_buffer).for_each(|i| {
+            let abs_pos = i + self.last_searched_pos;
+            // Check if this '>' is at the start of a line (position 0 or after newline)
+            if abs_pos == 0 || self.buffer[abs_pos - 1] == b'\n' {
+                self.record_starts.push(abs_pos);
+            }
         });
         self.last_searched_pos = current_pos;
     }
@@ -125,12 +132,19 @@ impl RecordSet {
             self.buffer.extend_from_slice(&reader.overflow);
             reader.overflow.clear();
         }
-        self.find_newlines(self.buffer.len()); // Find newlines in overflow
+        self.find_record_starts(self.buffer.len()); // Find record starts in overflow
 
         // Determine the number of putative complete records in the buffer
-        let initial_complete_records = self.newlines.len() / 2; // Changed from 4 to 2 for FASTA
+        // A complete record needs at least 2 record starts (current + next) or 1 start at EOF
+        let initial_complete_records = if self.record_starts.len() > 1 {
+            self.record_starts.len() - 1
+        } else if self.record_starts.len() == 1 && reader.eof {
+            1
+        } else {
+            0
+        };
 
-        // If we already have enough records from overflow, don't read more
+        // If we already have enough records from overflow, process them
         if initial_complete_records >= self.capacity {
             return self.process_records(reader);
         }
@@ -146,11 +160,12 @@ impl RecordSet {
         let mut current_pos = self.buffer.len();
         self.buffer.resize(current_pos + target_read_size, 0);
 
-        // Calculate the number of newlines we need to have in the buffer
-        let required_newlines = self.capacity * 2; // Changed from 4 to 2 for FASTA
+        // Calculate the number of record starts we need to have in the buffer
+        // We need capacity + 1 starts to have capacity complete records
+        let required_record_starts = self.capacity + 1;
 
-        // Read loop
-        while self.newlines.len() < required_newlines && !reader.eof {
+        // Read loop - continue until we have enough complete records or reach EOF
+        while self.record_starts.len() < required_record_starts && !reader.eof {
             let remaining_space = self.buffer.len() - current_pos;
 
             // In case we run out of space, resize the buffer
@@ -166,7 +181,7 @@ impl RecordSet {
                 }
                 Ok(n) => {
                     current_pos += n;
-                    self.find_newlines(current_pos);
+                    self.find_record_starts(current_pos);
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e.into()),
@@ -182,36 +197,62 @@ impl RecordSet {
 
     // Split out record processing to separate function
     fn process_records<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
-        let available_complete = self.newlines.len() / 2; // Changed from 4 to 2 for FASTA
+        // Calculate how many complete records we can process
+        // A record is complete if there's another record start after it, or if we're at EOF
+        let available_complete = if reader.eof && !self.record_starts.is_empty() {
+            // At EOF, all records with starts are complete
+            self.record_starts.len()
+        } else if self.record_starts.len() > 1 {
+            // Not at EOF, only records with a following start are complete
+            self.record_starts.len() - 1
+        } else {
+            0
+        };
+
         let records_to_process = available_complete.min(self.capacity);
 
         if records_to_process > 0 {
-            let last_complete_newline = self.newlines[2 * records_to_process - 1]; // Changed from 4 to 2
+            // Build position entries for each complete record
+            for i in 0..records_to_process {
+                let record_start = self.record_starts[i];
+                let record_end = if i + 1 < self.record_starts.len() {
+                    self.record_starts[i + 1]
+                } else {
+                    // Last record goes to end of buffer
+                    self.buffer.len()
+                };
 
-            // Build position entries
-            let mut record_start = 0;
-            self.newlines
-                .chunks_exact(2) // Changed from 4 to 2
-                .take(records_to_process)
-                .for_each(|chunk| {
-                    let (seq_start, end) = (chunk[0], chunk[1]); // Only need 2 positions now
+                // Find the end of the header line (first newline after '>')
+                let seq_start = memchr::memchr(b'\n', &self.buffer[record_start..record_end])
+                    .map_or(record_end, |pos| record_start + pos + 1);
 
-                    self.positions.push(Positions {
-                        start: record_start,
-                        seq_start,
-                        end,
-                    });
-                    record_start = end;
+                self.positions.push(Positions {
+                    start: record_start,
+                    seq_start,
+                    end: record_end,
                 });
+            }
 
-            self.update_avg_record_size(last_complete_newline);
+            // Determine where to truncate the buffer
+            let truncate_pos = if records_to_process < self.record_starts.len() {
+                // Keep the start of the next incomplete record
+                self.record_starts[records_to_process]
+            } else {
+                // Processed all records
+                self.buffer.len()
+            };
+
+            self.update_avg_record_size(truncate_pos);
 
             // Move remaining partial data to overflow
-            reader
-                .overflow
-                .extend_from_slice(&self.buffer[last_complete_newline..]);
-            self.buffer.truncate(last_complete_newline);
+            if truncate_pos < self.buffer.len() {
+                reader
+                    .overflow
+                    .extend_from_slice(&self.buffer[truncate_pos..]);
+            }
+            self.buffer.truncate(truncate_pos);
         } else if !self.buffer.is_empty() {
+            // No complete records found, move everything to overflow
             reader.overflow.extend_from_slice(&self.buffer);
             self.buffer.clear();
         }
@@ -267,6 +308,7 @@ impl<'a> RefRecord<'a> {
 
     /// Access the ID bytes
     #[inline]
+    #[must_use]
     pub fn id(&self) -> &[u8] {
         self.access_buffer(
             self.positions.start + 1, // Skip '>'
@@ -274,10 +316,39 @@ impl<'a> RefRecord<'a> {
         )
     }
 
-    /// Access the sequence bytes
+    /// Access the sequence bytes (handling multiline sequences)
     #[inline]
-    pub fn seq(&self) -> &[u8] {
-        self.access_buffer(self.positions.seq_start, self.positions.end)
+    #[must_use]
+    pub fn seq(&self) -> Cow<[u8]> {
+        let seq_region = self.seq_raw();
+
+        // // Count newlines in the sequence region
+        // let newline_count = memchr::memchr_iter(b'\n', seq_region).count();
+        let newlines = memchr::memchr_iter(b'\n', seq_region).collect::<Vec<_>>();
+
+        if newlines.is_empty() {
+            // No newlines - can borrow directly
+            Cow::Borrowed(seq_region)
+        } else if newlines.len() == 1 && seq_region.ends_with(b"\n") {
+            // Single line with only trailing newline - can borrow without the newline
+            Cow::Borrowed(&seq_region[..seq_region.len() - 1])
+        } else {
+            // Multiline sequence - need to filter out all newlines
+            let mut filtered = Vec::with_capacity(seq_region.len() - newlines.len());
+            let mut start = 0;
+            for &end in &newlines {
+                filtered.extend_from_slice(&seq_region[start..end]);
+                start = end + 1;
+            }
+            if start < seq_region.len() {
+                filtered.extend_from_slice(&seq_region[start..]);
+            }
+            Cow::Owned(filtered)
+        }
+    }
+
+    fn seq_raw(&self) -> &[u8] {
+        &self.buffer[self.positions.seq_start..self.positions.end]
     }
 
     /// Performs the actual buffer access
@@ -295,8 +366,12 @@ impl Record for RefRecord<'_> {
         self.id()
     }
 
-    fn seq(&self) -> &[u8] {
+    fn seq(&self) -> Cow<[u8]> {
         self.seq()
+    }
+
+    fn seq_raw(&self) -> &[u8] {
+        self.seq_raw()
     }
 
     fn qual(&self) -> Option<&[u8]> {
@@ -323,7 +398,7 @@ mod tests {
 
     // Helper function to create a valid FASTA record
     fn create_test_record(id: &str, seq: &str) -> String {
-        format!(">{}\n{}\n", id, seq)
+        format!(">{id}\n{seq}\n")
     }
 
     #[test]
@@ -360,15 +435,69 @@ mod tests {
 
     #[test]
     fn test_invalid_header() {
-        let record = format!("X{}\n", create_test_record("test1", "ACTG"));
+        // Test with a record that has no valid '>' at line start
+        let record = "XACTG\nTGCA\n";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        // Should not find any valid records
+        assert!(!record_set.fill(&mut reader).unwrap());
+    }
+
+    #[test]
+    fn test_junk_before_valid_record() {
+        // Test with junk before a valid record
+        let record = format!("X\n{}", create_test_record("test1", "ACTG"));
         let mut reader = Reader::new(Cursor::new(record));
         let mut record_set = RecordSet::new(1);
 
         assert!(record_set.fill(&mut reader).unwrap());
-        assert!(matches!(
-            record_set.iter().next().unwrap().unwrap_err(),
-            Error::InvalidHeader
-        ));
+        let parsed_record = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed_record.id_str(), "test1");
+        assert_eq!(parsed_record.seq_str(), "ACTG");
+    }
+
+    #[test]
+    fn test_performance_single_vs_multiline() {
+        // Test that single-line sequences return borrowed data (Cow::Borrowed)
+        let single_line = create_test_record("single", "ACTG");
+        let mut reader = Reader::new(Cursor::new(single_line));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let record = record_set.iter().next().unwrap().unwrap();
+
+        // For single-line sequences, we should get borrowed data
+        let seq = record.seq();
+        match seq {
+            std::borrow::Cow::Borrowed(_) => {
+                // This is the expected case for single-line sequences
+                assert_eq!(record.seq_str(), "ACTG");
+            }
+            std::borrow::Cow::Owned(_) => {
+                panic!("Single-line sequence should return borrowed data for optimal performance");
+            }
+        }
+
+        // Test that multiline sequences return owned data (Cow::Owned)
+        let multiline = ">multiline\nAC\nTG\n";
+        let mut reader = Reader::new(Cursor::new(multiline));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let record = record_set.iter().next().unwrap().unwrap();
+
+        // For multiline sequences, we should get owned data
+        let seq = record.seq();
+        match seq {
+            std::borrow::Cow::Borrowed(_) => {
+                panic!("Multiline sequence should return owned data after newline filtering");
+            }
+            std::borrow::Cow::Owned(_) => {
+                // This is the expected case for multiline sequences
+                assert_eq!(record.seq_str(), "ACTG");
+            }
+        }
     }
 
     #[test]
@@ -385,5 +514,38 @@ mod tests {
         assert_eq!(parsed_record.seq_str(), "ACTG");
 
         assert!(!record_set.fill(&mut reader).unwrap());
+    }
+
+    #[test]
+    fn test_multiline_fasta() {
+        let multiline_record = ">test_multiline\nACTG\nTGCA\nGGCC\n";
+        let mut reader = Reader::new(Cursor::new(multiline_record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed_record = record_set.iter().next().unwrap().unwrap();
+
+        assert_eq!(parsed_record.id_str(), "test_multiline");
+        assert_eq!(parsed_record.seq_str(), "ACTGTGCAGGCC");
+    }
+
+    #[test]
+    fn test_mixed_single_and_multiline() {
+        let mixed_records = ">single\nACTG\n>multiline\nTGCA\nGGCC\nAAAA\n>another_single\nTTTT\n";
+        let mut reader = Reader::new(Cursor::new(mixed_records));
+        let mut record_set = RecordSet::new(3);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let records: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].id_str(), "single");
+        assert_eq!(records[0].seq_str(), "ACTG");
+
+        assert_eq!(records[1].id_str(), "multiline");
+        assert_eq!(records[1].seq_str(), "TGCAGGCCAAAA");
+
+        assert_eq!(records[2].id_str(), "another_single");
+        assert_eq!(records[2].seq_str(), "TTTT");
     }
 }

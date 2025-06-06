@@ -78,6 +78,7 @@ impl Default for RecordSet {
 }
 
 impl RecordSet {
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             buffer: Vec::with_capacity(256 * 1024), // 256KB default
@@ -283,6 +284,7 @@ impl<'a> RefRecord<'a> {
 
     /// Access the ID bytes
     #[inline]
+    #[must_use]
     pub fn id(&self) -> &[u8] {
         self.access_buffer(
             self.positions.start + 1, // Skip '@'
@@ -292,18 +294,21 @@ impl<'a> RefRecord<'a> {
 
     /// Access the sequence bytes
     #[inline]
+    #[must_use]
     pub fn seq(&self) -> &[u8] {
         self.access_buffer(self.positions.seq_start, self.positions.sep_start)
     }
 
     /// Access the separator bytes
     #[inline]
+    #[must_use]
     pub fn sep(&self) -> &[u8] {
         self.access_buffer(self.positions.sep_start, self.positions.qual_start)
     }
 
     /// Access the quality bytes
     #[inline]
+    #[must_use]
     pub fn qual(&self) -> &[u8] {
         self.access_buffer(self.positions.qual_start, self.positions.end)
     }
@@ -323,7 +328,11 @@ impl Record for RefRecord<'_> {
         self.id()
     }
 
-    fn seq(&self) -> &[u8] {
+    fn seq(&self) -> std::borrow::Cow<[u8]> {
+        std::borrow::Cow::Borrowed(self.seq())
+    }
+
+    fn seq_raw(&self) -> &[u8] {
         self.seq()
     }
 
@@ -357,7 +366,7 @@ mod tests {
 
     // Helper function to create a valid FASTQ record
     fn create_test_record(id: &str, seq: &str, sep: &str, qual: &str) -> String {
-        format!("@{}\n{}\n+{}\n{}\n", id, seq, sep, qual)
+        format!("@{id}\n{seq}\n+{sep}\n{qual}\n")
     }
 
     #[test]
@@ -480,7 +489,7 @@ mod tests {
     #[test]
     fn test_capacity_limit() {
         let records = (0..10)
-            .map(|i| create_test_record(&format!("test{}", i), "ACTG", "", "IIII"))
+            .map(|i| create_test_record(&format!("test{i}"), "ACTG", "", "IIII"))
             .collect::<String>();
 
         let mut reader = Reader::new(Cursor::new(records));

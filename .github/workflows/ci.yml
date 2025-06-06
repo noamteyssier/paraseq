@@ -7,7 +7,7 @@ env:
 
 jobs:
   ci:
-    needs: [build, test]
+    needs: [build, test, integration-tests]
     name: CI
     runs-on: "ubuntu-latest"
     steps:
@@ -32,3 +32,91 @@ jobs:
       - uses: actions/checkout@v3
       - name: Test
         run: cargo test
+
+  integration-tests:
+    needs:
+      [
+        test-interleaved,
+        test-multiline-fasta,
+        test-parallel,
+        test-paired-parallel,
+        test-naive,
+        test-reloading,
+        test-reloading-parallel,
+      ]
+    name: Integration Tests
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Done
+        run: echo "Done"
+
+  test-interleaved:
+    name: Test Interleaved
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test interleaved example
+        run: cargo run --release --example interleaved -- data/interleaved.fastq
+
+  test-multiline-fasta:
+    name: Test Multiline FASTA
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test multiline FASTA example
+        run: cargo run --release --example multiline_fasta -- data/multiline.fasta
+
+  test-parallel:
+    name: Test Parallel
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test parallel example with FASTQ (1 thread)
+        run: cargo run --release --example parallel -- data/sample.fastq 1
+      - name: Test parallel example with FASTQ (2 threads)
+        run: cargo run --release --example parallel -- data/sample.fastq 2
+      - name: Test parallel example with FASTA (1 thread)
+        run: cargo run --release --example parallel -- data/sample.fasta 1
+      - name: Test parallel example with FASTA (2 threads)
+        run: cargo run --release --example parallel -- data/sample.fasta 2
+
+  test-paired-parallel:
+    name: Test Paired Parallel
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test paired parallel example with FASTQ (1 thread)
+        run: cargo run --release --example paired_parallel -- data/r1.fastq data/r2.fastq 1
+      - name: Test paired parallel example with FASTQ (2 threads)
+        run: cargo run --release --example paired_parallel -- data/r1.fastq data/r2.fastq 2
+
+  test-naive:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test naive example with FASTQ
+        run: cargo run --release --example naive -- data/sample.fastq
+      - name: Test naive example with FASTA
+        run: cargo run --release --example naive -- data/sample.fasta
+
+  test-reloading:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test reloading example with FASTQ
+        run: cargo run --release --example reloading -- data/sample.fastq
+      - name: Test reloading example with FASTA
+        run: cargo run --release --example reloading -- data/sample.fasta
+
+  test-reloading-parallel:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test reloading parallel example with FASTQ (1 thread)
+        run: cargo run --release --example reloading_parallel -- data/sample.fastq 1
+      - name: Test reloading parallel example with FASTQ (2 threads)
+        run: cargo run --release --example reloading_parallel -- data/sample.fastq 2
+      - name: Test reloading parallel example with FASTA (1 thread)
+        run: cargo run --release --example reloading_parallel -- data/sample.fasta 1
+      - name: Test reloading parallel example with FASTA (2 threads)
+        run: cargo run --release --example reloading_parallel -- data/sample.fasta 2
