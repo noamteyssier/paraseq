@@ -11,17 +11,17 @@ fn reload_fasta(path: &str, prefill: usize) -> Result<()> {
     // Fill the record set with records from the reader
     if !rset.fill(&mut reader)? {
         bail!("No records in input file")
-    };
+    }
 
     let mut num_prefill = 0;
     for record in rset.iter() {
         let _record = record?;
         num_prefill += 1;
     }
-    eprintln!("num_prefill: {}", num_prefill);
+    eprintln!("num_prefill: {num_prefill}");
 
     // Reload the reader with the record set
-    eprintln!("Reloading reader with {} records", num_prefill);
+    eprintln!("Reloading reader with {num_prefill} records");
     reader.reload(&mut rset);
 
     // Process the records in the record set
@@ -34,7 +34,7 @@ fn reload_fasta(path: &str, prefill: usize) -> Result<()> {
         }
     }
 
-    eprintln!("num_records: {}", num_records);
+    eprintln!("num_records: {num_records}");
     Ok(())
 }
 
@@ -46,17 +46,17 @@ fn reload_fastq(path: &str, prefill: usize) -> Result<()> {
     // Fill the record set with records from the reader
     if !rset.fill(&mut reader)? {
         bail!("No records in input file")
-    };
+    }
 
     let mut num_prefill = 0;
     for record in rset.iter() {
         let _record = record?;
         num_prefill += 1;
     }
-    eprintln!("num_prefill: {}", num_prefill);
+    eprintln!("num_prefill: {num_prefill}");
 
     // Reload the reader with the record set
-    eprintln!("Reloading reader with {} records", num_prefill);
+    eprintln!("Reloading reader with {num_prefill} records");
     reader.reload(&mut rset);
 
     // Process the records in the record set
@@ -69,7 +69,7 @@ fn reload_fastq(path: &str, prefill: usize) -> Result<()> {
         }
     }
 
-    eprintln!("num_records: {}", num_records);
+    eprintln!("num_records: {num_records}");
     Ok(())
 }
 

@@ -22,9 +22,11 @@ pub struct SeqSum {
     pub global_num_pairs: Arc<Mutex<u64>>,
 }
 impl SeqSum {
+    #[must_use]
     pub fn get_num_pairs(&self) -> u64 {
         *self.global_num_pairs.lock()
     }
+    #[must_use]
     pub fn get_byte_sum(&self) -> u64 {
         *self.global_byte_sum.lock()
     }
@@ -40,11 +42,11 @@ impl InterleavedParallelProcessor for SeqSum {
             record1
                 .seq()
                 .iter()
-                .for_each(|b| self.byte_sum += *b as u64);
+                .for_each(|b| self.byte_sum += u64::from(*b));
             record2
                 .seq()
                 .iter()
-                .for_each(|b| self.byte_sum += *b as u64);
+                .for_each(|b| self.byte_sum += u64::from(*b));
         }
         self.num_pairs += 1;
         Ok(())
@@ -79,7 +81,7 @@ fn main() -> Result<(), ProcessError> {
         let reader = fasta::Reader::new(file);
         reader.process_parallel_interleaved(processor.clone(), num_threads)?;
     } else {
-        panic!("Unknown file format {}", path);
+        panic!("Unknown file format {path}");
     }
 
     println!("num_pairs: {}", processor.get_num_pairs());

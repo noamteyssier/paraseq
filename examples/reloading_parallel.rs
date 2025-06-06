@@ -23,9 +23,11 @@ pub struct SeqSum {
     num: Arc<Mutex<u64>>,
 }
 impl SeqSum {
+    #[must_use]
     pub fn get_sum(&self) -> u64 {
         *self.sum.lock()
     }
+    #[must_use]
     pub fn get_num(&self) -> u64 {
         *self.num.lock()
     }
@@ -38,7 +40,7 @@ impl ParallelProcessor for SeqSum {
         record
             .seq()
             .iter()
-            .for_each(|b| self.local_sum += *b as u64);
+            .for_each(|b| self.local_sum += u64::from(*b));
         self.local_num += 1;
         Ok(())
     }
@@ -60,13 +62,13 @@ fn main() -> Result<()> {
 
     if !rset.fill(&mut reader)? {
         bail!("No sequences in input")
-    };
+    }
     let mut num_prefill = 0;
     for record in rset.iter() {
         record?;
         num_prefill += 1;
     }
-    eprintln!("read {} records in prefill", num_prefill);
+    eprintln!("read {num_prefill} records in prefill");
 
     // Reload the reader
     reader.reload(&mut rset);

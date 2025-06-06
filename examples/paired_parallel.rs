@@ -22,9 +22,11 @@ pub struct SeqSum {
     pub global_num_records: Arc<Mutex<u64>>,
 }
 impl SeqSum {
+    #[must_use]
     pub fn get_num_records(&self) -> u64 {
         *self.global_num_records.lock()
     }
+    #[must_use]
     pub fn get_byte_sum(&self) -> u64 {
         *self.global_byte_sum.lock()
     }
@@ -40,11 +42,11 @@ impl PairedParallelProcessor for SeqSum {
             record1
                 .seq()
                 .iter()
-                .for_each(|b| self.byte_sum += *b as u64);
+                .for_each(|b| self.byte_sum += u64::from(*b));
             record2
                 .seq()
                 .iter()
-                .for_each(|b| self.byte_sum += *b as u64);
+                .for_each(|b| self.byte_sum += u64::from(*b));
         }
         self.num_records += 1;
         Ok(())

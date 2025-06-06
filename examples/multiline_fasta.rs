@@ -1,6 +1,7 @@
+use std::fs::File;
+
 use paraseq::fasta::{Reader, RecordSet};
 use paraseq::fastx::Record;
-use std::fs::File;
 
 fn main() -> Result<(), paraseq::fasta::Error> {
     println!("Demonstrating multiline FASTA parsing with paraseq");
@@ -34,7 +35,7 @@ fn main() -> Result<(), paraseq::fasta::Error> {
             } else {
                 seq_str.to_string()
             };
-            println!("  Sequence preview: {}", preview);
+            println!("  Sequence preview: {preview}");
 
             // Demonstrate that multiline sequences are properly concatenated
             if sequence.contains(&b'\n') {
@@ -47,7 +48,7 @@ fn main() -> Result<(), paraseq::fasta::Error> {
         }
     }
 
-    println!("Successfully processed {} FASTA records", record_count);
+    println!("Successfully processed {record_count} FASTA records");
     println!("\nNote: Both single-line and multiline FASTA sequences are supported.");
     println!("Single-line sequences use zero-copy borrowing for optimal performance,");
     println!("while multiline sequences are concatenated as needed.");
