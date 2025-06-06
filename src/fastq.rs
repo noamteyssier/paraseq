@@ -323,8 +323,8 @@ impl Record for RefRecord<'_> {
         self.id()
     }
 
-    fn seq(&self) -> &[u8] {
-        self.seq()
+    fn seq(&self) -> std::borrow::Cow<[u8]> {
+        std::borrow::Cow::Borrowed(self.seq())
     }
 
     fn qual(&self) -> Option<&[u8]> {
