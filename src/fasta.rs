@@ -3,6 +3,8 @@ use std::io;
 
 use crate::fastx::Record;
 
+const DEFAULT_MAX_RECORDS: usize = 1024;
+
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
     reader: R,
@@ -10,6 +12,10 @@ pub struct Reader<R: io::Read> {
     overflow: Vec<u8>,
     /// Flag to indicate end of file
     eof: bool,
+    /// Sets the maximum capcity of records in batches for parallel processing
+    ///
+    /// If not set, the default `RecordSet` capacity is used.
+    batch_size: Option<usize>,
 }
 
 impl<R: io::Read> Reader<R> {
@@ -18,7 +24,27 @@ impl<R: io::Read> Reader<R> {
             overflow: Vec::with_capacity(1024),
             reader,
             eof: false,
+            batch_size: None,
         }
+    }
+    pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
+        if batch_size == 0 {
+            return Err(Error::InvalidBatchSize(batch_size));
+        }
+        let mut reader = Self::new(reader);
+        reader.batch_size = Some(batch_size);
+        Ok(reader)
+    }
+    /// Initialize a new record set with a configured or default batch size
+    pub fn new_record_set(&self) -> RecordSet {
+        if let Some(batch_size) = self.batch_size {
+            RecordSet::new(batch_size)
+        } else {
+            RecordSet::default()
+        }
+    }
+    pub fn batch_size(&self) -> usize {
+        self.batch_size.unwrap_or(DEFAULT_MAX_RECORDS)
     }
     pub fn set_eof(&mut self) {
         self.eof = true;
@@ -389,6 +415,9 @@ pub enum Error {
 
     #[error("Unbounded positions")]
     UnboundedPositions,
+
+    #[error("Invalid batch size, must be greater than 0")]
+    InvalidBatchSize(usize),
 }
 
 #[cfg(test)]
