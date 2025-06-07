@@ -75,10 +75,14 @@ jobs:
         run: cargo run --release --example parallel -- data/sample.fastq 1
       - name: Test parallel example with FASTQ (2 threads)
         run: cargo run --release --example parallel -- data/sample.fastq 2
+      - name: Test parallel example with FASTQ (2 threads) alternative batch size
+        run: cargo run --release --example parallel -- data/sample.fastq 2 48
       - name: Test parallel example with FASTA (1 thread)
         run: cargo run --release --example parallel -- data/sample.fasta 1
       - name: Test parallel example with FASTA (2 threads)
         run: cargo run --release --example parallel -- data/sample.fasta 2
+      - name: Test parallel example with FASTA (2 threads) alternative batch size
+        run: cargo run --release --example parallel -- data/sample.fasta 2 48
 
   test-paired-parallel:
     name: Test Paired Parallel

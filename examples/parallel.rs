@@ -6,6 +6,7 @@ use paraseq::{
     fasta, fastq,
     fastx::Record,
     parallel::{ParallelProcessor, ParallelReader, ProcessError},
+    DEFAULT_MAX_RECORDS,
 };
 use parking_lot::Mutex;
 
@@ -63,14 +64,20 @@ fn main() -> Result<(), ProcessError> {
         .parse::<usize>()
         .unwrap_or(1);
 
+    let batch_size = std::env::args()
+        .nth(3)
+        .unwrap_or("1024".to_string())
+        .parse::<usize>()
+        .unwrap_or(DEFAULT_MAX_RECORDS);
+
     let file = File::open(&path)?;
     let processor = SeqSum::default();
 
     if path.ends_with(".fastq") {
-        let reader = fastq::Reader::new(file);
+        let reader = fastq::Reader::with_batch_size(file, batch_size)?;
         reader.process_parallel(processor.clone(), num_threads)?;
     } else if path.ends_with(".fasta") {
-        let reader = fasta::Reader::new(file);
+        let reader = fasta::Reader::with_batch_size(file, batch_size)?;
         reader.process_parallel(processor.clone(), num_threads)?;
     } else {
         panic!("Unknown file format {path}");

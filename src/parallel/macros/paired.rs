@@ -11,17 +11,6 @@ type PairedRecordSets<T> = Arc<Vec<Mutex<(T, T)>>>;
 /// Type alias for channels used in parallel processing
 type ProcessorChannels = (Sender<Option<usize>>, Receiver<Option<usize>>);
 
-/// Creates a collection of paired record sets for parallel processing
-///
-/// Note: The number of record sets is twice the number of threads
-/// to allow for double buffering. Each set contains two records (R1 and R2)
-fn create_paired_record_sets<T: Default>(num_threads: usize) -> PairedRecordSets<T> {
-    let record_sets = (0..num_threads * 2)
-        .map(|_| Mutex::new((T::default(), T::default())))
-        .collect();
-    Arc::new(record_sets)
-}
-
 /// Creates a pair of channels for communication between reader and worker threads
 fn create_channels(buffer_size: usize) -> ProcessorChannels {
     bounded(buffer_size)
@@ -117,7 +106,11 @@ macro_rules! impl_paired_parallel_reader {
                 if num_threads == 1 {
                     return self.process_sequential_paired(reader2, processor);
                 }
-                let record_sets = create_paired_record_sets::<$record_set>(num_threads);
+                let record_sets = Arc::new(
+                    (0..num_threads * 2)
+                        .map(|_| Mutex::new((self.new_record_set(), reader2.new_record_set())))
+                        .collect::<Vec<_>>(),
+                );
                 let (tx, rx) = create_channels(num_threads * 2);
 
                 thread::scope(|scope| -> Result<()> {

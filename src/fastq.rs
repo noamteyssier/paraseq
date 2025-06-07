@@ -1,6 +1,7 @@
+use std::borrow::Cow;
 use std::io;
 
-use crate::fastx::Record;
+use crate::{fastx::Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -9,6 +10,10 @@ pub struct Reader<R: io::Read> {
     overflow: Vec<u8>,
     /// Flag to indicate end of file
     eof: bool,
+    /// Sets the maximum capcity of records in batches for parallel processing
+    ///
+    /// If not set, the default `RecordSet` capacity is used.
+    batch_size: Option<usize>,
 }
 
 impl<R: io::Read> Reader<R> {
@@ -17,7 +22,27 @@ impl<R: io::Read> Reader<R> {
             overflow: Vec::with_capacity(1024), // Start small, can tune this
             reader,
             eof: false,
+            batch_size: None,
         }
+    }
+    pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
+        if batch_size == 0 {
+            return Err(Error::InvalidBatchSize(batch_size));
+        }
+        let mut reader = Self::new(reader);
+        reader.batch_size = Some(batch_size);
+        Ok(reader)
+    }
+    /// Initialize a new record set with a configured or default batch size
+    pub fn new_record_set(&self) -> RecordSet {
+        if let Some(batch_size) = self.batch_size {
+            RecordSet::new(batch_size)
+        } else {
+            RecordSet::default()
+        }
+    }
+    pub fn batch_size(&self) -> usize {
+        self.batch_size.unwrap_or(DEFAULT_MAX_RECORDS)
     }
     pub fn set_eof(&mut self) {
         self.eof = true;
@@ -25,7 +50,6 @@ impl<R: io::Read> Reader<R> {
     pub fn exhausted(&self) -> bool {
         self.eof && self.overflow.is_empty()
     }
-
     /// Take back all bytes from the record set and prepend them to the overflow buffer
     ///
     /// This is an expensive operation and should be used sparingly.
@@ -73,7 +97,7 @@ pub struct RecordSet {
 }
 impl Default for RecordSet {
     fn default() -> Self {
-        Self::new(1024)
+        Self::new(DEFAULT_MAX_RECORDS)
     }
 }
 
@@ -329,7 +353,7 @@ impl Record for RefRecord<'_> {
     }
 
     fn seq(&self) -> std::borrow::Cow<[u8]> {
-        std::borrow::Cow::Borrowed(self.seq())
+        Cow::Borrowed(self.seq())
     }
 
     fn seq_raw(&self) -> &[u8] {
@@ -357,6 +381,9 @@ pub enum Error {
 
     #[error("Sequence and quality lengths do not match")]
     UnequalLengths,
+
+    #[error("Invalid batch size ({0}), must be greater than zero")]
+    InvalidBatchSize(usize),
 }
 
 #[cfg(test)]
