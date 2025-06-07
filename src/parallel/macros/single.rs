@@ -1,4 +1,3 @@
-// use anyhow::{bail, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 use std::{io, sync::Arc, thread};
@@ -7,17 +6,6 @@ use crate::parallel::{error::Result, ParallelProcessor, ParallelReader, ProcessE
 
 type RecordSets<T> = Arc<Vec<Mutex<T>>>;
 type ProcessorChannels = (Sender<Option<usize>>, Receiver<Option<usize>>);
-
-/// Creates a collection of record sets
-///
-/// Note: The number of record sets is twice the number of threads
-/// to allow for double buffering
-fn create_record_sets<T: Default>(num_threads: usize) -> RecordSets<T> {
-    let record_sets = (0..num_threads * 2)
-        .map(|_| Mutex::new(T::default()))
-        .collect();
-    Arc::new(record_sets)
-}
 
 /// Creates a pair of channels for communication between reader and worker threads
 fn create_channels(buffer_size: usize) -> ProcessorChannels {
@@ -98,7 +86,12 @@ macro_rules! impl_parallel_reader {
                     return self.process_sequential(processor);
                 }
 
-                let record_sets = create_record_sets::<$record_set>(num_threads);
+                let record_sets = Arc::new(
+                    (0..num_threads * 2)
+                        .map(|_| Mutex::new(self.new_record_set()))
+                        .collect::<Vec<_>>(),
+                );
+
                 let (tx, rx) = create_channels(num_threads * 2);
 
                 thread::scope(|scope| -> Result<()> {

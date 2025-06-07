@@ -9,14 +9,6 @@ use crate::parallel::{InterleavedParallelProcessor, InterleavedParallelReader};
 type RecordSets<T> = Arc<Vec<Mutex<T>>>;
 type ProcessorChannels = (Sender<Option<usize>>, Receiver<Option<usize>>);
 
-/// Creates a collection of record sets for interleaved processing
-fn create_record_sets<T: Default>(num_threads: usize) -> RecordSets<T> {
-    let record_sets = (0..num_threads * 2)
-        .map(|_| Mutex::new(T::default()))
-        .collect();
-    Arc::new(record_sets)
-}
-
 /// Creates a pair of channels for communication between reader and worker threads
 fn create_channels(buffer_size: usize) -> ProcessorChannels {
     bounded(buffer_size)
@@ -95,7 +87,11 @@ macro_rules! impl_interleaved_parallel_reader {
                     return self.process_sequential_interleaved(processor);
                 }
 
-                let record_sets = create_record_sets::<$record_set>(num_threads);
+                let record_sets = Arc::new(
+                    (0..num_threads * 2)
+                        .map(|_| Mutex::new(self.new_record_set()))
+                        .collect::<Vec<_>>(),
+                );
                 let (tx, rx) = create_channels(num_threads * 2);
 
                 thread::scope(|scope| -> Result<()> {
