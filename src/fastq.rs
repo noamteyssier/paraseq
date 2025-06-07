@@ -1,8 +1,7 @@
+use std::borrow::Cow;
 use std::io;
 
-use crate::fastx::Record;
-
-const DEFAULT_MAX_RECORDS: usize = 1024;
+use crate::{fastx::Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -354,7 +353,7 @@ impl Record for RefRecord<'_> {
     }
 
     fn seq(&self) -> std::borrow::Cow<[u8]> {
-        std::borrow::Cow::Borrowed(self.seq())
+        Cow::Borrowed(self.seq())
     }
 
     fn seq_raw(&self) -> &[u8] {

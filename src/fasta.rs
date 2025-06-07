@@ -1,9 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::fastx::Record;
-
-const DEFAULT_MAX_RECORDS: usize = 1024;
+use crate::{fastx::Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
