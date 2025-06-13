@@ -38,6 +38,7 @@ jobs:
       [
         test-interleaved,
         test-multiline-fasta,
+        test-read-write,
         test-parallel,
         test-paired-parallel,
         test-naive,
@@ -65,6 +66,26 @@ jobs:
       - uses: actions/checkout@v3
       - name: Test multiline FASTA example
         run: cargo run --release --example multiline_fasta -- data/multiline.fasta
+
+  test-read-write:
+    name: Test Read Write
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: build target
+        run: cargo build --release --example read_write
+      - name: Test read write example (fasta -> fasta)
+        run: ./target/release/examples/read_write data/sample.fasta -f fasta
+      - name: Test read write example (fasta -> fastq)
+        run: ./target/release/examples/read_write data/sample.fasta -f fastq
+      - name: Test read write example (fastq -> fasta)
+        run: ./target/release/examples/read_write data/sample.fastq -f fasta
+      - name: Test read write example (fastq -> fastq)
+        run: ./target/release/examples/read_write data/sample.fastq -f fastq
+      - name: Test read write fasta from stdin
+        run: ./target/release/examples/read_write data/sample.fasta -f fasta | ./target/release/examples/read_write -F fasta
+      - name: Test read write fastq from stdin
+        run: ./target/release/examples/read_write data/sample.fastq -f fastq | ./target/release/examples/read_write -F fastq
 
   test-parallel:
     name: Test Parallel
