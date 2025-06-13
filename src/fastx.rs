@@ -1,4 +1,9 @@
 use std::borrow::Cow;
+use std::io::Write;
+
+pub const DEFAULT_QUALITY_SCORE: u8 = b'?';
+pub const NUM_QUALITY_SCORES: usize = 1024;
+pub const COMPTIME_QUALITY_SCORES: &[u8] = &[DEFAULT_QUALITY_SCORE; NUM_QUALITY_SCORES];
 
 pub trait Record {
     /// Returns the Identifier of the record.
@@ -61,5 +66,43 @@ pub trait Record {
         } else {
             ""
         }
+    }
+
+    /// Writes the record in FASTA format to a Write.
+    fn write_fasta<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(b">")?;
+        writer.write_all(self.id())?;
+        writer.write_all(b"\n")?;
+        writer.write_all(&self.seq())?;
+        writer.write_all(b"\n")?;
+        Ok(())
+    }
+
+    /// Writes the record in FASTQ format to a Write.
+    ///
+    /// If the record does not have quality scores, default scores are used.
+    fn write_fastq<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let seq = self.seq();
+        writer.write_all(b"@")?;
+        writer.write_all(self.id())?;
+        writer.write_all(b"\n")?;
+        writer.write_all(&seq)?;
+        writer.write_all(b"\n+\n")?;
+        if let Some(qual) = self.qual() {
+            writer.write_all(qual)?;
+        } else {
+            if seq.len() > NUM_QUALITY_SCORES {
+                // Write default quality scores in chunks of NUM_QUALITY_SCORES
+                for _ in 0..seq.len() / NUM_QUALITY_SCORES {
+                    writer.write_all(&COMPTIME_QUALITY_SCORES)?;
+                }
+                // Write remainder
+                writer.write_all(&COMPTIME_QUALITY_SCORES[..seq.len() % NUM_QUALITY_SCORES])?;
+            } else {
+                writer.write_all(&COMPTIME_QUALITY_SCORES[..seq.len()])?;
+            }
+        }
+        writer.write_all(b"\n")?;
+        Ok(())
     }
 }
