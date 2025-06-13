@@ -22,4 +22,5 @@ default = ["anyhow"]
 anyhow = ["dep:anyhow"]
 
 [dev-dependencies]
+clap = { version = "4.5.40", features = ["derive"] }
 niffler = "2.7.0"
