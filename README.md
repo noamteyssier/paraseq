@@ -1,6 +1,8 @@
 # paraseq
 
-A high-performance Rust library for parallel processing of FASTA/FASTQ sequence files, optimized for modern hardware and large datasets.
+A high-performance Rust library for parallel processing of FASTA/FASTQ (FASTX) sequence files, optimized for modern hardware and large datasets.
+
+`paraseq` provides a simplified interface for parallel processing of FASTX files that can be invariant to the file format or paired status.
 
 ## Summary
 
@@ -29,7 +31,9 @@ Feel free to also explore [seqpls](https://github.com/noamteyssier/seqpls) a par
 
 ### Basic Usage
 
-This is a simple example using `paraseq` in a single-threaded context.
+This is a simple example using `paraseq` to iterate records in a single-threaded context.
+
+It is not recommended to use `paraseq` in this way - it will be more performant to use the parallel processing interface.
 
 ```rust
 use std::fs::File;
@@ -61,11 +65,8 @@ For an example of a single-end parallel processor see the [parallel example](htt
 
 ```rust
 use std::fs::File;
-use paraseq::{
-    fastq,
-    Record,
-    parallel::{ParallelProcessor, ParallelReader, ProcessError},
-};
+use paraseq::{fastx, ProcessError};
+use paraseq::prelude::*;
 
 #[derive(Clone, Default)]
 struct MyProcessor {
@@ -81,7 +82,7 @@ impl ParallelProcessor for MyProcessor {
 
 fn main() -> Result<(), ProcessError> {
     let file = File::open("./data/sample.fastq")?;
-    let reader = fastq::Reader::new(file);
+    let reader = fastx::Reader::new(file)?;
     let processor = MyProcessor::default();
     let num_threads = 8;
 
@@ -100,9 +101,9 @@ For an example of paired parallel processing see the [paired example](https://gi
 ```rust
 use std::fs::File;
 use paraseq::{
-    fastq,
-    Record,
-    parallel::{PairedParallelProcessor, PairedParallelReader, ProcessError},
+    fastx,
+    ProcessError,
+    prelude::*,
 };
 
 #[derive(Clone, Default)]
@@ -121,8 +122,8 @@ fn main() -> Result<(), ProcessError> {
     let file1 = File::open("./data/r1.fastq")?;
     let file2 = File::open("./data/r2.fastq")?;
 
-    let reader1 = fastq::Reader::new(file1);
-    let reader2 = fastq::Reader::new(file2);
+    let reader1 = fastx::Reader::new(file1)?;
+    let reader2 = fastx::Reader::new(file2)?;
     let processor = MyPairedProcessor::default();
     let num_threads = 8;
 
@@ -140,9 +141,9 @@ For an example of interleaved parallel processing see the [interleaved example](
 ```rust
 use std::fs::File;
 use paraseq::{
-    fastq,
-    Record,
-    parallel::{InterleavedParallelProcessor, InterleavedParallelReader, ProcessError},
+    fastx,
+    ProcessError,
+    prelude::*,
 };
 
 #[derive(Clone, Default)]
@@ -160,7 +161,7 @@ impl InterleavedParallelProcessor for MyInterleavedProcessor {
 fn main() -> Result<(), ProcessError> {
     let file = File::open("./data/interleaved.fastq")?;
 
-    let reader = fastq::Reader::new(file);
+    let reader = fastx::Reader::new(file)?;
     let processor = MyInterleavedProcessor::default();
     let num_threads = 8;
 
