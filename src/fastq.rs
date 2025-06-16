@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{Error, FastqError, Record, DEFAULT_MAX_RECORDS};
+use crate::{Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -289,7 +289,7 @@ impl<'a> RefRecord<'a> {
     fn validate_record(&self) -> Result<(), Error> {
         // Check that record boundaries are within buffer
         if self.positions.start >= self.buffer.len() || self.positions.end > self.buffer.len() {
-            return Err(FastqError::UnboundedPositions.into());
+            return Err(Error::UnboundedPositions);
         }
 
         // Check that record starts with '@'
@@ -302,14 +302,19 @@ impl<'a> RefRecord<'a> {
 
         // Check that separator starts with '+'
         if self.buffer[self.positions.sep_start] != b'+' {
-            return Err(FastqError::InvalidSeparator.into());
+            return Err(Error::InvalidSeparator(
+                self.buffer[self.positions.sep_start].into(),
+            ));
         }
 
         // Check that sequence and quality lengths match
         if self.positions.sep_start - self.positions.seq_start
             != self.positions.end - self.positions.qual_start
         {
-            return Err(FastqError::UnequalLengths.into());
+            return Err(Error::UnequalLengths(
+                self.positions.sep_start - self.positions.seq_start - 1, // subtract 1 for embedded newline
+                self.positions.end - self.positions.qual_start - 1, // subtract 1 for embedded newline
+            ));
         }
 
         Ok(())
@@ -439,7 +444,7 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::FastqError(FastqError::InvalidSeparator)
+            Error::InvalidSeparator('X')
         ));
     }
 
@@ -450,9 +455,13 @@ mod tests {
         let mut record_set = RecordSet::new(1);
 
         assert!(record_set.fill(&mut reader).unwrap());
+
+        let next_record = record_set.iter().next();
+        println!("{:?}", next_record);
+
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::FastqError(FastqError::UnequalLengths)
+            Error::UnequalLengths(4, 3)
         ));
     }
 

@@ -16,27 +16,12 @@ pub enum Error {
     #[error("Invalid header: ({0}): expected ({1})")]
     InvalidHeader(char, char),
 
-    #[error("Invalid FASTA record")]
-    FastaError(#[from] FastaError),
-
-    #[error("Invalid FASTQ record")]
-    FastqError(#[from] FastqError),
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum FastaError {
-    #[error("Unbounded positions")]
-    UnboundedPositions,
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum FastqError {
-    #[error("Invalid separator")]
-    InvalidSeparator,
-
     #[error("Unbounded positions")]
     UnboundedPositions,
 
-    #[error("Sequence and quality lengths do not match")]
-    UnequalLengths,
+    #[error("Invalid FASTQ separator: {0}, expected '+'")]
+    InvalidSeparator(char),
+
+    #[error("FASTQ Sequence length ({0}) and quality length ({1}) do not match")]
+    UnequalLengths(usize, usize),
 }

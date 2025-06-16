@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{Error, FastaError, Record, DEFAULT_MAX_RECORDS};
+use crate::{Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -325,7 +325,7 @@ impl<'a> RefRecord<'a> {
     fn validate_record(&self) -> Result<(), Error> {
         // Check that record boundaries are within buffer
         if self.positions.start >= self.buffer.len() || self.positions.end > self.buffer.len() {
-            return Err(FastaError::UnboundedPositions.into());
+            return Err(Error::UnboundedPositions);
         }
 
         // Check that record starts with '>'
