@@ -1,13 +1,8 @@
-use std::fs::File;
-use std::io::Read;
+use anyhow::{bail, Result};
+use paraseq::{fasta, fastq};
 
-use anyhow::Result;
-use paraseq::fastq;
-
-fn naive_fastq<R: Read>(rdr: R) -> Result<()> {
-    let (pass, _comp) = niffler::get_reader(Box::new(rdr))?;
-
-    let mut reader = fastq::Reader::new(pass);
+fn naive_fastq(path: &str) -> Result<()> {
+    let mut reader = fastq::Reader::from_path(path)?;
     let mut rset = fastq::RecordSet::default();
 
     let mut num_records = 0;
@@ -22,11 +17,9 @@ fn naive_fastq<R: Read>(rdr: R) -> Result<()> {
     Ok(())
 }
 
-fn naive_fasta<R: Read>(rdr: R) -> Result<()> {
-    let (pass, _comp) = niffler::get_reader(Box::new(rdr))?;
-
-    let mut reader = paraseq::fasta::Reader::new(pass);
-    let mut rset = paraseq::fasta::RecordSet::default();
+fn naive_fasta(path: &str) -> Result<()> {
+    let mut reader = fasta::Reader::from_path(path)?;
+    let mut rset = fasta::RecordSet::default();
 
     let mut num_records = 0;
     while rset.fill(&mut reader)? {
@@ -41,12 +34,13 @@ fn naive_fasta<R: Read>(rdr: R) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let path = std::env::args().nth(1).expect("Missing input file");
-    let file = File::open(&path)?;
-    if path.ends_with(".fastq") {
-        naive_fastq(file)?;
-    } else if path.ends_with(".fasta") {
-        naive_fasta(file)?;
+    let Some(path) = std::env::args().nth(1) else {
+        bail!("Must provide a file path to a FASTA or FASTQ file (compression optional)")
+    };
+    if path.contains(".fastq") | path.contains(".fq") {
+        naive_fastq(&path)?;
+    } else if path.contains(".fasta") | path.contains(".fa") {
+        naive_fasta(&path)?;
     } else {
         eprintln!("Unknown file format");
     }

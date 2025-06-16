@@ -19,6 +19,13 @@ See [benchmarking repo](https://github.com/noamteyssier/paraseq_benchmark) for b
 
 If you're interested in reading more about it, I wrote a small [blog post](https://noamteyssier.github.io/2025-02-03/) discussing its design and motivation.
 
+## Features
+
+- High performance parsing with minimal-copy of input data.
+- Multi-line parsing support for FASTA
+- Parallel processing of single-end, paired-end, and interleaved FASTX files with a consistent API.
+- Simple construction of readers from file paths and handles with optional transparent decompression support with [niffler](https://github.com/luizirber/niffler).
+
 ## Usage
 
 The benefit of using `paraseq` is that it makes it easy to distribute paired-end records to per-record and per-batch processing functions.
@@ -81,8 +88,8 @@ impl ParallelProcessor for MyProcessor {
 }
 
 fn main() -> Result<(), ProcessError> {
-    let file = File::open("./data/sample.fastq")?;
-    let reader = fastx::Reader::new(file)?;
+    let path = "./data/sample.fastq";
+    let reader = fastx::Reader::from_path(path)?;
     let processor = MyProcessor::default();
     let num_threads = 8;
 
@@ -119,11 +126,11 @@ impl PairedParallelProcessor for MyPairedProcessor {
 }
 
 fn main() -> Result<(), ProcessError> {
-    let file1 = File::open("./data/r1.fastq")?;
-    let file2 = File::open("./data/r2.fastq")?;
+    let path1 = "./data/r1.fastq";
+    let path2 = "./data/r2.fastq";
 
-    let reader1 = fastx::Reader::new(file1)?;
-    let reader2 = fastx::Reader::new(file2)?;
+    let reader1 = fastx::Reader::from_path(path1)?;
+    let reader2 = fastx::Reader::from_path(path2)?;
     let processor = MyPairedProcessor::default();
     let num_threads = 8;
 
@@ -159,9 +166,8 @@ impl InterleavedParallelProcessor for MyInterleavedProcessor {
 }
 
 fn main() -> Result<(), ProcessError> {
-    let file = File::open("./data/interleaved.fastq")?;
-
-    let reader = fastx::Reader::new(file)?;
+    let path = "./data/interleaved.fastq";
+    let reader = fastx::Reader::from_path(path)?;
     let processor = MyInterleavedProcessor::default();
     let num_threads = 8;
 

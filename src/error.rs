@@ -10,6 +10,10 @@ pub enum Error {
     #[error("Error reading from buffer: {0}")]
     Io(#[from] io::Error),
 
+    #[cfg(feature = "niffler")]
+    #[error("Error reading from file: {0}")]
+    Niffler(#[from] niffler::Error),
+
     #[error("Invalid batch size ({0}), must be greater than zero")]
     InvalidBatchSize(usize),
 
