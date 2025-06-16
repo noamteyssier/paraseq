@@ -60,7 +60,7 @@ jobs:
       - name: Build target
         run: cargo build --release --example fastx
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: fastx-binary
           path: target/release/examples/fastx
