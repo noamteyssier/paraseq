@@ -12,6 +12,8 @@ pub enum Reader<R: Read> {
     Fasta(fasta::Reader<R>),
     Fastq(fastq::Reader<R>),
 }
+
+#[cfg(feature = "niffler")]
 impl Reader<Box<dyn Read + Send>> {
     pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let (reader, _format) = niffler::send::from_path(path)?;
@@ -26,6 +28,7 @@ impl Reader<Box<dyn Read + Send>> {
         Self::new_with_batch_size(reader, batch_size)
     }
 }
+
 impl<R: Read> Reader<R> {
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let mut buffer = [0; 1];
@@ -71,6 +74,7 @@ impl<R: Read> Reader<R> {
     }
 }
 
+#[cfg(feature = "niffler")]
 #[cfg(test)]
 mod testing {
 

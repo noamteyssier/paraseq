@@ -610,6 +610,7 @@ mod tests {
 
         assert!(!record_set.fill(&mut reader).unwrap());
     }
+
     #[cfg(feature = "niffler")]
     #[test]
     fn test_from_path() {
@@ -630,6 +631,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "niffler")]
     #[test]
     fn test_from_path_with_batch_size() {
         for ext in ["", ".gz", ".zst"] {
