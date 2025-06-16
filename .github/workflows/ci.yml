@@ -87,22 +87,21 @@ jobs:
   test-read-write:
     name: Test Read Write
     runs-on: "ubuntu-latest"
+    strategy:
+      matrix:
+        input_format: [fasta, fastq]
+        input_compression: ["", ".gz", ".zst"]
+        output_format: [fasta, fastq]
     steps:
       - uses: actions/checkout@v3
       - name: build target
         run: cargo build --release --example read_write
-      - name: Test read write example (fasta -> fasta)
-        run: ./target/release/examples/read_write data/sample.fasta -f fasta
-      - name: Test read write example (fasta -> fastq)
-        run: ./target/release/examples/read_write data/sample.fasta -f fastq
-      - name: Test read write example (fastq -> fasta)
-        run: ./target/release/examples/read_write data/sample.fastq -f fasta
-      - name: Test read write example (fastq -> fastq)
-        run: ./target/release/examples/read_write data/sample.fastq -f fastq
-      - name: Test read write fasta from stdin
-        run: ./target/release/examples/read_write data/sample.fasta -f fasta | ./target/release/examples/read_write -F fasta
-      - name: Test read write fastq from stdin
-        run: ./target/release/examples/read_write data/sample.fastq -f fastq | ./target/release/examples/read_write -F fastq
+      - name: test io from file
+        run: ./target/release/examples/read_write data/sample.${{ matrix.input_format }}${{ matrix.input_compression }} -f ${matrix.output_format}
+      - name: test io from stdin
+        run:
+          ./target/release/examples/read_write data/sample.${{ matrix.input_format }}${{ matrix.input_compression }} -f ${matrix.output_format} | \
+          ./target/release/examples/read_write
 
   test-parallel:
     name: Test Parallel
