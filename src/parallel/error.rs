@@ -34,13 +34,9 @@ pub enum ProcessError {
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 
-    /// Error from FASTA processing
-    #[error("FASTA error: {0}")]
-    FastaError(#[from] crate::fasta::Error),
-
-    /// Error from FASTQ processing
-    #[error("FASTQ error: {0}")]
-    FastqError(#[from] crate::fastq::Error),
+    /// Error from FASTX processing
+    #[error("FASTX error: {0}")]
+    FastxError(#[from] crate::Error),
 }
 
 /// Enum for identifying record pairs

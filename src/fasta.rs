@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{Record, DEFAULT_MAX_RECORDS};
+use crate::{Error, FastaError, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -319,12 +319,12 @@ impl<'a> RefRecord<'a> {
     fn validate_record(&self) -> Result<(), Error> {
         // Check that record boundaries are within buffer
         if self.positions.start >= self.buffer.len() || self.positions.end > self.buffer.len() {
-            return Err(Error::UnboundedPositions);
+            return Err(FastaError::UnboundedPositions.into());
         }
 
         // Check that record starts with '>'
         if self.buffer[self.positions.start] != b'>' {
-            return Err(Error::InvalidHeader);
+            return Err(FastaError::InvalidHeader.into());
         }
 
         Ok(())
@@ -401,21 +401,6 @@ impl Record for RefRecord<'_> {
     fn qual(&self) -> Option<&[u8]> {
         None
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("Error reading from buffer: {0}")]
-    Io(#[from] io::Error),
-
-    #[error("Invalid header")]
-    InvalidHeader,
-
-    #[error("Unbounded positions")]
-    UnboundedPositions,
-
-    #[error("Invalid batch size, must be greater than 0")]
-    InvalidBatchSize(usize),
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{Record, DEFAULT_MAX_RECORDS};
+use crate::{Error, FastqError, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -283,24 +283,24 @@ impl<'a> RefRecord<'a> {
     fn validate_record(&self) -> Result<(), Error> {
         // Check that record boundaries are within buffer
         if self.positions.start >= self.buffer.len() || self.positions.end > self.buffer.len() {
-            return Err(Error::UnboundedPositions);
+            return Err(FastqError::UnboundedPositions.into());
         }
 
         // Check that record starts with '@'
         if self.buffer[self.positions.start] != b'@' {
-            return Err(Error::InvalidHeader);
+            return Err(FastqError::InvalidHeader.into());
         }
 
         // Check that separator starts with '+'
         if self.buffer[self.positions.sep_start] != b'+' {
-            return Err(Error::InvalidSeparator);
+            return Err(FastqError::InvalidSeparator.into());
         }
 
         // Check that sequence and quality lengths match
         if self.positions.sep_start - self.positions.seq_start
             != self.positions.end - self.positions.qual_start
         {
-            return Err(Error::UnequalLengths);
+            return Err(FastqError::UnequalLengths.into());
         }
 
         Ok(())
@@ -365,27 +365,6 @@ impl Record for RefRecord<'_> {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("Error reading from buffer: {0}")]
-    Io(#[from] io::Error),
-
-    #[error("Invalid header")]
-    InvalidHeader,
-
-    #[error("Invalid separator")]
-    InvalidSeparator,
-
-    #[error("Unbounded positions")]
-    UnboundedPositions,
-
-    #[error("Sequence and quality lengths do not match")]
-    UnequalLengths,
-
-    #[error("Invalid batch size ({0}), must be greater than zero")]
-    InvalidBatchSize(usize),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,7 +417,7 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::InvalidHeader
+            Error::FastqError(FastqError::InvalidHeader),
         ));
     }
 
@@ -451,7 +430,7 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::InvalidSeparator
+            Error::FastqError(FastqError::InvalidSeparator)
         ));
     }
 
@@ -464,7 +443,7 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::UnequalLengths
+            Error::FastqError(FastqError::UnequalLengths)
         ));
     }
 

@@ -34,9 +34,9 @@ This is a simple example using `paraseq` in a single-threaded context.
 ```rust
 use std::fs::File;
 use paraseq::fastq::{Reader, RecordSet};
-use paraseq::fastx::Record;
+use paraseq::Record;
 
-fn main() -> Result<(), paraseq::fastq::Error> {
+fn main() -> Result<(), paraseq::Error> {
     let file = File::open("./data/sample.fastq")?;
     let mut reader = Reader::new(file);
     let mut record_set = RecordSet::new(1024); // Buffer up to 1024 records
@@ -63,7 +63,7 @@ For an example of a single-end parallel processor see the [parallel example](htt
 use std::fs::File;
 use paraseq::{
     fastq,
-    fastx::Record,
+    Record,
     parallel::{ParallelProcessor, ParallelReader, ProcessError},
 };
 
@@ -101,7 +101,7 @@ For an example of paired parallel processing see the [paired example](https://gi
 use std::fs::File;
 use paraseq::{
     fastq,
-    fastx::Record,
+    Record,
     parallel::{PairedParallelProcessor, PairedParallelReader, ProcessError},
 };
 
@@ -141,7 +141,7 @@ For an example of interleaved parallel processing see the [interleaved example](
 use std::fs::File;
 use paraseq::{
     fastq,
-    fastx::Record,
+    Record,
     parallel::{InterleavedParallelProcessor, InterleavedParallelReader, ProcessError},
 };
 
