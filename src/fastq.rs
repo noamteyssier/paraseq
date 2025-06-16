@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{fastx::Record, DEFAULT_MAX_RECORDS};
+use crate::{Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -40,6 +40,12 @@ impl<R: io::Read> Reader<R> {
         } else {
             RecordSet::default()
         }
+    }
+    /// Add bytes to the overflow buffer.
+    ///
+    /// Use this method sparingly, it is mainly for internal use.
+    pub fn add_to_overflow(&mut self, buffer: &[u8]) {
+        self.overflow.extend_from_slice(buffer);
     }
     pub fn batch_size(&self) -> usize {
         self.batch_size.unwrap_or(DEFAULT_MAX_RECORDS)
@@ -288,19 +294,27 @@ impl<'a> RefRecord<'a> {
 
         // Check that record starts with '@'
         if self.buffer[self.positions.start] != b'@' {
-            return Err(Error::InvalidHeader);
+            return Err(Error::InvalidHeader(
+                self.buffer[self.positions.start].into(),
+                '@',
+            ));
         }
 
         // Check that separator starts with '+'
         if self.buffer[self.positions.sep_start] != b'+' {
-            return Err(Error::InvalidSeparator);
+            return Err(Error::InvalidSeparator(
+                self.buffer[self.positions.sep_start].into(),
+            ));
         }
 
         // Check that sequence and quality lengths match
         if self.positions.sep_start - self.positions.seq_start
             != self.positions.end - self.positions.qual_start
         {
-            return Err(Error::UnequalLengths);
+            return Err(Error::UnequalLengths(
+                self.positions.sep_start - self.positions.seq_start - 1, // subtract 1 for embedded newline
+                self.positions.end - self.positions.qual_start - 1, // subtract 1 for embedded newline
+            ));
         }
 
         Ok(())
@@ -365,27 +379,6 @@ impl Record for RefRecord<'_> {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("Error reading from buffer: {0}")]
-    Io(#[from] io::Error),
-
-    #[error("Invalid header")]
-    InvalidHeader,
-
-    #[error("Invalid separator")]
-    InvalidSeparator,
-
-    #[error("Unbounded positions")]
-    UnboundedPositions,
-
-    #[error("Sequence and quality lengths do not match")]
-    UnequalLengths,
-
-    #[error("Invalid batch size ({0}), must be greater than zero")]
-    InvalidBatchSize(usize),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,7 +431,7 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::InvalidHeader
+            Error::InvalidHeader('X', '@'),
         ));
     }
 
@@ -451,7 +444,7 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::InvalidSeparator
+            Error::InvalidSeparator('X')
         ));
     }
 
@@ -462,9 +455,13 @@ mod tests {
         let mut record_set = RecordSet::new(1);
 
         assert!(record_set.fill(&mut reader).unwrap());
+
+        let next_record = record_set.iter().next();
+        println!("{:?}", next_record);
+
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::UnequalLengths
+            Error::UnequalLengths(4, 3)
         ));
     }
 

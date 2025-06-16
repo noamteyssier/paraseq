@@ -1,21 +1,17 @@
-use std::{
-    fs::File,
-    io::{stdin, stdout, Read, Write},
-    sync::Arc,
-};
+use std::fs::File;
+use std::io::{stdin, stdout, Read, Write};
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use paraseq::{
-    fasta, fastq,
-    parallel::{ParallelProcessor, ParallelReader},
-};
+use paraseq::parallel::ParallelReader;
+use paraseq::{fastx, parallel::ParallelProcessor};
 use parking_lot::Mutex;
 
-pub type BoxedReader = Box<dyn Read + Send>;
-pub type BoxedWriter = Box<dyn Write + Send>;
+type BoxedReader = Box<dyn Read + Send>;
+type BoxedWriter = Box<dyn Write + Send>;
 
-#[derive(Default, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum OutputFormat {
     #[default]
     Fasta,
@@ -65,7 +61,6 @@ impl ParallelProcessor for Processor {
 struct Cli {
     /// Input file path
     input_file: Option<String>,
-
     /// Output file path (stdout if not provided)
     #[clap(short = 'o')]
     output: Option<String>,
@@ -77,10 +72,6 @@ struct Cli {
     /// Output format
     #[clap(short = 'f', default_value = "fasta")]
     out_format: OutputFormat,
-
-    /// Input format
-    #[clap(short = 'F')]
-    in_format: Option<OutputFormat>,
 }
 impl Cli {
     pub fn input_handle(&self) -> Result<BoxedReader> {
@@ -89,19 +80,6 @@ impl Cli {
             Ok(Box::new(file))
         } else {
             Ok(Box::new(stdin()))
-        }
-    }
-    pub fn input_file_format(&self) -> OutputFormat {
-        if let Some(format) = self.in_format {
-            format
-        } else if let Some(ref path) = self.input_file {
-            if path.ends_with(".fq") || path.ends_with(".fastq") {
-                OutputFormat::Fastq
-            } else {
-                OutputFormat::Fasta
-            }
-        } else {
-            OutputFormat::default()
         }
     }
     pub fn output_handle(&self) -> Result<BoxedWriter> {
@@ -116,20 +94,10 @@ impl Cli {
 
 fn main() -> Result<()> {
     let args = Cli::parse();
-    let in_handle = args.input_handle()?;
-    let out_handle = args.output_handle()?;
-
-    let proc = Processor::new(out_handle, args.out_format);
-    match args.input_file_format() {
-        OutputFormat::Fastq => {
-            let reader = fastq::Reader::new(in_handle);
-            reader.process_parallel(proc, args.num_threads)?;
-        }
-        OutputFormat::Fasta => {
-            let reader = fasta::Reader::new(in_handle);
-            reader.process_parallel(proc, args.num_threads)?;
-        }
-    }
-
+    let handle_in = args.input_handle()?;
+    let handle_out = args.output_handle()?;
+    let reader = fastx::Reader::new(handle_in)?;
+    let proc = Processor::new(handle_out, args.out_format);
+    reader.process_parallel(proc, args.num_threads)?;
     Ok(())
 }

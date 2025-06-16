@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{fastx::Record, DEFAULT_MAX_RECORDS};
+use crate::{Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -40,6 +40,12 @@ impl<R: io::Read> Reader<R> {
         } else {
             RecordSet::default()
         }
+    }
+    /// Add bytes to the overflow buffer.
+    ///
+    /// Use this method sparingly, it is mainly for internal use.
+    pub fn add_to_overflow(&mut self, buffer: &[u8]) {
+        self.overflow.extend_from_slice(buffer);
     }
     pub fn batch_size(&self) -> usize {
         self.batch_size.unwrap_or(DEFAULT_MAX_RECORDS)
@@ -324,7 +330,10 @@ impl<'a> RefRecord<'a> {
 
         // Check that record starts with '>'
         if self.buffer[self.positions.start] != b'>' {
-            return Err(Error::InvalidHeader);
+            return Err(Error::InvalidHeader(
+                self.buffer[self.positions.start].into(),
+                '>',
+            ));
         }
 
         Ok(())
@@ -401,21 +410,6 @@ impl Record for RefRecord<'_> {
     fn qual(&self) -> Option<&[u8]> {
         None
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("Error reading from buffer: {0}")]
-    Io(#[from] io::Error),
-
-    #[error("Invalid header")]
-    InvalidHeader,
-
-    #[error("Unbounded positions")]
-    UnboundedPositions,
-
-    #[error("Invalid batch size, must be greater than 0")]
-    InvalidBatchSize(usize),
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use super::error::Result;
-use crate::fastx::Record;
+use crate::Record;
 
 /// Trait implemented for a type that processes records in parallel
 pub trait ParallelProcessor: Send + Clone {

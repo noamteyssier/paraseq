@@ -18,6 +18,10 @@ pub enum ProcessError {
     #[error("Invalid thread count specified")]
     InvalidThreadCount,
 
+    /// Incompatible readers specified
+    #[error("Incompatible readers specified, expected both readers to be the same input format")]
+    IncompatibleReaders,
+
     /// Record synchronization error between paired files
     #[error("Record synchronization error between paired files. {0} has less records.")]
     PairedRecordMismatch(RecordPair),
@@ -34,13 +38,9 @@ pub enum ProcessError {
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 
-    /// Error from FASTA processing
-    #[error("FASTA error: {0}")]
-    FastaError(#[from] crate::fasta::Error),
-
-    /// Error from FASTQ processing
-    #[error("FASTQ error: {0}")]
-    FastqError(#[from] crate::fastq::Error),
+    /// Error from FASTX processing
+    #[error("FASTX error: {0}")]
+    FastxError(#[from] crate::Error),
 }
 
 /// Enum for identifying record pairs

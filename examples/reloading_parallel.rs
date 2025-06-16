@@ -33,10 +33,7 @@ impl SeqSum {
     }
 }
 impl ParallelProcessor for SeqSum {
-    fn process_record<Rf: paraseq::fastx::Record>(
-        &mut self,
-        record: Rf,
-    ) -> paraseq::parallel::Result<()> {
+    fn process_record<Rf: paraseq::Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         record
             .seq()
             .iter()
