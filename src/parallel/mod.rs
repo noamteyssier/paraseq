@@ -1,4 +1,5 @@
 mod error;
+mod fastx;
 mod macros;
 mod processor;
 mod reader;

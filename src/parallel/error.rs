@@ -18,6 +18,10 @@ pub enum ProcessError {
     #[error("Invalid thread count specified")]
     InvalidThreadCount,
 
+    /// Incompatible readers specified
+    #[error("Incompatible readers specified, expected both readers to be the same input format")]
+    IncompatibleReaders,
+
     /// Record synchronization error between paired files
     #[error("Record synchronization error between paired files. {0} has less records.")]
     PairedRecordMismatch(RecordPair),
