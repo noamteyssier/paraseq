@@ -36,6 +36,7 @@ jobs:
   integration-tests:
     needs:
       [
+        test-fastx,
         test-interleaved,
         test-multiline-fasta,
         test-read-write,
@@ -50,6 +51,22 @@ jobs:
     steps:
       - name: Done
         run: echo "Done"
+
+  test-fastx:
+    name: Test FASTX
+    runs-on: "ubuntu-latest"
+    strategy:
+      matrix:
+        input_format: [fasta, fastq]
+        output_format: [fasta, fastq]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build target
+        run: cargo build --release --example fastx
+      - name: Run test (from file)
+        run: ./target/release/examples/fastx data/sample.{{input_format}} -f {{output_format}}
+      - name: Run test (from stdin)
+        run: /bin/cat data/sample.{{input_format}} | ./target/release/examples/fastx -f {{output_format}}
 
   test-interleaved:
     name: Test Interleaved
