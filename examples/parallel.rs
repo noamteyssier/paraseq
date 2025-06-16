@@ -4,9 +4,8 @@ use std::sync::Arc;
 // use anyhow::Result;
 use paraseq::{
     fasta, fastq,
-    fastx::Record,
     parallel::{ParallelProcessor, ParallelReader, ProcessError},
-    DEFAULT_MAX_RECORDS,
+    Record, DEFAULT_MAX_RECORDS,
 };
 use parking_lot::Mutex;
 

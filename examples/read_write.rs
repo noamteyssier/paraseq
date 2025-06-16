@@ -38,10 +38,7 @@ impl Processor {
     }
 }
 impl ParallelProcessor for Processor {
-    fn process_record<Rf: paraseq::fastx::Record>(
-        &mut self,
-        record: Rf,
-    ) -> paraseq::parallel::Result<()> {
+    fn process_record<Rf: paraseq::Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         match self.out_format {
             OutputFormat::Fasta => {
                 record.write_fasta(&mut self.local_out)?;
