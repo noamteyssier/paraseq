@@ -1,13 +1,13 @@
 use std::{
     fs::File,
-    io::{stdin, stdout, Read, Write},
+    io::{stdout, Read, Write},
     sync::Arc,
 };
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use paraseq::{
-    fasta, fastq,
+    fastx,
     parallel::{ParallelProcessor, ParallelReader},
 };
 use parking_lot::Mutex;
@@ -83,27 +83,6 @@ struct Cli {
     in_format: Option<OutputFormat>,
 }
 impl Cli {
-    pub fn input_handle(&self) -> Result<BoxedReader> {
-        if let Some(path) = &self.input_file {
-            let file = File::open(path)?;
-            Ok(Box::new(file))
-        } else {
-            Ok(Box::new(stdin()))
-        }
-    }
-    pub fn input_file_format(&self) -> OutputFormat {
-        if let Some(format) = self.in_format {
-            format
-        } else if let Some(ref path) = self.input_file {
-            if path.ends_with(".fq") || path.ends_with(".fastq") {
-                OutputFormat::Fastq
-            } else {
-                OutputFormat::Fasta
-            }
-        } else {
-            OutputFormat::default()
-        }
-    }
     pub fn output_handle(&self) -> Result<BoxedWriter> {
         if let Some(path) = &self.output {
             let file = File::open(path)?;
@@ -116,20 +95,11 @@ impl Cli {
 
 fn main() -> Result<()> {
     let args = Cli::parse();
-    let in_handle = args.input_handle()?;
     let out_handle = args.output_handle()?;
 
     let proc = Processor::new(out_handle, args.out_format);
-    match args.input_file_format() {
-        OutputFormat::Fastq => {
-            let reader = fastq::Reader::new(in_handle);
-            reader.process_parallel(proc, args.num_threads)?;
-        }
-        OutputFormat::Fasta => {
-            let reader = fasta::Reader::new(in_handle);
-            reader.process_parallel(proc, args.num_threads)?;
-        }
-    }
+    let reader = fastx::Reader::from_optional_path(args.input_file)?;
+    reader.process_parallel(proc, args.num_threads)?;
 
     Ok(())
 }
