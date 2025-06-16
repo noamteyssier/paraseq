@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 use std::io;
+#[cfg(feature = "niffler")]
+use std::path::Path;
 
 use crate::{Error, Record, DEFAULT_MAX_RECORDS};
 
@@ -14,6 +16,22 @@ pub struct Reader<R: io::Read> {
     ///
     /// If not set, the default `RecordSet` capacity is used.
     batch_size: Option<usize>,
+}
+
+#[cfg(feature = "niffler")]
+impl Reader<Box<dyn io::Read + Send>> {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let (reader, _format) = niffler::send::from_path(path)?;
+        Ok(Self::new(reader))
+    }
+
+    pub fn from_path_with_batch_size<P: AsRef<Path>>(
+        path: P,
+        batch_size: usize,
+    ) -> Result<Self, Error> {
+        let (reader, _format) = niffler::send::from_path(path)?;
+        Self::with_batch_size(reader, batch_size)
+    }
 }
 
 impl<R: io::Read> Reader<R> {
@@ -591,5 +609,43 @@ mod tests {
         assert_eq!(parsed_record.qual_str(), "IIII");
 
         assert!(!record_set.fill(&mut reader).unwrap());
+    }
+    #[cfg(feature = "niffler")]
+    #[test]
+    fn test_from_path() {
+        for ext in ["", ".gz", ".zst"] {
+            dbg!(ext);
+            let path = if ext.is_empty() {
+                String::from("./data/sample.fastq")
+            } else {
+                format!("./data/sample.fastq{}", ext)
+            };
+            let mut reader = Reader::from_path(path).unwrap();
+            let mut record_set = RecordSet::new(1);
+
+            assert!(record_set.fill(&mut reader).unwrap());
+            let parsed_record = record_set.iter().next().unwrap().unwrap();
+
+            println!("{}", parsed_record.id_str());
+        }
+    }
+
+    #[test]
+    fn test_from_path_with_batch_size() {
+        for ext in ["", ".gz", ".zst"] {
+            dbg!(ext);
+            let path = if ext.is_empty() {
+                String::from("./data/sample.fastq")
+            } else {
+                format!("./data/sample.fastq{}", ext)
+            };
+            let mut reader = Reader::from_path_with_batch_size(path, 2).unwrap();
+            let mut record_set = RecordSet::new(1);
+
+            assert!(record_set.fill(&mut reader).unwrap());
+            let parsed_record = record_set.iter().next().unwrap().unwrap();
+
+            println!("{}", parsed_record.id_str());
+        }
     }
 }
