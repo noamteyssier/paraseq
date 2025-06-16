@@ -97,11 +97,9 @@ jobs:
       - name: build target
         run: cargo build --release --example read_write
       - name: test io from file
-        run: ./target/release/examples/read_write data/sample.${{ matrix.input_format }}${{ matrix.input_compression }} -f ${{ matrix.output_format }}
+        run: ./target/release/examples/read_write -f ${{ matrix.output_format }} data/sample.${{ matrix.input_format }}${{ matrix.input_compression }}
       - name: test io from stdin
-        run:
-          ./target/release/examples/read_write data/sample.${{ matrix.input_format }}${{ matrix.input_compression }} -f ${{ matrix.output_format }} | \
-          ./target/release/examples/read_write
+        run: ./target/release/examples/read_write ./data/sample.${{ matrix.input_format }}${{ matrix.input_compression }} -f ${{ matrix.output_format }} | ./target/release/examples/read_write
 
   test-parallel:
     name: Test Parallel
