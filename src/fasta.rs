@@ -25,12 +25,39 @@ impl Reader<Box<dyn io::Read + Send>> {
         Ok(Self::new(reader))
     }
 
+    pub fn from_stdin() -> Result<Self, Error> {
+        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
+        Ok(Self::new(reader))
+    }
+
+    pub fn from_optional_path<P: AsRef<Path>>(path: Option<P>) -> Result<Self, Error> {
+        match path {
+            Some(path) => Self::from_path(path),
+            None => Self::from_stdin(),
+        }
+    }
+
     pub fn from_path_with_batch_size<P: AsRef<Path>>(
         path: P,
         batch_size: usize,
     ) -> Result<Self, Error> {
         let (reader, _format) = niffler::send::from_path(path)?;
         Self::with_batch_size(reader, batch_size)
+    }
+
+    pub fn from_stdin_with_batch_size(batch_size: usize) -> Result<Self, Error> {
+        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
+        Self::with_batch_size(reader, batch_size)
+    }
+
+    pub fn from_optional_path_with_batch_size<P: AsRef<Path>>(
+        path: Option<P>,
+        batch_size: usize,
+    ) -> Result<Self, Error> {
+        match path {
+            Some(path) => Self::from_path_with_batch_size(path, batch_size),
+            None => Self::from_stdin_with_batch_size(batch_size),
+        }
     }
 }
 

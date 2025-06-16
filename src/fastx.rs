@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io;
 
 use super::{fasta, fastq, Error};
 
@@ -8,16 +8,28 @@ pub enum Format {
     Fastq,
 }
 
-pub enum Reader<R: Read> {
+pub enum Reader<R: io::Read> {
     Fasta(fasta::Reader<R>),
     Fastq(fastq::Reader<R>),
 }
 
 #[cfg(feature = "niffler")]
-impl Reader<Box<dyn Read + Send>> {
+impl Reader<Box<dyn io::Read + Send>> {
     pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let (reader, _format) = niffler::send::from_path(path)?;
         Self::new(reader)
+    }
+
+    pub fn from_stdin() -> Result<Self, Error> {
+        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
+        Self::new(reader)
+    }
+
+    pub fn from_optional_path<P: AsRef<std::path::Path>>(path: Option<P>) -> Result<Self, Error> {
+        match path {
+            Some(path) => Self::from_path(path),
+            None => Self::from_stdin(),
+        }
     }
 
     pub fn from_path_with_batch_size<P: AsRef<std::path::Path>>(
@@ -27,9 +39,24 @@ impl Reader<Box<dyn Read + Send>> {
         let (reader, _format) = niffler::send::from_path(path)?;
         Self::new_with_batch_size(reader, batch_size)
     }
+
+    pub fn from_stdin_with_batch_size(batch_size: usize) -> Result<Self, Error> {
+        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
+        Self::new_with_batch_size(reader, batch_size)
+    }
+
+    pub fn from_optional_path_with_batch_size<P: AsRef<std::path::Path>>(
+        path: Option<P>,
+        batch_size: usize,
+    ) -> Result<Self, Error> {
+        match path {
+            Some(path) => Self::from_path_with_batch_size(path, batch_size),
+            None => Self::from_stdin_with_batch_size(batch_size),
+        }
+    }
 }
 
-impl<R: Read> Reader<R> {
+impl<R: io::Read> Reader<R> {
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let mut buffer = [0; 1];
         reader.read_exact(&mut buffer)?;
