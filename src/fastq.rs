@@ -41,6 +41,12 @@ impl<R: io::Read> Reader<R> {
             RecordSet::default()
         }
     }
+    /// Add bytes to the overflow buffer.
+    ///
+    /// Use this method sparingly, it is mainly for internal use.
+    pub fn add_to_overflow(&mut self, buffer: &[u8]) {
+        self.overflow.extend_from_slice(buffer);
+    }
     pub fn batch_size(&self) -> usize {
         self.batch_size.unwrap_or(DEFAULT_MAX_RECORDS)
     }
