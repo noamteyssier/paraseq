@@ -52,21 +52,41 @@ jobs:
       - name: Done
         run: echo "Done"
 
+  build-fastx:
+    name: Build FASTX
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build target
+        run: cargo build --release --example fastx
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: fastx-binary
+          path: target/release/examples/fastx
+          retention-days: 1
+
   test-fastx:
     name: Test FASTX
     runs-on: "ubuntu-latest"
+    needs: build-fastx
     strategy:
       matrix:
         input_format: [fasta, fastq]
         output_format: [fasta, fastq]
     steps:
       - uses: actions/checkout@v3
-      - name: Build target
-        run: cargo build --release --example fastx
+      - name: Download binary artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: fastx-binary
+          path: .
+      - name: Make binary executable
+        run: chmod +x fastx
       - name: Run test (from file)
-        run: ./target/release/examples/fastx data/sample.${{ matrix.input_format }} -f ${{ matrix.output_format }}
+        run: ./fastx data/sample.${{ matrix.input_format }} -f ${{ matrix.output_format }}
       - name: Run test (from stdin)
-        run: /bin/cat data/sample.${{ matrix.input_format }} | ./target/release/examples/fastx -f ${{ matrix.output_format }}
+        run: /bin/cat data/sample.${{ matrix.input_format }} | ./fastx -f ${{ matrix.output_format }}
 
   test-interleaved:
     name: Test Interleaved
