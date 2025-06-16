@@ -330,7 +330,10 @@ impl<'a> RefRecord<'a> {
 
         // Check that record starts with '>'
         if self.buffer[self.positions.start] != b'>' {
-            return Err(FastaError::InvalidHeader.into());
+            return Err(Error::InvalidHeader(
+                self.buffer[self.positions.start].into(),
+                '>',
+            ));
         }
 
         Ok(())

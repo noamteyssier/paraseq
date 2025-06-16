@@ -294,7 +294,10 @@ impl<'a> RefRecord<'a> {
 
         // Check that record starts with '@'
         if self.buffer[self.positions.start] != b'@' {
-            return Err(FastqError::InvalidHeader.into());
+            return Err(Error::InvalidHeader(
+                self.buffer[self.positions.start].into(),
+                '@',
+            ));
         }
 
         // Check that separator starts with '+'
@@ -423,7 +426,7 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
-            Error::FastqError(FastqError::InvalidHeader),
+            Error::InvalidHeader('X', '@'),
         ));
     }
 

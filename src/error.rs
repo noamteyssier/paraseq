@@ -13,6 +13,9 @@ pub enum Error {
     #[error("Invalid batch size ({0}), must be greater than zero")]
     InvalidBatchSize(usize),
 
+    #[error("Invalid header: ({0}): expected ({1})")]
+    InvalidHeader(char, char),
+
     #[error("Invalid FASTA record")]
     FastaError(#[from] FastaError),
 
@@ -22,18 +25,12 @@ pub enum Error {
 
 #[derive(thiserror::Error, Debug)]
 pub enum FastaError {
-    #[error("Invalid header")]
-    InvalidHeader,
-
     #[error("Unbounded positions")]
     UnboundedPositions,
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum FastqError {
-    #[error("Invalid header")]
-    InvalidHeader,
-
     #[error("Invalid separator")]
     InvalidSeparator,
 
