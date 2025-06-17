@@ -107,6 +107,21 @@ impl<R: io::Read> Reader<R> {
             Self::Fastq(inner) => RecordSet::Fastq(inner.new_record_set()),
         }
     }
+
+    pub fn new_record_set_with_size(&self, size: usize) -> RecordSet {
+        match self {
+            Self::Fasta(inner) => RecordSet::Fasta(inner.new_record_set_with_size(size)),
+            Self::Fastq(inner) => RecordSet::Fastq(inner.new_record_set_with_size(size)),
+        }
+    }
+
+    pub fn reload(&mut self, rset: &mut RecordSet) -> Result<(), Error> {
+        match (self, rset) {
+            (Self::Fasta(inner), RecordSet::Fasta(rset)) => Ok(inner.reload(rset)),
+            (Self::Fastq(inner), RecordSet::Fastq(rset)) => Ok(inner.reload(rset)),
+            _ => Err(Error::FormatMismatch),
+        }
+    }
 }
 
 pub enum RecordSet {

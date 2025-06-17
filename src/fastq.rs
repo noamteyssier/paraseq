@@ -86,6 +86,10 @@ impl<R: io::Read> Reader<R> {
             RecordSet::default()
         }
     }
+    /// Initialize a new record set with a specified size
+    pub fn new_record_set_with_size(&self, size: usize) -> RecordSet {
+        RecordSet::new(size)
+    }
     /// Add bytes to the overflow buffer.
     ///
     /// Use this method sparingly, it is mainly for internal use.
