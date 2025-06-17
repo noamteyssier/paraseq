@@ -53,6 +53,8 @@ fn main() -> Result<()> {
     let Some(path) = std::env::args().nth(1) else {
         bail!("Must provide a file path to a FASTA or FASTQ file (compression optional)")
     };
+
+    // Specific format test
     if path.contains(".fastq") | path.contains(".fq") {
         naive_fastq(&path)?;
     } else if path.contains(".fasta") | path.contains(".fa") {
@@ -60,6 +62,8 @@ fn main() -> Result<()> {
     } else {
         eprintln!("Unknown file format");
     }
+
+    // Arbitrary format test
     naive_fastx(&path)?;
 
     Ok(())
