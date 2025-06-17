@@ -44,13 +44,12 @@ It is not recommended to use `paraseq` in this way - it will be more performant 
 
 ```rust
 use std::fs::File;
-use paraseq::fastq::{Reader, RecordSet};
-use paraseq::Record;
+use paraseq::{fastq, Record};
 
 fn main() -> Result<(), paraseq::Error> {
-    let file = File::open("./data/sample.fastq")?;
-    let mut reader = Reader::new(file);
-    let mut record_set = RecordSet::new(1024); // Buffer up to 1024 records
+    let path = "./data/sample.fastq";
+    let mut reader = fastq::Reader::from_path(path)?;
+    let mut record_set = reader.new_record_set();
 
     while record_set.fill(&mut reader)? {
         for record in record_set.iter() {
