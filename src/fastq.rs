@@ -375,25 +375,11 @@ impl<'a> RefRecord<'a> {
         )
     }
 
-    /// Access the sequence bytes
-    #[inline]
-    #[must_use]
-    pub fn seq(&self) -> &[u8] {
-        self.access_buffer(self.positions.seq_start, self.positions.sep_start)
-    }
-
     /// Access the separator bytes
     #[inline]
     #[must_use]
     pub fn sep(&self) -> &[u8] {
         self.access_buffer(self.positions.sep_start, self.positions.qual_start)
-    }
-
-    /// Access the quality bytes
-    #[inline]
-    #[must_use]
-    pub fn qual(&self) -> &[u8] {
-        self.access_buffer(self.positions.qual_start, self.positions.end)
     }
 
     /// Performs the actual buffer access
@@ -412,15 +398,17 @@ impl Record for RefRecord<'_> {
     }
 
     fn seq(&self) -> std::borrow::Cow<[u8]> {
-        Cow::Borrowed(self.seq())
+        Cow::Borrowed(self.seq_raw())
     }
 
+    #[inline]
+    #[must_use]
     fn seq_raw(&self) -> &[u8] {
-        self.seq()
+        self.access_buffer(self.positions.seq_start, self.positions.sep_start)
     }
 
     fn qual(&self) -> Option<&[u8]> {
-        Some(self.qual())
+        Some(self.access_buffer(self.positions.qual_start, self.positions.end))
     }
 }
 
@@ -606,7 +594,7 @@ mod tests {
 
         assert!(record_set.fill(&mut reader).unwrap());
         let parsed_record = record_set.iter().next().unwrap().unwrap();
-        assert!(std::str::from_utf8(parsed_record.seq()).is_err());
+        assert!(std::str::from_utf8(&parsed_record.seq()).is_err());
     }
     #[test]
     fn test_clear_record_set() {
