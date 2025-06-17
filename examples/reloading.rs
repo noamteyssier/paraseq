@@ -1,12 +1,9 @@
-use std::fs::File;
-
 use anyhow::{bail, Result};
-use paraseq::{fasta, fastq};
+use paraseq::{fasta, fastq, fastx};
 
 fn reload_fasta(path: &str, prefill: usize) -> Result<()> {
-    let file = File::open(path)?;
-    let mut reader = fasta::Reader::new(file);
-    let mut rset = fasta::RecordSet::new(prefill);
+    let mut reader = fasta::Reader::from_path(path)?;
+    let mut rset = reader.new_record_set_with_size(prefill);
 
     // Fill the record set with records from the reader
     if !rset.fill(&mut reader)? {
@@ -18,14 +15,14 @@ fn reload_fasta(path: &str, prefill: usize) -> Result<()> {
         let _record = record?;
         num_prefill += 1;
     }
-    eprintln!("num_prefill: {num_prefill}");
+    eprintln!("(fasta) num_prefill: {num_prefill}");
 
     // Reload the reader with the record set
-    eprintln!("Reloading reader with {num_prefill} records");
+    eprintln!("(fasta) Reloading reader with {num_prefill} records");
     reader.reload(&mut rset);
 
     // Process the records in the record set
-    let mut rset = fasta::RecordSet::default();
+    let mut rset = reader.new_record_set();
     let mut num_records = 0;
     while rset.fill(&mut reader)? {
         for record in rset.iter() {
@@ -34,14 +31,13 @@ fn reload_fasta(path: &str, prefill: usize) -> Result<()> {
         }
     }
 
-    eprintln!("num_records: {num_records}");
+    eprintln!("(fasta) num_records: {num_records}");
     Ok(())
 }
 
 fn reload_fastq(path: &str, prefill: usize) -> Result<()> {
-    let file = File::open(path)?;
-    let mut reader = fastq::Reader::new(file);
-    let mut rset = fastq::RecordSet::new(prefill);
+    let mut reader = fastq::Reader::from_path(path)?;
+    let mut rset = reader.new_record_set_with_size(prefill);
 
     // Fill the record set with records from the reader
     if !rset.fill(&mut reader)? {
@@ -53,14 +49,14 @@ fn reload_fastq(path: &str, prefill: usize) -> Result<()> {
         let _record = record?;
         num_prefill += 1;
     }
-    eprintln!("num_prefill: {num_prefill}");
+    eprintln!("(fastq) num_prefill: {num_prefill}");
 
     // Reload the reader with the record set
-    eprintln!("Reloading reader with {num_prefill} records");
+    eprintln!("(fastq) Reloading reader with {num_prefill} records");
     reader.reload(&mut rset);
 
     // Process the records in the record set
-    let mut rset = fastq::RecordSet::default();
+    let mut rset = reader.new_record_set_with_size(prefill);
     let mut num_records = 0;
     while rset.fill(&mut reader)? {
         for record in rset.iter() {
@@ -69,7 +65,40 @@ fn reload_fastq(path: &str, prefill: usize) -> Result<()> {
         }
     }
 
-    eprintln!("num_records: {num_records}");
+    eprintln!("(fastq) num_records: {num_records}");
+    Ok(())
+}
+
+fn reload_fastx(path: &str, prefill: usize) -> Result<()> {
+    let mut reader = fastx::Reader::from_path(path)?;
+    let mut rset = reader.new_record_set_with_size(prefill);
+
+    if !rset.fill(&mut reader)? {
+        bail!("No records in input file")
+    }
+
+    let mut num_prefill = 0;
+    for record in rset.iter() {
+        let _record = record?;
+        num_prefill += 1;
+    }
+    eprintln!("(fastx) num_prefill: {num_prefill}");
+
+    // Reload the reader with the record set
+    eprintln!("(fastx) Reloading reader with {num_prefill} records");
+    reader.reload(&mut rset)?;
+
+    // Process the records in the record set
+    let mut rset = reader.new_record_set();
+    let mut num_records = 0;
+    while rset.fill(&mut reader)? {
+        for record in rset.iter() {
+            let _record = record?;
+            num_records += 1;
+        }
+    }
+
+    eprintln!("(fastx) num_records: {num_records}");
     Ok(())
 }
 
@@ -86,6 +115,7 @@ fn main() -> Result<()> {
     } else {
         eprintln!("Unknown file format");
     }
+    reload_fastx(&path, prefill)?;
 
     Ok(())
 }

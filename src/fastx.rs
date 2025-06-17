@@ -1,6 +1,7 @@
+use std::borrow::Cow;
 use std::io;
 
-use super::{fasta, fastq, Error};
+use crate::{fasta, fastq, Error, Record};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -99,8 +100,93 @@ impl<R: io::Read> Reader<R> {
             Self::Fastq(_) => Format::Fastq,
         }
     }
+
+    pub fn new_record_set(&self) -> RecordSet {
+        match self {
+            Self::Fasta(inner) => RecordSet::Fasta(inner.new_record_set()),
+            Self::Fastq(inner) => RecordSet::Fastq(inner.new_record_set()),
+        }
+    }
+
+    pub fn new_record_set_with_size(&self, size: usize) -> RecordSet {
+        match self {
+            Self::Fasta(inner) => RecordSet::Fasta(inner.new_record_set_with_size(size)),
+            Self::Fastq(inner) => RecordSet::Fastq(inner.new_record_set_with_size(size)),
+        }
+    }
+
+    pub fn reload(&mut self, rset: &mut RecordSet) -> Result<(), Error> {
+        match (self, rset) {
+            (Self::Fasta(inner), RecordSet::Fasta(rset)) => Ok(inner.reload(rset)),
+            (Self::Fastq(inner), RecordSet::Fastq(rset)) => Ok(inner.reload(rset)),
+            _ => Err(Error::FormatMismatch),
+        }
+    }
 }
 
+pub enum RecordSet {
+    Fasta(fasta::RecordSet),
+    Fastq(fastq::RecordSet),
+}
+impl RecordSet {
+    pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
+        match (self, reader) {
+            (RecordSet::Fasta(records), Reader::Fasta(reader)) => records.fill(reader),
+            (RecordSet::Fastq(records), Reader::Fastq(reader)) => records.fill(reader),
+            _ => Err(Error::FormatMismatch),
+        }
+    }
+
+    pub fn iter(&self) -> Box<dyn Iterator<Item = Result<RefRecord<'_>, Error>> + '_> {
+        match self {
+            RecordSet::Fasta(records) => Box::new(
+                records
+                    .iter()
+                    .map(|record| -> Result<RefRecord<'_>, Error> {
+                        Ok(RefRecord::Fasta(record?))
+                    }),
+            ),
+            RecordSet::Fastq(records) => Box::new(
+                records
+                    .iter()
+                    .map(|record| -> Result<RefRecord<'_>, Error> {
+                        Ok(RefRecord::Fastq(record?))
+                    }),
+            ),
+        }
+    }
+}
+
+pub enum RefRecord<'a> {
+    Fasta(fasta::RefRecord<'a>),
+    Fastq(fastq::RefRecord<'a>),
+}
+impl Record for RefRecord<'_> {
+    fn id(&self) -> &[u8] {
+        match self {
+            Self::Fasta(x) => x.id(),
+            Self::Fastq(x) => x.id(),
+        }
+    }
+    fn seq(&self) -> Cow<[u8]> {
+        match self {
+            Self::Fasta(x) => x.seq(),
+            Self::Fastq(x) => x.seq(),
+        }
+    }
+    fn seq_raw(&self) -> &[u8] {
+        match self {
+            Self::Fasta(x) => x.seq_raw(),
+            Self::Fastq(x) => x.seq_raw(),
+        }
+    }
+    fn qual(&self) -> Option<&[u8]> {
+        match self {
+            Self::Fasta(x) => x.qual(),
+            Self::Fastq(x) => x.qual(),
+        }
+    }
+}
 #[cfg(feature = "niffler")]
 #[cfg(test)]
 mod testing {

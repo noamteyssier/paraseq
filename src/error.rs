@@ -7,6 +7,9 @@ pub enum Error {
     #[error("Invalid start character ({0}), expected either '>' or '@'")]
     InvalidStartCharacter(char),
 
+    #[error("There is a format mismatch between the reader and the record set")]
+    FormatMismatch,
+
     #[error("Error reading from buffer: {0}")]
     Io(#[from] io::Error),
 
