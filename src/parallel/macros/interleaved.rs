@@ -1,6 +1,6 @@
 use std::{io, sync::Arc, thread};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, select, Receiver, Sender};
 use parking_lot::Mutex;
 
 use crate::parallel::error::{ProcessError, RecordPair, Result};
@@ -8,10 +8,16 @@ use crate::parallel::{InterleavedParallelProcessor, InterleavedParallelReader};
 
 type RecordSets<T> = Arc<Vec<Mutex<T>>>;
 type ProcessorChannels = (Sender<Option<usize>>, Receiver<Option<usize>>);
+type ShutdownChannel = (Sender<()>, Receiver<()>);
 
 /// Creates a pair of channels for communication between reader and worker threads
 fn create_channels(buffer_size: usize) -> ProcessorChannels {
     bounded(buffer_size)
+}
+
+/// Creates shutdown signal channel
+fn create_shutdown_channel() -> ShutdownChannel {
+    bounded(1)
 }
 
 /// Internal processing of reader thread for interleaved reads
@@ -19,6 +25,7 @@ fn run_reader_thread<R, T, F>(
     mut reader: R,
     record_sets: RecordSets<T>,
     tx: Sender<Option<usize>>,
+    shutdown_rx: Receiver<()>,
     num_threads: usize,
     read_fn: F,
 ) -> Result<()>
@@ -28,6 +35,15 @@ where
     let mut current_idx = 0;
 
     loop {
+        // Check for shutdown signal before proceeding
+        select! {
+            recv(shutdown_rx) -> _ => {
+                // Shutdown signal received, exit loop
+                break;
+            }
+            default => {}
+        }
+
         let mut record_set = record_sets[current_idx].lock();
         if read_fn(&mut reader, &mut record_set)? {
             drop(record_set);
@@ -40,7 +56,7 @@ where
 
     // Signal completion
     for _ in 0..num_threads {
-        tx.send(None)?;
+        let _ = tx.send(None); // Ignore result since workers may have already exited
     }
 
     Ok(())
@@ -50,6 +66,7 @@ where
 fn run_interleaved_worker_thread<T, P, F>(
     record_sets: RecordSets<T>,
     rx: Receiver<Option<usize>>,
+    shutdown_tx: Sender<()>,
     mut processor: P,
     thread_id: usize,
     process_fn: F,
@@ -61,8 +78,16 @@ where
     processor.set_thread_id(thread_id);
     while let Ok(Some(idx)) = rx.recv() {
         let record_set = record_sets[idx].lock();
-        process_fn(&record_set, &mut processor)?;
-        processor.on_batch_complete()?;
+        if let Err(e) = process_fn(&record_set, &mut processor) {
+            // Signal shutdown to reader thread
+            let _ = shutdown_tx.send(());
+            return Err(e);
+        }
+        if let Err(e) = processor.on_batch_complete() {
+            // Signal shutdown to reader thread
+            let _ = shutdown_tx.send(());
+            return Err(e);
+        }
     }
     processor.on_thread_complete()?;
     Ok(())
@@ -93,6 +118,7 @@ macro_rules! impl_interleaved_parallel_reader {
                         .collect::<Vec<_>>(),
                 );
                 let (tx, rx) = create_channels(num_threads * 2);
+                let (shutdown_tx, shutdown_rx) = create_shutdown_channel();
 
                 thread::scope(|scope| -> Result<()> {
                     // Spawn reader thread
@@ -102,6 +128,7 @@ macro_rules! impl_interleaved_parallel_reader {
                             self,
                             reader_sets,
                             tx,
+                            shutdown_rx,
                             num_threads,
                             |reader, record_set| Ok(record_set.fill(reader)?),
                         )
@@ -112,12 +139,14 @@ macro_rules! impl_interleaved_parallel_reader {
                     for thread_id in 0..num_threads {
                         let worker_sets = Arc::clone(&record_sets);
                         let worker_rx = rx.clone();
+                        let worker_shutdown_tx = shutdown_tx.clone();
                         let worker_processor = processor.clone();
 
                         let handle = scope.spawn(move || {
                             run_interleaved_worker_thread(
                                 worker_sets,
                                 worker_rx,
+                                worker_shutdown_tx,
                                 worker_processor,
                                 thread_id,
                                 |record_set, processor| {
