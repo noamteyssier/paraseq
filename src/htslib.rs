@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::borrow::Cow;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::{io, path::Path};
 
@@ -41,6 +42,43 @@ impl Reader {
     }
 }
 
+pub struct RefRecord<'a> {
+    pub inner: &'a bam::Record,
+    /// Used to store ASCII-encoded quality scores as BAM records store raw PHRED scores.
+    qual: OnceLock<Option<Vec<u8>>>,
+}
+impl<'a> RefRecord<'a> {
+    pub fn new(record: &'a bam::Record) -> Self {
+        Self {
+            inner: record,
+            qual: OnceLock::new(),
+        }
+    }
+}
+impl<'a> Record for RefRecord<'a> {
+    fn id(&self) -> &[u8] {
+        self.inner.qname()
+    }
+    fn seq(&self) -> Cow<[u8]> {
+        self.inner.seq().as_bytes().into()
+    }
+    fn seq_raw(&self) -> &[u8] {
+        unimplemented!("seq_raw is unimplemented by htslib readers")
+    }
+    fn qual(&self) -> Option<&[u8]> {
+        self.qual
+            .get_or_init(|| {
+                let qual = self.inner.qual();
+                if qual.is_empty() {
+                    None
+                } else {
+                    Some(qual.iter().map(|&phred| phred + 33).collect())
+                }
+            })
+            .as_deref()
+    }
+}
+
 impl ParallelReader<HtslibReader> for Reader {
     fn process_parallel<T>(mut self, processor: T, num_threads: usize) -> Result<()>
     where
@@ -60,7 +98,8 @@ impl ParallelReader<HtslibReader> for Reader {
                     let mut n_records = 0;
                     while let Some(res) = thread_reader.lock().0.read(&mut record) {
                         res?;
-                        worker_processor.process_record(&record)?;
+                        let ref_record = RefRecord::new(&record);
+                        worker_processor.process_record(ref_record)?;
 
                         if n_records == BATCH_SIZE {
                             worker_processor.on_batch_complete()?;
@@ -103,7 +142,8 @@ impl ParallelReader<HtslibReader> for Reader {
         let mut n_records = 0;
         while let Some(res) = self.0.read(&mut record) {
             res?;
-            processor.process_record(&record)?;
+            let ref_record = RefRecord::new(&record);
+            processor.process_record(ref_record)?;
             n_records += 1;
             if n_records == BATCH_SIZE {
                 processor.on_batch_complete()?;
@@ -115,42 +155,5 @@ impl ParallelReader<HtslibReader> for Reader {
         }
         processor.on_thread_complete()?;
         Ok(())
-    }
-}
-
-impl Record for bam::Record {
-    fn id(&self) -> &[u8] {
-        self.qname()
-    }
-    fn seq(&self) -> std::borrow::Cow<[u8]> {
-        self.seq().as_bytes().into()
-    }
-    fn seq_raw(&self) -> &[u8] {
-        unimplemented!("seq_raw is unimplemented for htslib")
-    }
-    fn qual(&self) -> Option<&[u8]> {
-        if self.qual().is_empty() {
-            None
-        } else {
-            Some(self.qual())
-        }
-    }
-}
-impl Record for &bam::Record {
-    fn id(&self) -> &[u8] {
-        self.qname()
-    }
-    fn seq(&self) -> std::borrow::Cow<[u8]> {
-        (*self).seq().as_bytes().into()
-    }
-    fn seq_raw(&self) -> &[u8] {
-        unimplemented!("seq_raw is unimplemented for htslib")
-    }
-    fn qual(&self) -> Option<&[u8]> {
-        if (*self).qual().is_empty() {
-            None
-        } else {
-            Some((*self).qual())
-        }
     }
 }
