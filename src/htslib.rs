@@ -10,6 +10,9 @@ use crate::{
     ProcessError, Record,
 };
 
+/// Type alias for the internal reader type used by htslib
+pub type HtslibReader = Box<dyn io::Read + Send>;
+
 /// The size of the batch used for parallel processing.
 pub const BATCH_SIZE: usize = 1024;
 
@@ -38,7 +41,7 @@ impl Reader {
     }
 }
 
-impl<R: io::Read + Send> ParallelReader<R> for Reader {
+impl ParallelReader<HtslibReader> for Reader {
     fn process_parallel<T>(mut self, processor: T, num_threads: usize) -> Result<()>
     where
         T: crate::prelude::ParallelProcessor,
