@@ -4,10 +4,12 @@ mod error;
 pub mod fasta;
 pub mod fastq;
 pub mod fastx;
-pub mod htslib;
 pub mod parallel;
 pub mod prelude;
 mod record;
+
+#[cfg(feature = "htslib")]
+pub mod htslib;
 
 pub use error::Error;
 pub use parallel::ProcessError;
