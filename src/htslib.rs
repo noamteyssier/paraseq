@@ -182,6 +182,10 @@ impl InterleavedParallelReader<HtslibReader> for Reader {
     {
         self.0.set_threads(num_threads)?;
 
+        if num_threads == 1 {
+            return self.process_sequential_interleaved(processor);
+        }
+
         let shared_reader = Arc::new(Mutex::new(self));
         thread::scope(|scope| -> Result<()> {
             let mut worker_handles = Vec::new();
@@ -194,35 +198,36 @@ impl InterleavedParallelReader<HtslibReader> for Reader {
                     let mut rec2 = bam::Record::new();
                     let mut n_pairs = 0;
                     loop {
-                        let res1 = thread_reader.lock().0.read(&mut rec1);
-                        let res2 = thread_reader.lock().0.read(&mut rec2);
-                        match (res1, res2) {
-                            (Some(res1), Some(res2)) => {
-                                res1?;
-                                res2?;
-                                error_check_read_pairs(&rec1, &rec2)?;
-                                let ref_rec1 = RefRecord::new(&rec1);
-                                let ref_rec2 = RefRecord::new(&rec2);
-                                worker_processor.process_interleaved_pair(ref_rec1, ref_rec2)?;
+                        let Some(res1) = thread_reader.lock().0.read(&mut rec1) else {
+                            break;
+                        };
+                        let Some(res2) = thread_reader.lock().0.read(&mut rec2) else {
+                            return Err(
+                                ParallelHtslibError::PairedRecordMismatch.into_process_error()
+                            );
+                        };
 
-                                if n_pairs == BATCH_SIZE {
-                                    worker_processor.on_batch_complete()?;
-                                    n_pairs = 0;
-                                }
-                                n_pairs += 1;
-                            }
-                            (None, None) => break,
-                            _ => {
-                                return Err(
-                                    ParallelHtslibError::PairedRecordMismatch.into_process_error()
-                                )
-                            }
+                        res1?;
+                        res2?; // handle errors
+
+                        error_check_read_pairs(&rec1, &rec2)?;
+
+                        let ref_rec1 = RefRecord::new(&rec1);
+                        let ref_rec2 = RefRecord::new(&rec2);
+                        worker_processor.process_interleaved_pair(ref_rec1, ref_rec2)?;
+
+                        if n_pairs == BATCH_SIZE {
+                            worker_processor.on_batch_complete()?;
+                            n_pairs = 0;
                         }
+
+                        n_pairs += 1;
                     }
 
                     if n_pairs > 0 {
                         worker_processor.on_batch_complete()?;
                     }
+
                     worker_processor.on_thread_complete()?;
 
                     Ok(())
@@ -245,30 +250,29 @@ impl InterleavedParallelReader<HtslibReader> for Reader {
         let mut rec2 = bam::Record::new();
         let mut n_pairs = 0;
         loop {
-            let res1 = self.0.read(&mut rec1);
-            let res2 = self.0.read(&mut rec2);
-            match (res1, res2) {
-                (Some(res1), Some(res2)) => {
-                    res1?; // handle potential errors
-                    res2?;
+            let Some(res1) = self.0.read(&mut rec1) else {
+                break;
+            };
+            let Some(res2) = self.0.read(&mut rec2) else {
+                return Err(ParallelHtslibError::PairedRecordMismatch.into_process_error());
+            };
 
-                    // validate record pairs
-                    error_check_read_pairs(&rec1, &rec2)?;
+            res1?;
+            res2?; // handle potential errors
 
-                    let ref_record1 = RefRecord::new(&rec1);
-                    let ref_record2 = RefRecord::new(&rec2);
-                    processor.process_interleaved_pair(ref_record1, ref_record2)?;
+            // validate record pairs
+            error_check_read_pairs(&rec1, &rec2)?;
 
-                    if n_pairs == BATCH_SIZE {
-                        processor.on_batch_complete()?;
-                        n_pairs = 0;
-                    }
+            let ref_record1 = RefRecord::new(&rec1);
+            let ref_record2 = RefRecord::new(&rec2);
+            processor.process_interleaved_pair(ref_record1, ref_record2)?;
 
-                    n_pairs += 1;
-                }
-                (None, None) => break,
-                _ => return Err(ParallelHtslibError::PairedRecordMismatch.into_process_error()),
+            if n_pairs == BATCH_SIZE {
+                processor.on_batch_complete()?;
+                n_pairs = 0;
             }
+
+            n_pairs += 1;
         }
         if n_pairs > 0 {
             processor.on_batch_complete()?;
