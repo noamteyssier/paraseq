@@ -159,6 +159,10 @@ jobs:
         run: ./htslib -f ${{ matrix.output_format }} data/sample.${{ matrix.input_format }}
       - name: test io from stdin
         run: /bin/cat ./data/sample.${{ matrix.input_format }} | ./htslib -f ${{ matrix.output_format }}
+      - name: test io from file (paired)
+        run: ./htslib -f ${{ matrix.output_format }} data/paired.${{ matrix.input_format }} --paired
+      - name: test io from stdin (paired)
+        run: /bin/cat ./data/paired.${{ matrix.input_format }} | ./htslib -f ${{ matrix.output_format }} --paired
 
   test-interleaved:
     name: Test Interleaved
