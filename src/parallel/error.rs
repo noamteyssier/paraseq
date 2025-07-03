@@ -41,6 +41,10 @@ pub enum ProcessError {
     /// Error from FASTX processing
     #[error("FASTX error: {0}")]
     FastxError(#[from] crate::Error),
+
+    /// Error from HTSlib
+    #[error("HTSlib error: {0}")]
+    HtslibError(#[from] rust_htslib::errors::Error),
 }
 
 /// Enum for identifying record pairs
