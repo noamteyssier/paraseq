@@ -8,6 +8,9 @@ pub mod parallel;
 pub mod prelude;
 mod record;
 
+#[cfg(feature = "htslib")]
+pub mod htslib;
+
 pub use error::Error;
 pub use parallel::ProcessError;
 pub use record::Record;
