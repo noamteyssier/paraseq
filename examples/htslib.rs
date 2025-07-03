@@ -56,6 +56,35 @@ impl ParallelProcessor for Processor {
         Ok(())
     }
 }
+impl InterleavedParallelProcessor for Processor {
+    fn process_interleaved_pair<Rf: Record>(
+        &mut self,
+        record1: Rf,
+        record2: Rf,
+    ) -> paraseq::parallel::Result<()> {
+        match self.out_format {
+            OutputFormat::Fasta => {
+                record1.write_fasta(&mut self.local_out)?;
+                record2.write_fasta(&mut self.local_out)?;
+            }
+            OutputFormat::Fastq => {
+                record1.write_fastq(&mut self.local_out)?;
+                record2.write_fastq(&mut self.local_out)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+        {
+            let mut global_out = self.global_out.lock();
+            global_out.write_all(&self.local_out)?;
+            global_out.flush()?;
+        } // drops global_out
+        self.local_out.clear();
+        Ok(())
+    }
+}
 
 #[derive(Parser)]
 struct Cli {
@@ -64,6 +93,10 @@ struct Cli {
     /// Output file path (stdout if not provided)
     #[clap(short = 'o')]
     output: Option<String>,
+
+    /// Paired-end mode (requires sorted SAM/BAM/CRAM)
+    #[clap(short = 'p', long)]
+    paired: bool,
 
     /// Number of threads to use for processing
     #[clap(short = 'T', default_value = "1")]
@@ -89,6 +122,10 @@ fn main() -> Result<()> {
     let handle_out = args.output_handle()?;
     let reader = htslib::Reader::from_optional_path(args.input_file.as_ref())?;
     let proc = Processor::new(handle_out, args.out_format);
-    reader.process_parallel(proc, args.num_threads)?;
+    if args.paired {
+        reader.process_parallel_interleaved(proc, args.num_threads)?;
+    } else {
+        reader.process_parallel(proc, args.num_threads)?;
+    }
     Ok(())
 }
