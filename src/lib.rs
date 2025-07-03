@@ -4,6 +4,7 @@ mod error;
 pub mod fasta;
 pub mod fastq;
 pub mod fastx;
+pub mod htslib;
 pub mod parallel;
 pub mod prelude;
 mod record;
