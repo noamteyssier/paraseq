@@ -5,9 +5,10 @@ use std::{io, path::Path};
 
 use parking_lot::Mutex;
 use rust_htslib::bam::{self, Read as BamRead};
+use thiserror::Error;
 
 use crate::{
-    parallel::{ParallelReader, Result},
+    parallel::{InterleavedParallelReader, IntoProcessError, ParallelReader, Result},
     ProcessError, Record,
 };
 
@@ -16,6 +17,22 @@ pub type HtslibReader = Box<dyn io::Read + Send>;
 
 /// The size of the batch used for parallel processing.
 pub const BATCH_SIZE: usize = 1024;
+
+/// Error type for parallel htslib operations.
+#[derive(Error, Debug)]
+pub enum ParallelHtslibError {
+    #[error("Record synchronization error for htslib files.")]
+    PairedRecordMismatch,
+
+    #[error("Unpaired record encountered: {0}")]
+    UnpairedRecord(String),
+
+    #[error("Paired records with different QNames encountered when expected: {0} != {1}")]
+    PairedRecordsWithDifferentQNames(String, String),
+
+    #[error("Paired records with same template position encountered when expected")]
+    PairedRecordsWithSameTemplatePosition,
+}
 
 pub struct Reader(bam::Reader);
 impl Reader {
@@ -156,4 +173,132 @@ impl ParallelReader<HtslibReader> for Reader {
         processor.on_thread_complete()?;
         Ok(())
     }
+}
+
+impl InterleavedParallelReader<HtslibReader> for Reader {
+    fn process_parallel_interleaved<T>(mut self, processor: T, num_threads: usize) -> Result<()>
+    where
+        T: crate::prelude::InterleavedParallelProcessor,
+    {
+        self.0.set_threads(num_threads)?;
+
+        let shared_reader = Arc::new(Mutex::new(self));
+        thread::scope(|scope| -> Result<()> {
+            let mut worker_handles = Vec::new();
+            for tid in 0..num_threads {
+                let mut worker_processor = processor.clone();
+                let thread_reader = shared_reader.clone();
+                let worker_handle = scope.spawn(move || -> Result<()> {
+                    worker_processor.set_thread_id(tid);
+                    let mut rec1 = bam::Record::new();
+                    let mut rec2 = bam::Record::new();
+                    let mut n_pairs = 0;
+                    loop {
+                        let res1 = thread_reader.lock().0.read(&mut rec1);
+                        let res2 = thread_reader.lock().0.read(&mut rec2);
+                        match (res1, res2) {
+                            (Some(res1), Some(res2)) => {
+                                res1?;
+                                res2?;
+                                error_check_read_pairs(&rec1, &rec2)?;
+                                let ref_rec1 = RefRecord::new(&rec1);
+                                let ref_rec2 = RefRecord::new(&rec2);
+                                worker_processor.process_interleaved_pair(ref_rec1, ref_rec2)?;
+
+                                if n_pairs == BATCH_SIZE {
+                                    worker_processor.on_batch_complete()?;
+                                    n_pairs = 0;
+                                }
+                                n_pairs += 1;
+                            }
+                            (None, None) => break,
+                            _ => {
+                                return Err(
+                                    ParallelHtslibError::PairedRecordMismatch.into_process_error()
+                                )
+                            }
+                        }
+                    }
+
+                    if n_pairs > 0 {
+                        worker_processor.on_batch_complete()?;
+                    }
+                    worker_processor.on_thread_complete()?;
+
+                    Ok(())
+                });
+                worker_handles.push(worker_handle);
+            }
+            for handle in worker_handles {
+                handle.join().unwrap()?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    fn process_sequential_interleaved<T>(mut self, mut processor: T) -> Result<()>
+    where
+        T: crate::prelude::InterleavedParallelProcessor,
+    {
+        let mut rec1 = bam::Record::new();
+        let mut rec2 = bam::Record::new();
+        let mut n_pairs = 0;
+        loop {
+            let res1 = self.0.read(&mut rec1);
+            let res2 = self.0.read(&mut rec2);
+            match (res1, res2) {
+                (Some(res1), Some(res2)) => {
+                    res1?; // handle potential errors
+                    res2?;
+
+                    // validate record pairs
+                    error_check_read_pairs(&rec1, &rec2)?;
+
+                    let ref_record1 = RefRecord::new(&rec1);
+                    let ref_record2 = RefRecord::new(&rec2);
+                    processor.process_interleaved_pair(ref_record1, ref_record2)?;
+
+                    if n_pairs == BATCH_SIZE {
+                        processor.on_batch_complete()?;
+                        n_pairs = 0;
+                    }
+
+                    n_pairs += 1;
+                }
+                (None, None) => break,
+                _ => return Err(ParallelHtslibError::PairedRecordMismatch.into_process_error()),
+            }
+        }
+        if n_pairs > 0 {
+            processor.on_batch_complete()?;
+        }
+        processor.on_thread_complete()?;
+        Ok(())
+    }
+}
+
+fn error_check_read_pairs(rec1: &bam::Record, rec2: &bam::Record) -> Result<()> {
+    if !rec1.is_paired() {
+        let qname = std::str::from_utf8(rec1.qname()).unwrap().to_string();
+        return Err(ParallelHtslibError::UnpairedRecord(qname).into_process_error());
+    }
+    if !rec2.is_paired() {
+        let qname = std::str::from_utf8(rec2.qname()).unwrap().to_string();
+        return Err(ParallelHtslibError::UnpairedRecord(qname).into_process_error());
+    }
+
+    if rec1.qname() != rec2.qname() {
+        return Err(ParallelHtslibError::PairedRecordsWithDifferentQNames(
+            std::str::from_utf8(rec1.qname()).unwrap().to_string(),
+            std::str::from_utf8(rec2.qname()).unwrap().to_string(),
+        )
+        .into_process_error());
+    }
+
+    if rec1.is_first_in_template() && rec2.is_first_in_template() {
+        return Err(ParallelHtslibError::PairedRecordsWithSameTemplatePosition.into_process_error());
+    }
+
+    Ok(())
 }

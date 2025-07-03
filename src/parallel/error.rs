@@ -4,6 +4,8 @@ use std::fmt;
 use crossbeam_channel::SendError;
 use thiserror::Error;
 
+use crate::htslib::ParallelHtslibError;
+
 // Convenience Result type alias
 pub type Result<T> = std::result::Result<T, ProcessError>;
 
@@ -45,6 +47,10 @@ pub enum ProcessError {
     /// Error from HTSlib
     #[error("HTSlib error: {0}")]
     HtslibError(#[from] rust_htslib::errors::Error),
+
+    /// Error for parallel processing of HTSlib files
+    #[error("Parallel HTSlib error: {0}")]
+    ParallelHtslibError(#[from] ParallelHtslibError),
 }
 
 /// Enum for identifying record pairs
