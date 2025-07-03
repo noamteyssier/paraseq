@@ -40,6 +40,7 @@ jobs:
         test-interleaved,
         test-multiline-fasta,
         test-read-write,
+        test-htslib,
         test-parallel,
         test-paired-parallel,
         test-naive,
@@ -123,6 +124,41 @@ jobs:
         run: ./read_write -f ${{ matrix.output_format }} data/sample.${{ matrix.input_format }}${{ matrix.input_compression }}
       - name: test io from stdin
         run: ./read_write ./data/sample.${{ matrix.input_format }}${{ matrix.input_compression }} -f ${{ matrix.output_format }} | ./read_write
+
+  build-htslib:
+    name: Build Htslib
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: build target
+        run: cargo build --release --example htslib
+      - name: upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: htslib-binary
+          path: ./target/release/examples/htslib
+
+  test-htslib-read:
+    name: Test Htslib Read
+    runs-on: "ubuntu-latest"
+    needs: build-htslib
+    strategy:
+      matrix:
+        input_format: [sam, bam, cram]
+        output_format: [fasta, fastq]
+    steps:
+      - uses: actions/checkout@v3
+      - name: download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: htslib-binary
+          path: .
+      - name: make executable
+        run: chmod +x ./htslib
+      - name: test io from file
+        run: ./htslib -f ${{ matrix.output_format }} data/sample.${{ matrix.input_format }}
+      - name: test io from stdin
+        run: /bin/cat ./data/sample.${{ matrix.input_format }} | ./htslib -f ${{ matrix.output_format }}
 
   test-interleaved:
     name: Test Interleaved
