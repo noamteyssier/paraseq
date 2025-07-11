@@ -1,7 +1,10 @@
 use std::io;
 
 use super::error::Result;
-use super::processor::{InterleavedParallelProcessor, PairedParallelProcessor, ParallelProcessor};
+use super::processor::{
+    InterleavedParallelProcessor, MultiParallelProcessor, PairedParallelProcessor,
+    ParallelProcessor,
+};
 
 pub trait ParallelReader<R>
 where
@@ -35,6 +38,33 @@ where
     fn process_sequential_paired<T>(self, reader2: Self, processor: T) -> Result<()>
     where
         T: PairedParallelProcessor;
+}
+
+/// Trait for parallel processing of fixed-arity read sets
+pub trait MultiParallelReader<R>: ParallelReader<R>
+where
+    R: io::Read + Send,
+{
+    /// Process paired FASTQ/FASTA files in parallel
+    fn process_parallel_multi<T>(
+        self,
+        remaining_readers: &mut [Self],
+        processor: T,
+        num_threads: usize,
+    ) -> Result<()>
+    where
+        T: MultiParallelProcessor,
+        Self: std::marker::Sized;
+
+    /// Process paired FASTQ/FASTA files sequentially
+    fn process_sequential_multi<T>(
+        self,
+        remaining_readers: &mut [Self],
+        processor: T,
+    ) -> Result<()>
+    where
+        T: MultiParallelProcessor,
+        Self: std::marker::Sized;
 }
 
 /// Trait for parallel processing of interleaved reads

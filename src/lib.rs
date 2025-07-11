@@ -17,3 +17,4 @@ pub use record::Record;
 
 /// Default maximum number of records in a record set.
 pub const DEFAULT_MAX_RECORDS: usize = 1024;
+pub const MAX_ARITY: usize = 8;

@@ -90,17 +90,15 @@ pub trait Record {
         writer.write_all(b"\n+\n")?;
         if let Some(qual) = self.qual() {
             writer.write_all(qual)?;
-        } else {
-            if seq.len() > NUM_QUALITY_SCORES {
-                // Write default quality scores in chunks of NUM_QUALITY_SCORES
-                for _ in 0..seq.len() / NUM_QUALITY_SCORES {
-                    writer.write_all(&COMPTIME_QUALITY_SCORES)?;
-                }
-                // Write remainder
-                writer.write_all(&COMPTIME_QUALITY_SCORES[..seq.len() % NUM_QUALITY_SCORES])?;
-            } else {
-                writer.write_all(&COMPTIME_QUALITY_SCORES[..seq.len()])?;
+        } else if seq.len() > NUM_QUALITY_SCORES {
+            // Write default quality scores in chunks of NUM_QUALITY_SCORES
+            for _ in 0..seq.len() / NUM_QUALITY_SCORES {
+                writer.write_all(COMPTIME_QUALITY_SCORES)?;
             }
+            // Write remainder
+            writer.write_all(&COMPTIME_QUALITY_SCORES[..seq.len() % NUM_QUALITY_SCORES])?;
+        } else {
+            writer.write_all(&COMPTIME_QUALITY_SCORES[..seq.len()])?;
         }
         writer.write_all(b"\n")?;
         Ok(())
