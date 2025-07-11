@@ -6,9 +6,10 @@ mod reader;
 
 pub use error::{IntoProcessError, ProcessError, Result};
 pub use processor::{
-    InterleavedParallelProcessor, MultiParallelProcessor, PairedParallelProcessor,
-    ParallelProcessor,
+    InterleavedParallelMultiProcessor, InterleavedParallelProcessor, MultiParallelProcessor,
+    PairedParallelProcessor, ParallelProcessor,
 };
 pub use reader::{
-    InterleavedParallelReader, MultiParallelReader, PairedParallelReader, ParallelReader,
+    InterleavedParallelMultiReader, InterleavedParallelReader, MultiParallelReader,
+    PairedParallelReader, ParallelReader,
 };
