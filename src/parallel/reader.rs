@@ -2,7 +2,7 @@ use std::io;
 
 use super::error::Result;
 use super::processor::{
-    InterleavedParallelMultiProcessor, InterleavedParallelProcessor, MultiParallelProcessor,
+    InterleavedMultiParallelProcessor, InterleavedParallelProcessor, MultiParallelProcessor,
     PairedParallelProcessor, ParallelProcessor,
 };
 
@@ -84,7 +84,7 @@ where
 }
 
 /// Trait for parallel processing of interleaved reads
-pub trait InterleavedParallelMultiReader<R>: ParallelReader<R>
+pub trait InterleavedMultiParallelReader<R>: ParallelReader<R>
 where
     R: io::Read + Send,
 {
@@ -96,10 +96,10 @@ where
         num_threads: usize,
     ) -> Result<()>
     where
-        T: InterleavedParallelMultiProcessor;
+        T: InterleavedMultiParallelProcessor;
 
     /// Process interleaved FASTQ/FASTA files sequentially
     fn process_sequential_interleaved_multi<T>(self, arity: usize, processor: T) -> Result<()>
     where
-        T: InterleavedParallelMultiProcessor;
+        T: InterleavedMultiParallelProcessor;
 }

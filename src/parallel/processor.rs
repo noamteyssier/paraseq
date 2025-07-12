@@ -83,7 +83,7 @@ pub trait MultiParallelProcessor: Send + Clone {
 }
 
 /// Trait implemented for a type that processes interleaved record sets in parallel
-pub trait InterleavedParallelMultiProcessor: Send + Clone {
+pub trait InterleavedMultiParallelProcessor: Send + Clone {
     /// Called on a pair of records from an interleaved file
     fn process_interleaved_multi<Rf: Record>(&mut self, records: &mut [Rf]) -> Result<()>;
 

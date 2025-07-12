@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use tinyvec::array_vec;
 
 use crate::parallel::error::{ProcessError, Result};
-use crate::parallel::{InterleavedParallelMultiProcessor, InterleavedParallelMultiReader};
+use crate::parallel::{InterleavedMultiParallelProcessor, InterleavedMultiParallelReader};
 use crate::MAX_ARITY;
 
 type RecordSets<T> = Arc<Vec<Mutex<T>>>;
@@ -74,7 +74,7 @@ fn run_interleaved_worker_thread<T, P, F>(
     process_fn: F,
 ) -> Result<()>
 where
-    P: InterleavedParallelMultiProcessor,
+    P: InterleavedMultiParallelProcessor,
     F: Fn(&T, &mut P) -> Result<()>,
 {
     processor.set_thread_id(thread_id);
@@ -98,7 +98,7 @@ where
 /// Macro to implement parallel reader for interleaved reads
 macro_rules! impl_interleaved_parallel_reader {
     ($reader:ty, $record_set:ty, $record_t: ty, $error:ty) => {
-        impl<R> InterleavedParallelMultiReader<R> for $reader
+        impl<R> InterleavedMultiParallelReader<R> for $reader
         where
             R: io::Read + Send,
         {
@@ -109,7 +109,7 @@ macro_rules! impl_interleaved_parallel_reader {
                 num_threads: usize,
             ) -> Result<()>
             where
-                T: InterleavedParallelMultiProcessor,
+                T: InterleavedMultiParallelProcessor,
             {
                 if num_threads == 0 {
                     return Err(ProcessError::InvalidThreadCount);
@@ -220,7 +220,7 @@ macro_rules! impl_interleaved_parallel_reader {
                 mut processor: T,
             ) -> Result<()>
             where
-                T: InterleavedParallelMultiProcessor,
+                T: InterleavedMultiParallelProcessor,
             {
                 let mut reader = self;
                 let mut record_set = <$record_set>::default();
