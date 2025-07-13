@@ -157,7 +157,7 @@ macro_rules! impl_interleaved_parallel_reader {
                                 worker_processor,
                                 thread_id,
                                 |record_set, processor| {
-                                    // Process records in interleaved pairs (R1, R2, R1, R2, ...)
+                                    // Process records in interleaved groups (R1, R2, R3, ..., RK, R1, R2, R3, ...)
                                     let mut records = record_set.iter().peekable();
                                     let mut rec_vec = array_vec!([$record_t; MAX_ARITY]);
                                     while records.peek().is_some() {
@@ -179,7 +179,7 @@ macro_rules! impl_interleaved_parallel_reader {
                                             rec_vec.push(record);
                                         }
 
-                                        // Process the pair
+                                        // Process the group
                                         processor
                                             .process_interleaved_multi(rec_vec.as_mut_slice())?;
                                     }
@@ -229,26 +229,38 @@ macro_rules! impl_interleaved_parallel_reader {
                     let mut records = record_set.iter();
                     let mut rec_vec = array_vec!([$record_t; MAX_ARITY]);
                     'process_reads: loop {
+                        // we read from the input until we no longer can.
                         rec_vec.clear();
+                        // every sequence of `arity` records comprises one record group.
                         for rank in 0..arity {
                             // Get the next record
                             let record = match records.next() {
                                 Some(r) => r?,
                                 None => {
+                                    // if we ran out at the start of a group, then this is
+                                    // a normal exit condition and we will presume we have
+                                    // just reached the end of the stream. In this case, we
+                                    // break out of the enclosing loop.
                                     if rank == 0 {
                                         break 'process_reads;
                                     } else {
+                                        // if we ran out of input at any other rank besides the
+                                        // first in the group, then we know that we are missing
+                                        // input that we expect, so raise the appropriate error.
                                         return Err(ProcessError::MultiRecordMismatch(rank));
                                     }
                                 } // No more records
                             };
+                            // if we got a valid record, push it to our group
                             rec_vec.push(record);
                         }
-                        // Process the group
+                        // process the group.
                         processor.process_interleaved_multi(rec_vec.as_mut_slice())?;
                     }
+                    // we finsihed a batch of records.
                     processor.on_batch_complete()?;
                 }
+                // we processed all records.
                 processor.on_thread_complete()?;
                 Ok(())
             }

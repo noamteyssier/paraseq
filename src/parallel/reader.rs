@@ -45,7 +45,11 @@ pub trait MultiParallelReader<R>: ParallelReader<R>
 where
     R: io::Read + Send,
 {
-    /// Process paired FASTQ/FASTA files in parallel
+    /// Process groups of FASTQ/FASTA files in parallel
+    /// The arity of the read groups (number of synchronized reads per group)
+    /// is determined by the length of the `remaining_readers` slice provided
+    /// to this function.  If the slice has length `N`, then the groups will
+    /// be of airty `N`+1.
     fn process_parallel_multi<T>(
         self,
         remaining_readers: &mut [Self],
