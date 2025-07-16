@@ -59,7 +59,7 @@ impl PairedParallelProcessor for Processor {
 
 fn main() -> Result<()> {
     let num_threads = 4;
-    let base_url = "https://github.com/noamteyssier/paraseq/raw/refs/heads/main/data/";
+    let base_url = "https://github.com/noamteyssier/paraseq/raw/refs/heads/main/data";
 
     // Single-end examples
     let examples = vec![
