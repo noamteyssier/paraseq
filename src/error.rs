@@ -13,6 +13,10 @@ pub enum Error {
     #[error("Error reading from buffer: {0}")]
     Io(#[from] io::Error),
 
+    #[cfg(feature = "url")]
+    #[error("Networking error: {0}")]
+    Network(#[from] reqwest::Error),
+
     #[cfg(feature = "niffler")]
     #[error("Error reading from file: {0}")]
     Niffler(#[from] niffler::Error),

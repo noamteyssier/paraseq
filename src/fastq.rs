@@ -61,6 +61,21 @@ impl Reader<Box<dyn io::Read + Send>> {
     }
 }
 
+#[cfg(feature = "url")]
+impl Reader<Box<dyn io::Read>> {
+    pub fn from_url(url: &str) -> Result<Self, Error> {
+        let stream = reqwest::blocking::get(url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
+        Ok(Self::new(reader))
+    }
+
+    pub fn from_url_with_batch_size(url: &str, batch_size: usize) -> Result<Self, Error> {
+        let stream = reqwest::blocking::get(url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
+        Self::with_batch_size(reader, batch_size)
+    }
+}
+
 impl<R: io::Read> Reader<R> {
     pub fn new(reader: R) -> Self {
         Self {
