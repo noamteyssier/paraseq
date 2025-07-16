@@ -65,7 +65,7 @@ pub trait PairedParallelProcessor: Send + Clone {
 /// an specific group.
 pub trait MultiParallelProcessor: Send + Clone {
     /// Called on a group of records
-    fn process_record_multi<Rf: Record>(&mut self, records: &mut [Rf]) -> Result<()>;
+    fn process_record_multi<Rf: Record>(&mut self, records: &[Rf]) -> Result<()>;
 
     /// Called when a batch of pairs is complete
     fn on_batch_complete(&mut self) -> Result<()> {
@@ -96,7 +96,7 @@ pub trait MultiParallelProcessor: Send + Clone {
 /// `InterleavedParallelProcessor` trait for interleaved pairs.
 pub trait InterleavedMultiParallelProcessor: Send + Clone {
     /// Called on a pair of records from an interleaved file
-    fn process_interleaved_multi<Rf: Record>(&mut self, records: &mut [Rf]) -> Result<()>;
+    fn process_interleaved_multi<Rf: Record>(&mut self, records: &[Rf]) -> Result<()>;
 
     /// Called when a batch of interleaved pairs is complete
     fn on_batch_complete(&mut self) -> Result<()> {
