@@ -227,9 +227,8 @@ macro_rules! impl_multi_parallel_reader {
                                         }
 
                                         if num_ok == arity {
-                                            processor.process_record_multi(
-                                                record_group.as_mut_slice(),
-                                            )?;
+                                            processor
+                                                .process_record_multi(record_group.as_slice())?;
                                         } else if num_empty == arity {
                                             break 'process_group_records;
                                         } else {
@@ -349,7 +348,7 @@ macro_rules! impl_multi_parallel_reader {
                                 }
                             }
                             if num_ok == arity {
-                                processor.process_record_multi(record_group.as_mut_slice())?;
+                                processor.process_record_multi(record_group.as_slice())?;
                             } else if num_empty == arity {
                                 break 'process_group_records;
                             } else {
