@@ -58,7 +58,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "url")]
-impl Reader<Box<dyn io::Read>> {
+impl Reader<Box<dyn io::Read + Send>> {
     pub fn from_url(url: &str) -> Result<Self, Error> {
         let stream = reqwest::blocking::get(url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
