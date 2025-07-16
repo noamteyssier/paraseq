@@ -56,13 +56,13 @@ impl MultiParallelProcessor for SeqSum {
 fn main() -> Result<(), ProcessError> {
     let path_r1 = std::env::args()
         .nth(1)
-        .unwrap_or("./data/sample_R1.fastq".to_string());
+        .unwrap_or("./data/r1.fastq".to_string());
     let path_r2 = std::env::args()
         .nth(2)
-        .unwrap_or("./data/sample_R2.fastq".to_string());
+        .unwrap_or("./data/r2.fastq".to_string());
     let path_r3 = std::env::args()
         .nth(3)
-        .unwrap_or("./data/sample_R3.fastq".to_string());
+        .unwrap_or("./data/r3.fastq".to_string());
     let num_threads = std::env::args()
         .nth(4)
         .unwrap_or("1".to_string())
