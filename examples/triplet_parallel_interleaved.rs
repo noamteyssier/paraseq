@@ -1,12 +1,6 @@
-use std::fs::File;
 use std::sync::Arc;
 
-// use anyhow::Result;
-use paraseq::{
-    fasta, fastq,
-    parallel::{InterleavedMultiParallelProcessor, InterleavedMultiParallelReader, ProcessError},
-    Record,
-};
+use paraseq::{fastx, prelude::*, ProcessError, Record};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]
@@ -58,7 +52,7 @@ impl InterleavedMultiParallelProcessor for SeqSum {
 }
 
 fn main() -> Result<(), ProcessError> {
-    let path_r1 = std::env::args()
+    let path = std::env::args()
         .nth(1)
         .unwrap_or("./data/r123.fastq".to_string());
     let num_threads = std::env::args()
@@ -67,23 +61,9 @@ fn main() -> Result<(), ProcessError> {
         .parse::<usize>()
         .unwrap_or(1);
 
-    let file_r1 = File::open(&path_r1)?;
+    let rdr = fastx::Reader::from_path(&path)?;
     let processor = SeqSum::default();
-
-    if path_r1.ends_with(".fastq") {
-        let rdr_r1 = fastq::Reader::new(file_r1);
-        match rdr_r1.process_parallel_interleaved_multi(3, processor.clone(), num_threads) {
-            Ok(_) => {}
-            Err(e) => {
-                println!("{e}");
-            }
-        }
-    } else if path_r1.ends_with(".fasta") {
-        let rdr_r1 = fasta::Reader::new(file_r1);
-        rdr_r1.process_parallel_interleaved_multi(3, processor.clone(), num_threads)?;
-    } else {
-        panic!("Unknown file format");
-    }
+    rdr.process_parallel_interleaved_multi(3, processor.clone(), num_threads)?;
 
     println!("num_records: {}", processor.get_num_records());
     println!("byte_sum: {}", processor.get_byte_sum());
