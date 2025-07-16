@@ -35,7 +35,7 @@ impl SeqSum {
 impl InterleavedMultiParallelProcessor for SeqSum {
     fn process_interleaved_multi<Rf: Record>(
         &mut self,
-        records: &mut [Rf],
+        records: &[Rf],
     ) -> Result<(), ProcessError> {
         for _ in 0..100 {
             for rec in records.iter() {

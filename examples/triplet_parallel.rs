@@ -32,7 +32,7 @@ impl SeqSum {
     }
 }
 impl MultiParallelProcessor for SeqSum {
-    fn process_record_multi<Rf: Record>(&mut self, records: &mut [Rf]) -> Result<(), ProcessError> {
+    fn process_record_multi<Rf: Record>(&mut self, records: &[Rf]) -> Result<(), ProcessError> {
         for _ in 0..100 {
             for rec in records.iter() {
                 // Simulate some work

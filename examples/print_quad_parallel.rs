@@ -23,7 +23,7 @@ impl SeqSum {
 }
 
 impl MultiParallelProcessor for SeqSum {
-    fn process_record_multi<Rf: Record>(&mut self, records: &mut [Rf]) -> Result<(), ProcessError> {
+    fn process_record_multi<Rf: Record>(&mut self, records: &[Rf]) -> Result<(), ProcessError> {
         for (i, rec) in records.iter().enumerate() {
             // Simulate some work
             print!("rank {}: {} ", i, String::from_utf8_lossy(rec.id()));
