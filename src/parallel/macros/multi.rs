@@ -194,18 +194,20 @@ macro_rules! impl_multi_parallel_reader {
                                 thread_id,
                                 |record_set_multi, processor| {
                                     let arity = record_set_multi.len();
+                                    let mut iter_group = Vec::with_capacity(arity);
+                                    for rs in record_set_multi.iter() {
+                                        iter_group.push(rs.iter());
+                                    }
+
                                     // Process records in groups
                                     'process_group_records: loop {
-                                        let mut iter_group = Vec::with_capacity(arity);
                                         let mut record_group = array_vec!([$record_t; MAX_ARITY]);
-                                        for rs in record_set_multi.iter() {
-                                            iter_group.push(rs.iter());
-                                        }
-
                                         let mut num_ok = 0;
                                         let mut num_empty = 0;
                                         let mut first_empty = usize::MAX;
                                         record_group.clear();
+                                        // generate a group of records at a time by pulling out
+                                        // the next available record from each of the iterators
                                         for (j, record_set_iter) in
                                             iter_group.iter_mut().enumerate()
                                         {
