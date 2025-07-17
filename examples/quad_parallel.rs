@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use paraseq::{
-    fasta, fastq,
+    fastx,
     parallel::{MultiParallelProcessor, MultiParallelReader, ProcessError},
     Record,
 };
@@ -59,37 +59,13 @@ fn main() -> Result<(), ProcessError> {
         .unwrap_or(1);
 
     let processor = SeqSum::default();
-
-    if path_r1.ends_with(".fastq") {
-        let rdr_r1 = fastq::Reader::from_path(path_r1)?;
-        let mut rem = vec![
-            fastq::Reader::from_path(path_r2)?,
-            fastq::Reader::from_path(path_r3)?,
-            fastq::Reader::from_path(path_r4)?,
-        ];
-        match rdr_r1.process_parallel_multi(rem.as_mut_slice(), processor.clone(), num_threads) {
-            Ok(_) => {}
-            Err(e) => {
-                println!("{e}");
-            }
-        }
-    } else if path_r1.ends_with(".fasta") {
-        let rdr_r1 = fasta::Reader::from_path(path_r1)?;
-        let mut rem = vec![
-            fasta::Reader::from_path(path_r2)?,
-            fasta::Reader::from_path(path_r3)?,
-            fasta::Reader::from_path(path_r4)?,
-        ];
-        match rdr_r1.process_parallel_multi(rem.as_mut_slice(), processor.clone(), num_threads) {
-            Ok(_) => {}
-            Err(e) => {
-                println!("{e}");
-            }
-        }
-    } else {
-        panic!("Unknown file format");
-    }
-
+    let rdr_r1 = fastx::Reader::from_path(path_r1)?;
+    let rem = vec![
+        fastx::Reader::from_path(path_r2)?,
+        fastx::Reader::from_path(path_r3)?,
+        fastx::Reader::from_path(path_r4)?,
+    ];
+    rdr_r1.process_parallel_multi(rem, processor.clone(), num_threads)?;
     println!("num_records: {}", processor.get_num_records());
 
     Ok(())
