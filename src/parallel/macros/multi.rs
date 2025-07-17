@@ -73,11 +73,12 @@ where
                 num_ended += 1;
             }
         }
-        if num_ok == readers.len() {
+        if num_ok == arity {
             drop(record_set_elem);
             tx.send(Some(current_idx))?;
             current_idx = (current_idx + 1) % record_sets.len();
-        } else if num_ended == readers.len() {
+        } else if num_ended == arity {
+            drop(record_set_elem);
             break;
         } else {
             return Err(ProcessError::MultiRecordMismatch(first_ended));
