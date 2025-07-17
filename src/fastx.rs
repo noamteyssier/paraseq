@@ -128,6 +128,26 @@ impl<R: io::Read> Reader<R> {
             _ => Err(Error::FormatMismatch),
         }
     }
+
+    pub fn into_fasta_reader(self) -> Result<fasta::Reader<R>, Error> {
+        match self {
+            Self::Fasta(inner) => Ok(inner),
+            _ => Err(Error::UnexpectedFormatRequest(
+                "FASTQ".to_string(),
+                "FASTA".to_string(),
+            )),
+        }
+    }
+
+    pub fn into_fastq_reader(self) -> Result<fastq::Reader<R>, Error> {
+        match self {
+            Self::Fastq(inner) => Ok(inner),
+            _ => Err(Error::UnexpectedFormatRequest(
+                "FASTA".to_string(),
+                "FASTQ".to_string(),
+            )),
+        }
+    }
 }
 
 pub enum RecordSet {
