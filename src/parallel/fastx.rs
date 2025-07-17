@@ -7,6 +7,7 @@ use crate::{
         InterleavedParallelProcessor, InterleavedParallelReader, PairedParallelProcessor,
         PairedParallelReader, ParallelProcessor, ParallelReader,
     },
+    prelude::{MultiParallelProcessor, MultiParallelReader},
 };
 
 /// Implements the `ParallelReader` trait for `fastx::Reader`.
@@ -95,6 +96,73 @@ impl<R: Read + Send> InterleavedParallelReader<R> for fastx::Reader<R> {
         match self {
             Self::Fasta(reader) => reader.process_sequential_interleaved(processor),
             Self::Fastq(reader) => reader.process_sequential_interleaved(processor),
+        }
+    }
+}
+
+impl<R: Read + Send> MultiParallelReader<R> for fastx::Reader<R> {
+    fn process_parallel_multi<T>(
+        self,
+        remaining_readers: Vec<Self>,
+        processor: T,
+        num_threads: usize,
+    ) -> super::Result<()>
+    where
+        T: MultiParallelProcessor,
+    {
+        match self {
+            Self::Fasta(reader) => {
+                let mut readers = vec![];
+                remaining_readers
+                    .into_iter()
+                    .try_for_each(|r| -> Result<(), crate::Error> {
+                        readers.push(r.into_fasta_reader()?);
+                        Ok(())
+                    })?;
+                reader.process_parallel_multi(readers, processor, num_threads)
+            }
+            Self::Fastq(reader) => {
+                let mut readers = vec![];
+                remaining_readers
+                    .into_iter()
+                    .try_for_each(|r| -> Result<(), crate::Error> {
+                        readers.push(r.into_fastq_reader()?);
+                        Ok(())
+                    })?;
+                reader.process_parallel_multi(readers, processor, num_threads)
+            }
+        }
+    }
+
+    fn process_sequential_multi<T>(
+        self,
+        remaining_readers: Vec<Self>,
+        processor: T,
+    ) -> super::Result<()>
+    where
+        T: MultiParallelProcessor,
+    {
+        match self {
+            Self::Fasta(reader) => {
+                let mut readers = vec![];
+                remaining_readers
+                    .into_iter()
+                    .try_for_each(|r| -> Result<(), crate::Error> {
+                        readers.push(r.into_fasta_reader()?);
+                        Ok(())
+                    })?;
+                reader.process_sequential_multi(readers, processor)
+            }
+            Self::Fastq(reader) => {
+                let mut readers = vec![];
+                remaining_readers
+                    .into_iter()
+                    .try_for_each(|r| -> Result<(), crate::Error> {
+                        readers.push(r.into_fastq_reader()?);
+                        Ok(())
+                    })?;
+                reader.process_sequential_multi(readers, processor)
+            }
         }
     }
 }

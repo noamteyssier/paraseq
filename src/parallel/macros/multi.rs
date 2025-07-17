@@ -132,7 +132,7 @@ macro_rules! impl_multi_parallel_reader {
         {
             fn process_parallel_multi<T>(
                 self,
-                remaining_readers: &mut [Self],
+                mut remaining_readers: Vec<Self>,
                 processor: T,
                 num_threads: usize,
             ) -> Result<()>
@@ -167,7 +167,7 @@ macro_rules! impl_multi_parallel_reader {
                     let reader_handle = scope.spawn(move || -> Result<()> {
                         run_multi_reader_thread(
                             self,
-                            remaining_readers,
+                            remaining_readers.as_mut_slice(),
                             reader_sets,
                             tx,
                             shutdown_rx,
@@ -269,7 +269,7 @@ macro_rules! impl_multi_parallel_reader {
 
             fn process_sequential_multi<T>(
                 mut self,
-                remaining_readers: &mut [Self],
+                mut remaining_readers: Vec<Self>,
                 mut processor: T,
             ) -> Result<()>
             where

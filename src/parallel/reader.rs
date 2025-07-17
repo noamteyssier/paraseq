@@ -52,7 +52,7 @@ where
     /// be of airty `N`+1.
     fn process_parallel_multi<T>(
         self,
-        remaining_readers: &mut [Self],
+        remaining_readers: Vec<Self>,
         processor: T,
         num_threads: usize,
     ) -> Result<()>
@@ -61,11 +61,7 @@ where
         Self: std::marker::Sized;
 
     /// Process paired FASTQ/FASTA files sequentially
-    fn process_sequential_multi<T>(
-        self,
-        remaining_readers: &mut [Self],
-        processor: T,
-    ) -> Result<()>
+    fn process_sequential_multi<T>(self, remaining_readers: Vec<Self>, processor: T) -> Result<()>
     where
         T: MultiParallelProcessor,
         Self: std::marker::Sized;
