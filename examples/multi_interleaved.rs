@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use clap::Parser;
 use paraseq::{fastx, prelude::*, ProcessError, Record};
 use parking_lot::Mutex;
 
@@ -51,22 +52,25 @@ impl InterleavedMultiParallelProcessor for SeqSum {
     }
 }
 
-fn main() -> Result<(), ProcessError> {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or("./data/r123.fastq".to_string());
-    let num_threads = std::env::args()
-        .nth(2)
-        .unwrap_or("1".to_string())
-        .parse::<usize>()
-        .unwrap_or(1);
+#[derive(Parser)]
+struct Args {
+    /// Input interleaved FASTX to process
+    #[clap(required = true)]
+    path: String,
+    /// Number of records to process in each interleaved batch
+    #[clap(short, long, required = true)]
+    arity: usize,
+    #[clap(short = 'T', long, default_value_t = 4)]
+    threads: usize,
+}
 
-    let rdr = fastx::Reader::from_path(&path)?;
+fn main() -> Result<(), ProcessError> {
+    let args = Args::parse();
+    let rdr = fastx::Reader::from_path(&args.path)?;
     let processor = SeqSum::default();
-    rdr.process_parallel_interleaved_multi(3, processor.clone(), num_threads)?;
+    rdr.process_parallel_interleaved_multi(args.arity, processor.clone(), args.threads)?;
 
     println!("num_records: {}", processor.get_num_records());
     println!("byte_sum: {}", processor.get_byte_sum());
-
     Ok(())
 }
