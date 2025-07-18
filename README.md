@@ -29,7 +29,8 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 
 ### Optional Features (Feature Flags)
 - Supports parallel processing of SAM/BAM/CRAM files using [`rust_htslib`](https://crates.io/crates/rust_htslib) (with `htslib` feature flag)
-- Support URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag.).
+- Support URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag)
+- Support SSH paths as inputs respecting system configuration (with `ssh` feature flag)
 
 ## Usage
 
