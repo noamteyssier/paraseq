@@ -50,6 +50,7 @@ jobs:
         test-reloading-parallel,
         test-multi,
         test-multi-interleaved,
+        test-url,
       ]
     name: Integration Tests
     runs-on: "ubuntu-latest"
@@ -92,6 +93,14 @@ jobs:
         run: ./fastx data/sample.${{ matrix.input_format }} -f ${{ matrix.output_format }}
       - name: Run test (from stdin)
         run: /bin/cat data/sample.${{ matrix.input_format }} | ./fastx -f ${{ matrix.output_format }}
+
+  test-url:
+    name: Test URL
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: run test
+        run: cargo run --release --example url
 
   build-multi:
     name: Build Multi
