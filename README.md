@@ -1,5 +1,10 @@
 # paraseq
 
+
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE.md)
+[![Crates.io](https://img.shields.io/crates/d/paraseq?color=orange&label=crates.io)](https://crates.io/crates/paraseq)
+[![docs.rs](https://img.shields.io/docsrs/paraseq?color=green&label=docs.rs)](https://docs.rs/paraseq/latest/paraseq/)
+
 A high-performance Rust library for parallel processing of FASTA/FASTQ (FASTX) sequence files, optimized for modern hardware and large datasets.
 
 `paraseq` provides a simplified interface for parallel processing of FASTX files that can be invariant to the file format or paired status.
