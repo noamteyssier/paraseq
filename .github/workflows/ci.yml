@@ -99,12 +99,12 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: build target
-        run: cargo build --release --example multi
+        run: cargo build --release --example multi_parallel
       - name: upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: multi-binary
-          path: ./target/release/examples/multi
+          path: ./target/release/examples/multi_parallel
 
   test-multi:
     name: Test Multi
@@ -121,13 +121,13 @@ jobs:
           name: multi-binary
           path: .
       - name: make executable
-        run: chmod +x ./multi
+        run: chmod +x ./multi_parallel
       - name: test arity-2
-        run: ./multi -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq
+        run: ./multi_parallel -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq
       - name: test arity-3
-        run: ./multi -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq ./data/r3.fastq
+        run: ./multi_parallel -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq ./data/r3.fastq
       - name: test arity-4
-        run: ./multi -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq ./data/r3.fastq ./data/r4.fastq
+        run: ./multi_parallel -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq ./data/r3.fastq ./data/r4.fastq
 
   build-multi-interleaved:
     name: Build Multi Interleaved
