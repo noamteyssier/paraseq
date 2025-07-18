@@ -72,6 +72,21 @@ impl Reader<Box<dyn io::Read + Send>> {
     }
 }
 
+#[cfg(feature = "ssh")]
+impl Reader<Box<dyn io::Read + Send>> {
+    pub fn from_ssh(ssh_url: &str) -> Result<Self, Error> {
+        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
+        Self::new(reader)
+    }
+
+    pub fn from_ssh_with_batch_size(ssh_url: &str, batch_size: usize) -> Result<Self, Error> {
+        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
+        Self::new_with_batch_size(reader, batch_size)
+    }
+}
+
 impl<R: io::Read> Reader<R> {
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let mut buffer = [0; 1];

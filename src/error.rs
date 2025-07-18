@@ -21,6 +21,10 @@ pub enum Error {
     #[error("Error reading from file: {0}")]
     Niffler(#[from] niffler::Error),
 
+    #[cfg(feature = "ssh")]
+    #[error("SSH error: {0}")]
+    Ssh(#[from] crate::ssh::SshError),
+
     #[error("Invalid batch size ({0}), must be greater than zero")]
     InvalidBatchSize(usize),
 
