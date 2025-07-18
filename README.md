@@ -26,7 +26,10 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 - Parallel processing of single-end, paired-end, interleaved, and multi-FASTX files with a consistent API.
 - Simple construction of readers from file paths and handles with optional transparent decompression support with [niffler](https://github.com/luizirber/niffler).
 - Generalized Map-Reduce pattern for processing sequencing data (single-end, paired-end, and interleaved)
-- Supports parallel processing of SAM/BAM/CRAM files using [`rust_htslib`](https://crates.io/crates/rust_htslib)
+
+### Optional Features (Feature Flags)
+- Supports parallel processing of SAM/BAM/CRAM files using [`rust_htslib`](https://crates.io/crates/rust_htslib) (with `htslib` feature flag)
+- Support URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag.).
 
 ## Usage
 
