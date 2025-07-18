@@ -31,6 +31,12 @@ pub enum ProcessError {
     #[error("Record synchronization error between paired files. {0} has less records.")]
     PairedRecordMismatch(RecordPair),
 
+    /// Record synchronization error between paired files
+    #[error(
+        "Record synchronization error between multiple files. (at least) File {0} has fewer records."
+    )]
+    MultiRecordMismatch(usize),
+
     /// Error sending data between threads
     #[error("Channel error: {0}")]
     SendError(#[from] SendError<Option<usize>>),

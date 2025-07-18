@@ -48,6 +48,8 @@ jobs:
         test-naive,
         test-reloading,
         test-reloading-parallel,
+        test-multi,
+        test-multi-interleaved,
       ]
     name: Integration Tests
     runs-on: "ubuntu-latest"
@@ -90,6 +92,76 @@ jobs:
         run: ./fastx data/sample.${{ matrix.input_format }} -f ${{ matrix.output_format }}
       - name: Run test (from stdin)
         run: /bin/cat data/sample.${{ matrix.input_format }} | ./fastx -f ${{ matrix.output_format }}
+
+  build-multi:
+    name: Build Multi
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: build target
+        run: cargo build --release --example multi
+      - name: upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-binary
+          path: ./target/release/examples/multi
+
+  test-multi:
+    name: Test Multi
+    runs-on: "ubuntu-latest"
+    needs: build-multi
+    strategy:
+      matrix:
+        threads: [1, 4]
+    steps:
+      - uses: actions/checkout@v3
+      - name: download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: multi-binary
+          path: .
+      - name: make executable
+        run: chmod +x ./multi
+      - name: test arity-2
+        run: ./multi -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq
+      - name: test arity-3
+        run: ./multi -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq ./data/r3.fastq
+      - name: test arity-4
+        run: ./multi -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq ./data/r3.fastq ./data/r4.fastq
+
+  build-multi-interleaved:
+    name: Build Multi Interleaved
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: build target
+        run: cargo build --release --example multi_interleaved
+      - name: upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-interleaved-binary
+          path: ./target/release/examples/multi_interleaved
+
+  test-multi-interleaved:
+    name: Test Multi Interleaved
+    runs-on: "ubuntu-latest"
+    needs: build-multi-interleaved
+    strategy:
+      matrix:
+        threads: [1, 4]
+    steps:
+      - uses: actions/checkout@v3
+      - name: download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: multi-interleaved-binary
+          path: .
+      - name: make executable
+        run: chmod +x ./multi_interleaved
+      - name: test arity-2
+        run: ./multi_interleaved -T ${{ matrix.threads }} ./data/interleaved.fastq --arity 2
+      - name: test arity-3
+        run: ./multi_interleaved -T ${{ matrix.threads }} ./data/r123.fastq --arity 3
 
   build-read-write:
     name: Build Read Write

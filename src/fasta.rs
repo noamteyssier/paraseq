@@ -349,14 +349,14 @@ impl RecordSet {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 struct Positions {
     start: usize,
     seq_start: usize,
     end: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct RefRecord<'a> {
     buffer: &'a [u8],
     positions: Positions,

@@ -117,9 +117,35 @@ impl<R: io::Read> Reader<R> {
 
     pub fn reload(&mut self, rset: &mut RecordSet) -> Result<(), Error> {
         match (self, rset) {
-            (Self::Fasta(inner), RecordSet::Fasta(rset)) => Ok(inner.reload(rset)),
-            (Self::Fastq(inner), RecordSet::Fastq(rset)) => Ok(inner.reload(rset)),
+            (Self::Fasta(inner), RecordSet::Fasta(rset)) => {
+                inner.reload(rset);
+                Ok(())
+            }
+            (Self::Fastq(inner), RecordSet::Fastq(rset)) => {
+                inner.reload(rset);
+                Ok(())
+            }
             _ => Err(Error::FormatMismatch),
+        }
+    }
+
+    pub fn into_fasta_reader(self) -> Result<fasta::Reader<R>, Error> {
+        match self {
+            Self::Fasta(inner) => Ok(inner),
+            _ => Err(Error::UnexpectedFormatRequest(
+                "FASTQ".to_string(),
+                "FASTA".to_string(),
+            )),
+        }
+    }
+
+    pub fn into_fastq_reader(self) -> Result<fastq::Reader<R>, Error> {
+        match self {
+            Self::Fastq(inner) => Ok(inner),
+            _ => Err(Error::UnexpectedFormatRequest(
+                "FASTA".to_string(),
+                "FASTQ".to_string(),
+            )),
         }
     }
 }
@@ -161,6 +187,7 @@ pub enum RefRecord<'a> {
     Fasta(fasta::RefRecord<'a>),
     Fastq(fastq::RefRecord<'a>),
 }
+
 impl Record for RefRecord<'_> {
     fn id(&self) -> &[u8] {
         match self {

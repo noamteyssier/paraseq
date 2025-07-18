@@ -308,7 +308,7 @@ impl RecordSet {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 struct Positions {
     start: usize,
     seq_start: usize,
@@ -317,7 +317,7 @@ struct Positions {
     end: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct RefRecord<'a> {
     buffer: &'a [u8],
     positions: Positions,
@@ -406,7 +406,6 @@ impl Record for RefRecord<'_> {
     }
 
     #[inline]
-    #[must_use]
     fn seq_raw(&self) -> &[u8] {
         self.access_buffer(self.positions.seq_start, self.positions.sep_start)
     }
@@ -494,7 +493,7 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
 
         let next_record = record_set.iter().next();
-        println!("{:?}", next_record);
+        println!("{next_record:?}");
 
         assert!(matches!(
             record_set.iter().next().unwrap().unwrap_err(),
