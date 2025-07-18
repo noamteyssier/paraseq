@@ -1,5 +1,10 @@
 # paraseq
 
+
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE.md)
+[![Crates.io](https://img.shields.io/crates/d/paraseq?color=orange&label=crates.io)](https://crates.io/crates/paraseq)
+[![docs.rs](https://img.shields.io/docsrs/paraseq?color=green&label=docs.rs)](https://docs.rs/paraseq/latest/paraseq/)
+
 A high-performance Rust library for parallel processing of FASTA/FASTQ (FASTX) sequence files, optimized for modern hardware and large datasets.
 
 `paraseq` provides a simplified interface for parallel processing of FASTX files that can be invariant to the file format or paired status.
@@ -29,7 +34,8 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 
 ### Optional Features (Feature Flags)
 - Supports parallel processing of SAM/BAM/CRAM files using [`rust_htslib`](https://crates.io/crates/rust_htslib) (with `htslib` feature flag)
-- Support URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag.).
+- Support URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag)
+- Support SSH paths as inputs respecting system configuration (with `ssh` feature flag)
 
 ## Usage
 

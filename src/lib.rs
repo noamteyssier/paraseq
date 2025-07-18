@@ -11,6 +11,9 @@ mod record;
 #[cfg(feature = "htslib")]
 pub mod htslib;
 
+#[cfg(feature = "ssh")]
+pub mod ssh;
+
 pub use error::Error;
 pub use parallel::ProcessError;
 pub use record::Record;
