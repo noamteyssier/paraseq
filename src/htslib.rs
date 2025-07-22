@@ -198,14 +198,18 @@ impl InterleavedParallelReader<HtslibReader> for Reader {
                     let mut rec2 = bam::Record::new();
                     let mut n_pairs = 0;
                     loop {
-                        let Some(res1) = thread_reader.lock().0.read(&mut rec1) else {
-                            break;
-                        };
-                        let Some(res2) = thread_reader.lock().0.read(&mut rec2) else {
-                            return Err(
-                                ParallelHtslibError::PairedRecordMismatch.into_process_error()
-                            );
-                        };
+                        let (res1, res2) = {
+                            let mut reader = thread_reader.lock();
+                            let Some(res1) = reader.0.read(&mut rec1) else {
+                                break;
+                            };
+                            let Some(res2) = reader.0.read(&mut rec2) else {
+                                return Err(
+                                    ParallelHtslibError::PairedRecordMismatch.into_process_error()
+                                );
+                            };
+                            (res1, res2)
+                        }; // drop lock on reader
 
                         res1?;
                         res2?; // handle errors
