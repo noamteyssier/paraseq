@@ -11,6 +11,9 @@ mod record;
 #[cfg(feature = "htslib")]
 pub mod htslib;
 
+#[cfg(feature = "htslib")]
+pub extern crate rust_htslib;
+
 #[cfg(feature = "ssh")]
 pub mod ssh;
 
