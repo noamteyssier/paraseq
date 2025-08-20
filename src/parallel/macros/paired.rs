@@ -1,26 +1,10 @@
+use std::sync::Mutex;
 use std::{io, thread};
-
-use crossbeam_channel::{bounded, select, Receiver, Sender};
-use parking_lot::Mutex;
 
 use crate::parallel::error::{ProcessError, RecordPair, Result};
 use crate::parallel::{PairedParallelProcessor, PairedParallelReader};
 use crate::prelude::ParallelReader;
 use crate::Record;
-
-/// Type alias for channels used in parallel processing
-type ProcessorChannels = (Sender<Option<usize>>, Receiver<Option<usize>>);
-type ShutdownChannel = (Sender<()>, Receiver<()>);
-
-/// Creates a pair of channels for communication between reader and worker threads
-fn create_channels(buffer_size: usize) -> ProcessorChannels {
-    bounded(buffer_size)
-}
-
-/// Creates shutdown signal channel
-fn create_shutdown_channel() -> ShutdownChannel {
-    bounded(1)
-}
 
 trait PairedParallelReaderSupport: Send {
     type RecordSet: Default + Send;
@@ -102,7 +86,7 @@ where
 {
     fn process_parallel_paired<T>(
         self,
-        mut reader2: Self,
+        reader2: Self,
         processor: T,
         num_threads: usize,
     ) -> Result<()>
@@ -127,17 +111,17 @@ where
             for thread_id in 0..num_threads {
                 let mut worker_processor = processor.clone();
                 let mut record_set_pair = (
-                    reader1.lock().new_record_set(),
-                    reader2.lock().new_record_set(),
+                    reader1.lock().unwrap().new_record_set(),
+                    reader2.lock().unwrap().new_record_set(),
                 );
 
                 let handle = scope.spawn(move || {
                     worker_processor.set_thread_id(thread_id);
 
                     loop {
-                        let mut r1 = reader1.lock();
+                        let mut r1 = reader1.lock().unwrap();
                         let s1 = r1.fill(&mut record_set_pair.0);
-                        let mut r2 = reader2.lock();
+                        let mut r2 = reader2.lock().unwrap();
                         drop(r1);
                         let s2 = r2.fill(&mut record_set_pair.1);
                         drop(r2);
