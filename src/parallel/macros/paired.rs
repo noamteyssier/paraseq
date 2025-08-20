@@ -136,10 +136,10 @@ where
 
                     loop {
                         let mut r1 = reader1.lock();
-                        let mut r2 = reader2.lock();
                         let s1 = r1.fill(&mut record_set_pair.0);
-                        let s2 = r2.fill(&mut record_set_pair.1);
+                        let mut r2 = reader2.lock();
                         drop(r1);
+                        let s2 = r2.fill(&mut record_set_pair.1);
                         drop(r2);
 
                         match (s1, s2) {
