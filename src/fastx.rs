@@ -297,6 +297,23 @@ impl Record for RefRecord<'_> {
         }
     }
 }
+
+/// An internal trait implemented both by fasta and fastq types,
+/// so we only have to write the reader and parallel IO implementations once.
+pub(crate) trait FastXReaderSupport: Send {
+    type RecordSet: Default + Send;
+    type Error;
+    type RefRecord<'a>: Record;
+
+    fn new_record_set(&self) -> Self::RecordSet;
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error>;
+
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>>;
+}
+
+
 #[cfg(feature = "niffler")]
 #[cfg(test)]
 mod testing {

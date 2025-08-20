@@ -3,7 +3,7 @@ use std::io;
 #[cfg(feature = "niffler")]
 use std::path::Path;
 
-use crate::{Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{fastx::FastXReaderSupport, Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -15,7 +15,7 @@ pub struct Reader<R: io::Read> {
     /// Sets the maximum capcity of records in batches for parallel processing
     ///
     /// If not set, the default `RecordSet` capacity is used.
-    pub(crate) batch_size: Option<usize>,
+    batch_size: Option<usize>,
 }
 
 #[cfg(feature = "niffler")]
@@ -224,13 +224,13 @@ impl Reader<Box<dyn io::Read + Send>> {
 #[derive(Debug)]
 pub struct RecordSet {
     /// Main buffer for records
-    pub(crate) buffer: Vec<u8>,
+    buffer: Vec<u8>,
     /// Store positions of '>' characters (record starts)
     record_starts: Vec<usize>,
     /// Track the last byte position we've searched for record starts
     last_searched_pos: usize,
     /// Position tracking for complete records
-    pub(crate) positions: Vec<Positions>,
+    positions: Vec<Positions>,
     /// Maximum number of records to store
     capacity: usize,
     /// Average number of bytes per record
@@ -433,7 +433,7 @@ impl RecordSet {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct Positions {
+struct Positions {
     start: usize,
     seq_start: usize,
     end: usize,
@@ -446,7 +446,7 @@ pub struct RefRecord<'a> {
 }
 
 impl<'a> RefRecord<'a> {
-    pub(crate) fn new(buffer: &'a [u8], positions: Positions) -> Result<Self, Error> {
+    fn new(buffer: &'a [u8], positions: Positions) -> Result<Self, Error> {
         let ref_record = Self { buffer, positions };
         ref_record.validate_record()?;
         Ok(ref_record)
@@ -543,6 +543,37 @@ impl Record for RefRecord<'_> {
 
     fn qual(&self) -> Option<&[u8]> {
         None
+    }
+}
+
+
+impl<R> FastXReaderSupport for crate::fasta::Reader<R>
+where
+    R: io::Read + Send,
+{
+    type RecordSet = crate::fasta::RecordSet;
+    type Error = crate::Error;
+    type RefRecord<'a> = crate::fasta::RefRecord<'a>;
+
+    fn new_record_set(&self) -> Self::RecordSet {
+        if let Some(batch_size) = self.batch_size {
+            Self::RecordSet::new(batch_size)
+        } else {
+            Self::RecordSet::default()
+        }
+    }
+
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error> {
+        record.fill(self)
+    }
+
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
+        record_set
+            .positions
+            .iter()
+            .map(move |&pos| Self::RefRecord::new(&record_set.buffer, pos))
     }
 }
 
