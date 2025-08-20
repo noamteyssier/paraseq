@@ -1,237 +1,100 @@
 use std::io;
-use std::sync::Arc;
 use std::thread;
-
-use crossbeam_channel::{bounded, select, Receiver, Sender};
 use parking_lot::Mutex;
+use crate::{fastx::FastXReaderSupport, parallel::{error::Result, ParallelProcessor, ParallelReader, ProcessError}, Record};
 
-use crate::parallel::{error::Result, ParallelProcessor, ParallelReader, ProcessError};
-
-type RecordSets<T> = Arc<Vec<Mutex<T>>>;
-type ProcessorChannels = (Sender<Option<usize>>, Receiver<Option<usize>>);
-type ShutdownChannel = (Sender<()>, Receiver<()>);
-
-/// Creates a pair of channels for communication between reader and worker threads
-fn create_channels(buffer_size: usize) -> ProcessorChannels {
-    bounded(buffer_size)
-}
-
-/// Creates shutdown signal channel
-fn create_shutdown_channel() -> ShutdownChannel {
-    bounded(1)
-}
-
-/// Internal processing of reader thread with shutdown signal
-fn run_reader_thread<R, T, F>(
-    mut reader: R,
-    record_sets: RecordSets<T>,
-    tx: Sender<Option<usize>>,
-    shutdown_rx: Receiver<()>,
-    num_threads: usize,
-    read_fn: F,
-) -> Result<()>
+impl<S: FastXReaderSupport, R> ParallelReader<R> for S
 where
-    F: Fn(&mut R, &mut T) -> Result<bool>,
+    R: io::Read + Send,
+    for <'a> S::RefRecord<'a>: Record
 {
-    let mut current_idx = 0;
-
-    loop {
-        // Check for shutdown signal before proceeding
-        select! {
-            recv(shutdown_rx) -> _ => {
-                // Shutdown signal received, stop reading
-                break;
-            }
-            default => {}
+    fn process_parallel<T>(
+        self,
+        processor: T,
+        num_threads: usize,
+    ) -> Result<()>
+    where
+        T: ParallelProcessor,
+    {
+        if num_threads == 0 {
+            return Err(ProcessError::InvalidThreadCount);
+        }
+        if num_threads == 1 {
+            return ParallelReader::<R>::process_sequential(self, processor);
         }
 
-        let mut record_set = record_sets[current_idx].lock();
-        match read_fn(&mut reader, &mut record_set) {
-            Ok(true) => {
-                drop(record_set);
+        let reader = Mutex::new(self);
+        thread::scope(|scope| -> Result<()> {
+            let reader = &reader;
 
-                // Try to send with shutdown checking
-                select! {
-                    send(tx, Some(current_idx)) -> send_result => {
-                        if send_result.is_err() {
-                            // Channel closed, stop processing
-                            break;
+            // Spawn worker threads
+            let mut handles = Vec::new();
+            for thread_id in 0..num_threads {
+                let mut worker_processor = processor.clone();
+                let mut record_set =                     reader.lock().new_record_set();
+
+                let handle = scope.spawn(move || {
+                    worker_processor.set_thread_id(thread_id);
+
+                    loop {
+                        let mut r1 = reader.lock();
+                        let s1 = r1.fill(&mut record_set);
+                        drop(r1);
+
+                        if !s1? {
+                                break;
                         }
-                        current_idx = (current_idx + 1) % record_sets.len();
-                    }
-                    recv(shutdown_rx) -> _ => {
-                        // Shutdown signal received while sending
-                        break;
-                    }
-                }
-            }
-            Ok(false) => break, // EOF
-            Err(e) => return Err(e),
-        }
-    }
 
-    // Signal completion to all workers
-    for _ in 0..num_threads {
-        let _ = tx.send(None); // Ignore errors as workers might have exited
-    }
+                        let records = Self::iter(&record_set);
 
-    Ok(())
-}
-
-/// Internal processing of worker threads with shutdown signaling
-fn run_worker_thread<T, P, F>(
-    record_sets: RecordSets<T>,
-    rx: Receiver<Option<usize>>,
-    shutdown_tx: Sender<()>,
-    mut processor: P,
-    thread_id: usize,
-    process_fn: F,
-) -> Result<()>
-where
-    P: ParallelProcessor,
-    F: Fn(&T, &mut P) -> Result<()>,
-{
-    processor.set_thread_id(thread_id);
-
-    while let Ok(Some(idx)) = rx.recv() {
-        let record_set = record_sets[idx].lock();
-        if let Err(e) = process_fn(&record_set, &mut processor) {
-            // Signal shutdown to reader thread
-            let _ = shutdown_tx.send(());
-            return Err(e);
-        }
-
-        if let Err(e) = processor.on_batch_complete() {
-            let _ = shutdown_tx.send(());
-            return Err(e);
-        }
-    }
-
-    processor.on_thread_complete()?;
-    Ok(())
-}
-
-macro_rules! impl_parallel_reader {
-    ($reader:ty, $record_set:ty, $error:ty) => {
-        impl<R> ParallelReader<R> for $reader
-        where
-            R: io::Read + Send,
-        {
-            fn process_parallel<T>(self, processor: T, num_threads: usize) -> Result<()>
-            where
-                T: ParallelProcessor,
-            {
-                if num_threads == 0 {
-                    return Err(ProcessError::InvalidThreadCount);
-                }
-
-                if num_threads == 1 {
-                    return self.process_sequential(processor);
-                }
-
-                let record_sets = Arc::new(
-                    (0..num_threads * 2)
-                        .map(|_| Mutex::new(self.new_record_set()))
-                        .collect::<Vec<_>>(),
-                );
-
-                let (tx, rx) = create_channels(num_threads * 2);
-                let (shutdown_tx, shutdown_rx) = create_shutdown_channel();
-
-                thread::scope(|scope| -> Result<()> {
-                    // Spawn reader thread
-                    let reader_sets = Arc::clone(&record_sets);
-                    let reader_handle = scope.spawn(move || -> Result<()> {
-                        run_reader_thread(
-                            self,
-                            reader_sets,
-                            tx,
-                            shutdown_rx,
-                            num_threads,
-                            |reader, record_set| Ok(record_set.fill(reader)?),
-                        )
-                    });
-
-                    // Spawn worker threads
-                    let mut handles = Vec::new();
-                    for thread_id in 0..num_threads {
-                        let worker_sets = Arc::clone(&record_sets);
-                        let worker_rx = rx.clone();
-                        let worker_shutdown_tx = shutdown_tx.clone();
-                        let worker_processor = processor.clone();
-
-                        let handle = scope.spawn(move || {
-                            run_worker_thread(
-                                worker_sets,
-                                worker_rx,
-                                worker_shutdown_tx,
-                                worker_processor,
-                                thread_id,
-                                |record_set, processor| {
-                                    for record in record_set.iter() {
-                                        let record = record?;
-                                        processor.process_record(record)?;
-                                    }
-                                    Ok(())
-                                },
-                            )
-                        });
-
-                        handles.push(handle);
-                    }
-
-                    // Wait for reader thread
-                    match reader_handle.join() {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => return Err(e),
-                        Err(_) => return Err(ProcessError::JoinError),
-                    }
-
-                    // Wait for worker threads
-                    for handle in handles {
-                        match handle.join() {
-                            Ok(Ok(())) => {}
-                            Ok(Err(e)) => return Err(e),
-                            Err(_) => return Err(ProcessError::JoinError),
+                        for record in records {
+                            worker_processor.process_record(record?)?;
                         }
-                    }
 
+                        worker_processor.on_batch_complete()?;
+                    }
+                    worker_processor.on_thread_complete()?;
                     Ok(())
-                })?;
+                });
 
-                Ok(())
+                handles.push(handle);
             }
 
-            fn process_sequential<T>(self, mut processor: T) -> Result<()>
-            where
-                T: ParallelProcessor,
-            {
-                let mut reader = self;
-                let mut record_set = <$record_set>::default();
+            // Wait for worker threads
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(())) => (),
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => return Err(ProcessError::JoinError),
+                }
+            }
 
-                while record_set.fill(&mut reader)? {
-                    for record in record_set.iter() {
-                        let record = record?;
-                        processor.process_record(record)?;
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    fn process_sequential<T>(self, mut processor: T) -> Result<()>
+    where
+        T: ParallelProcessor,
+    {
+        let mut reader = self;
+        let mut record_set = S::RecordSet::default();
+
+        loop {
+            match                 reader.fill(&mut record_set)?
+ {
+                true => {
+                    for record in Self::iter(&record_set) {
+                        processor.process_record(record?)?;
                     }
                     processor.on_batch_complete()?;
                 }
-
-                processor.on_thread_complete()?;
-                Ok(())
+                false => break,
             }
         }
-    };
+        processor.on_thread_complete()?;
+        Ok(())
+    }
 }
-
-// Use the macro to implement for both FASTA and FASTQ
-impl_parallel_reader!(
-    crate::fasta::Reader<R>,
-    crate::fasta::RecordSet,
-    crate::fasta::Error
-);
-impl_parallel_reader!(
-    crate::fastq::Reader<R>,
-    crate::fastq::RecordSet,
-    crate::fastq::Error
-);
