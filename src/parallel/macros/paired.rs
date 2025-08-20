@@ -109,121 +109,81 @@ where
     where
         T: PairedParallelProcessor,
     {
-        let mut reader1 = self;
-
         if num_threads == 0 {
             return Err(ProcessError::InvalidThreadCount);
         }
         if num_threads == 1 {
-            return reader1.process_sequential_paired(reader2, processor);
+            return self.process_sequential_paired(reader2, processor);
         }
-        let record_sets =
-            &(0..num_threads * 2)
-                .map(|_| Mutex::new((reader1.new_record_set(), reader2.new_record_set())))
-                .collect::<Vec<_>>();
-        let (tx, rx) = create_channels(num_threads * 2);
-        let (shutdown_tx, shutdown_rx) = create_shutdown_channel();
 
+        let reader1 = Mutex::new(self);
+        let reader2 = Mutex::new(reader2);
         thread::scope(|scope| -> Result<()> {
-            // Spawn reader thread
-            let reader_handle = scope.spawn(move || -> Result<()> {
-                let mut current_idx = 0;
-
-                loop {
-                    // Check for shutdown signal before proceeding
-                    select! {
-                        recv(shutdown_rx) -> _ => {
-                            // Shutdown signal received, stop reading
-                            break;
-                        }
-                        default => {}
-                    }
-
-                    let mut record_set_pair = record_sets[current_idx].lock();
-
-                    match (
-                        reader1.fill(&mut record_set_pair.0),
-                        reader2.fill(&mut record_set_pair.1),
-                    ) {
-                        (Ok(true), Ok(true)) => {
-                            drop(record_set_pair);
-                            tx.send(Some(current_idx))?;
-                            current_idx = (current_idx + 1) % record_sets.len();
-                        }
-                        (Ok(true), Ok(false)) => {
-                            // Record count mismatch between files // R2 has less records
-                            return Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
-                        }
-                        (Ok(false), Ok(true)) => {
-                            // Record count mismatch between files // R1 has less records
-                            return Err(ProcessError::PairedRecordMismatch(RecordPair::R1));
-                        }
-                        _ => break, // EOF on either file
-                    }
-                }
-
-                // Signal completion to all workers
-                for _ in 0..num_threads {
-                    let _ = tx.send(None); // Ignore errors as workers might have exited
-                }
-
-                Ok(())
-            });
+            let reader1 = &reader1;
+            let reader2 = &reader2;
 
             // Spawn worker threads
             let mut handles = Vec::new();
             for thread_id in 0..num_threads {
-                let worker_rx = rx.clone();
-                let worker_shutdown_tx = shutdown_tx.clone();
                 let mut worker_processor = processor.clone();
+                let mut record_set_pair = (
+                    reader1.lock().new_record_set(),
+                    reader2.lock().new_record_set(),
+                );
 
                 let handle = scope.spawn(move || {
                     worker_processor.set_thread_id(thread_id);
-                    while let Ok(Some(idx)) = worker_rx.recv() {
-                        let record_set_pair = record_sets[idx].lock();
+
+                    loop {
+                        let mut r1 = reader1.lock();
+                        let mut r2 = reader2.lock();
+                        let s1 = r1.fill(&mut record_set_pair.0);
+                        let s2 = r2.fill(&mut record_set_pair.1);
+                        drop(r1);
+                        drop(r2);
+
+                        match (s1, s2) {
+                            (Ok(true), Ok(true)) => {
+                                // good case; record_set_pair is filled.
+                            }
+                            (Ok(true), Ok(false)) => {
+                                // Record count mismatch between files // R2 has less records
+                                return Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
+                            }
+                            (Ok(false), Ok(true)) => {
+                                // Record count mismatch between files // R1 has less records
+                                return Err(ProcessError::PairedRecordMismatch(RecordPair::R1));
+                            }
+                            _ => break, // EOF on either file
+                        }
+
                         let mut records1 = Self::iter(&record_set_pair.0);
                         let mut records2 = Self::iter(&record_set_pair.1);
 
-                        let status = loop {
+                        loop {
                             match (records1.next(), records2.next()) {
                                 (Some(r1), Some(r2)) => {
                                     worker_processor.process_record_pair(r1?, r2?)?;
                                 }
                                 (Some(_), None) => {
                                     // Record count mismatch between files // R2 has less records
-                                    break Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
+                                    return Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
                                 }
                                 (None, Some(_)) => {
                                     // Record count mismatch between files // R1 has less records
-                                    break Err(ProcessError::PairedRecordMismatch(RecordPair::R1));
+                                    return Err(ProcessError::PairedRecordMismatch(RecordPair::R1));
                                 }
-                                (None, None) => break Ok(()),
+                                (None, None) => break,
                             }
-                        };
-
-                        if let Err(e) = status {
-                            // Signal shutdown to reader thread
-                            let _ = worker_shutdown_tx.send(());
-                            return Err(e);
                         }
 
-                        if let Err(e) = worker_processor.on_batch_complete() {
-                            let _ = worker_shutdown_tx.send(());
-                            return Err(e);
-                        }
+                        worker_processor.on_batch_complete()?;
                     }
                     worker_processor.on_thread_complete()?;
                     Ok(())
                 });
 
                 handles.push(handle);
-            }
-
-            // Wait for reader thread
-            match reader_handle.join() {
-                Ok(Ok(())) => (),
-                Ok(Err(e)) => return Err(e),
-                Err(_) => return Err(ProcessError::JoinError),
             }
 
             // Wait for worker threads
