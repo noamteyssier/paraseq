@@ -127,7 +127,7 @@ where
 /// Macro to implement parallel reader for multi reads
 macro_rules! impl_multi_parallel_reader {
     ($reader:ty, $record_set:ty, $record_t:ty, $error:ty) => {
-        impl<R> MultiParallelReader<R> for $reader
+        impl<R> MultiParallelReader for $reader
         where
             R: io::Read + Send,
         {

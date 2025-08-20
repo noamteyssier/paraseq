@@ -13,13 +13,13 @@ use crate::{
 /// Implements the `ParallelReader` trait for `fastx::Reader`.
 ///
 /// Just matches on internal type and calls the appropriate method.
-impl<R: Read + Send> ParallelReader<R> for fastx::Reader<R> {
+impl<R: Read + Send> ParallelReader for fastx::Reader<R> {
     fn process_parallel<T>(self, processor: T, num_threads: usize) -> super::Result<()>
     where
         T: ParallelProcessor,
     {
         match self {
-            Self::Fasta(reader) => reader.process_parallel(processor, num_threads),
+            Self::Fasta(reader) => ParallelReader::process_parallel(reader, processor, num_threads),
             Self::Fastq(reader) => reader.process_parallel(processor, num_threads),
         }
     }
@@ -38,7 +38,7 @@ impl<R: Read + Send> ParallelReader<R> for fastx::Reader<R> {
 /// Implements the `PairedParallelReader` trait for `fastx::Reader`.
 ///
 /// Just matches on internal type and calls the appropriate method.
-impl<R: Read + Send> PairedParallelReader<R> for fastx::Reader<R> {
+impl<R: Read + Send> PairedParallelReader for fastx::Reader<R> {
     fn process_parallel_paired<T>(
         self,
         reader2: Self,
@@ -78,7 +78,7 @@ impl<R: Read + Send> PairedParallelReader<R> for fastx::Reader<R> {
 /// Implements the `InterleavedParallelReader` trait for `fastx::Reader`.
 ///
 /// Just matches on internal type and calls the appropriate method.
-impl<R: Read + Send> InterleavedParallelReader<R> for fastx::Reader<R> {
+impl<R: Read + Send> InterleavedParallelReader for fastx::Reader<R> {
     fn process_parallel_interleaved<T>(self, processor: T, num_threads: usize) -> super::Result<()>
     where
         T: InterleavedParallelProcessor,
@@ -100,7 +100,7 @@ impl<R: Read + Send> InterleavedParallelReader<R> for fastx::Reader<R> {
     }
 }
 
-impl<R: Read + Send> MultiParallelReader<R> for fastx::Reader<R> {
+impl<R: Read + Send> MultiParallelReader for fastx::Reader<R> {
     fn process_parallel_multi<T>(
         self,
         remaining_readers: Vec<Self>,
@@ -167,7 +167,7 @@ impl<R: Read + Send> MultiParallelReader<R> for fastx::Reader<R> {
     }
 }
 
-impl<R: Read + Send> InterleavedMultiParallelReader<R> for fastx::Reader<R> {
+impl<R: Read + Send> InterleavedMultiParallelReader for fastx::Reader<R> {
     fn process_parallel_interleaved_multi<T>(
         self,
         arity: usize,

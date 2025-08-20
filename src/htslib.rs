@@ -96,7 +96,7 @@ impl<'a> Record for RefRecord<'a> {
     }
 }
 
-impl ParallelReader<HtslibReader> for Reader {
+impl ParallelReader for Reader {
     fn process_parallel<T>(mut self, processor: T, num_threads: usize) -> Result<()>
     where
         T: crate::prelude::ParallelProcessor,
@@ -175,7 +175,7 @@ impl ParallelReader<HtslibReader> for Reader {
     }
 }
 
-impl InterleavedParallelReader<HtslibReader> for Reader {
+impl InterleavedParallelReader for Reader {
     fn process_parallel_interleaved<T>(mut self, processor: T, num_threads: usize) -> Result<()>
     where
         T: crate::prelude::InterleavedParallelProcessor,
