@@ -15,7 +15,7 @@ pub struct Reader<R: io::Read> {
     /// Sets the maximum capcity of records in batches for parallel processing
     ///
     /// If not set, the default `RecordSet` capacity is used.
-    batch_size: Option<usize>,
+    pub(crate) batch_size: Option<usize>,
 }
 
 #[cfg(feature = "niffler")]
@@ -221,13 +221,13 @@ impl<R: io::Read> Reader<R> {
 #[derive(Debug)]
 pub struct RecordSet {
     /// Main buffer for records
-    buffer: Vec<u8>,
+    pub(crate) buffer: Vec<u8>,
     /// Store newlines in buffer
     newlines: Vec<usize>,
     /// Track the last byte position we've searched for newlines
     last_searched_pos: usize,
     /// Position tracking for complete records
-    positions: Vec<Positions>,
+    pub(crate) positions: Vec<Positions>,
     /// Maximum number of records to store
     capacity: usize,
     /// Average number of bytes per record
@@ -392,7 +392,7 @@ impl RecordSet {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-struct Positions {
+pub(crate) struct Positions {
     start: usize,
     seq_start: usize,
     sep_start: usize,
@@ -406,7 +406,7 @@ pub struct RefRecord<'a> {
     positions: Positions,
 }
 impl<'a> RefRecord<'a> {
-    fn new(buffer: &'a [u8], positions: Positions) -> Result<Self, Error> {
+    pub(crate) fn new(buffer: &'a [u8], positions: Positions) -> Result<Self, Error> {
         let ref_record = Self { buffer, positions };
         ref_record.validate_record()?;
         Ok(ref_record)
