@@ -1,4 +1,4 @@
-use std::{io, sync::Arc, thread};
+use std::{io, thread};
 
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use parking_lot::Mutex;
@@ -117,17 +117,15 @@ where
         if num_threads == 1 {
             return reader1.process_sequential_paired(reader2, processor);
         }
-        let record_sets = Arc::new(
-            (0..num_threads * 2)
+        let record_sets =
+            &(0..num_threads * 2)
                 .map(|_| Mutex::new((reader1.new_record_set(), reader2.new_record_set())))
-                .collect::<Vec<_>>(),
-        );
+                .collect::<Vec<_>>();
         let (tx, rx) = create_channels(num_threads * 2);
         let (shutdown_tx, shutdown_rx) = create_shutdown_channel();
 
         thread::scope(|scope| -> Result<()> {
             // Spawn reader thread
-            let reader_sets = Arc::clone(&record_sets);
             let reader_handle = scope.spawn(move || -> Result<()> {
                 let mut current_idx = 0;
 
@@ -141,7 +139,7 @@ where
                         default => {}
                     }
 
-                    let mut record_set_pair = reader_sets[current_idx].lock();
+                    let mut record_set_pair = record_sets[current_idx].lock();
 
                     match (
                         reader1.fill(&mut record_set_pair.0),
@@ -150,7 +148,7 @@ where
                         (Ok(true), Ok(true)) => {
                             drop(record_set_pair);
                             tx.send(Some(current_idx))?;
-                            current_idx = (current_idx + 1) % reader_sets.len();
+                            current_idx = (current_idx + 1) % record_sets.len();
                         }
                         (Ok(true), Ok(false)) => {
                             // Record count mismatch between files // R2 has less records
@@ -175,7 +173,6 @@ where
             // Spawn worker threads
             let mut handles = Vec::new();
             for thread_id in 0..num_threads {
-                let worker_sets = Arc::clone(&record_sets);
                 let worker_rx = rx.clone();
                 let worker_shutdown_tx = shutdown_tx.clone();
                 let mut worker_processor = processor.clone();
@@ -183,7 +180,7 @@ where
                 let handle = scope.spawn(move || {
                     worker_processor.set_thread_id(thread_id);
                     while let Ok(Some(idx)) = worker_rx.recv() {
-                        let record_set_pair = worker_sets[idx].lock();
+                        let record_set_pair = record_sets[idx].lock();
                         let mut records1 = Self::iter(&record_set_pair.0);
                         let mut records2 = Self::iter(&record_set_pair.1);
 
