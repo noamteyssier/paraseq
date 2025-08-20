@@ -6,6 +6,39 @@ use crate::fastx::FastXReaderSupport;
 use crate::parallel::error::{ProcessError, RecordPair, Result};
 use crate::parallel::{PairedParallelProcessor, PairedParallelReader};
 use crate::prelude::ParallelReader;
+use crate::Record;
+
+struct PairedEndReader<'r, R: FastXReaderSupport> {
+    reader1: &'r Mutex<R>,
+    reader2: &'r Mutex<R>,
+}
+
+impl<'r, R: FastXReaderSupport> FastXReaderSupport for PairedEndReader<'r, R>
+{
+    type RecordSet = (R::RecordSet, R::RecordSet);
+    type Error = R::Error;
+    type RefRecord<'a> = (R::RefRecord<'a>, R::RefRecord<'a>);
+
+    fn new_record_set(&self) -> Self::RecordSet {
+        (self.reader1.lock().new_record_set(), self.reader2.lock().new_record_set())
+    }
+
+    fn fill(&mut self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error> {
+        let filled1 = self.reader1.lock().fill(&mut record_set.0)?;
+        let filled2 = self.reader2.lock().fill(&mut record_set.1)?;
+        Ok(filled1 && filled2)
+    }
+
+    fn iter(record_set: &Self::RecordSet) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
+        R::iter(&record_set.0)
+            .zip(R::iter(&record_set.1))
+            .map(|(r1, r2)| {
+                let r1 = r1?;
+                let r2 = r2?;
+                Ok((r1, r2))
+            })
+    }
+}
 
 impl<S: FastXReaderSupport, R> PairedParallelReader<R> for S
 where
