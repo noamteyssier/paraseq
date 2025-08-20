@@ -416,7 +416,7 @@ impl Record for RefRecord<'_> {
         self.id()
     }
 
-    fn seq(&self) -> std::borrow::Cow<[u8]> {
+    fn seq(&self) -> std::borrow::Cow<'_, [u8]> {
         Cow::Borrowed(self.seq_raw())
     }
 
