@@ -278,7 +278,7 @@ impl Record for RefRecord<'_> {
             Self::Fastq(x) => x.id(),
         }
     }
-    fn seq(&self) -> Cow<[u8]> {
+    fn seq(&self) -> Cow<'_, [u8]> {
         match self {
             Self::Fasta(x) => x.seq(),
             Self::Fastq(x) => x.seq(),

@@ -76,7 +76,7 @@ impl<'a> Record for RefRecord<'a> {
     fn id(&self) -> &[u8] {
         self.inner.qname()
     }
-    fn seq(&self) -> Cow<[u8]> {
+    fn seq(&self) -> Cow<'_, [u8]> {
         self.inner.seq().as_bytes().into()
     }
     fn seq_raw(&self) -> &[u8] {

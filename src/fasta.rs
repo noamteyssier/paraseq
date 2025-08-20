@@ -486,7 +486,7 @@ impl<'a> RefRecord<'a> {
     /// Access the sequence bytes (handling multiline sequences)
     #[inline]
     #[must_use]
-    pub fn seq(&self) -> Cow<[u8]> {
+    pub fn seq(&self) -> Cow<'_, [u8]> {
         let seq_region = self.seq_raw();
 
         // // Count newlines in the sequence region
@@ -533,7 +533,7 @@ impl Record for RefRecord<'_> {
         self.id()
     }
 
-    fn seq(&self) -> Cow<[u8]> {
+    fn seq(&self) -> Cow<'_, [u8]> {
         self.seq()
     }
 
