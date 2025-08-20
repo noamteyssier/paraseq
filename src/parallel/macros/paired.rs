@@ -2,85 +2,12 @@ use std::{io, thread};
 
 use parking_lot::Mutex;
 
+use crate::fastx::FastXReaderSupport;
 use crate::parallel::error::{ProcessError, RecordPair, Result};
 use crate::parallel::{PairedParallelProcessor, PairedParallelReader};
 use crate::prelude::ParallelReader;
-use crate::Record;
 
-trait PairedParallelReaderSupport: Send {
-    type RecordSet: Default + Send;
-    type Error;
-    type RefRecord<'a>: Record;
-
-    fn new_record_set(&self) -> Self::RecordSet;
-    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error>;
-
-    fn iter(
-        record_set: &Self::RecordSet,
-    ) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>>;
-}
-
-impl<R> PairedParallelReaderSupport for crate::fasta::Reader<R>
-where
-    R: io::Read + Send,
-{
-    type RecordSet = crate::fasta::RecordSet;
-    type Error = crate::Error;
-    type RefRecord<'a> = crate::fasta::RefRecord<'a>;
-
-    fn new_record_set(&self) -> Self::RecordSet {
-        if let Some(batch_size) = self.batch_size {
-            Self::RecordSet::new(batch_size)
-        } else {
-            Self::RecordSet::default()
-        }
-    }
-
-    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error> {
-        record.fill(self)
-    }
-
-    fn iter(
-        record_set: &Self::RecordSet,
-    ) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
-        record_set
-            .positions
-            .iter()
-            .map(move |&pos| Self::RefRecord::new(&record_set.buffer, pos))
-    }
-}
-
-impl<R> PairedParallelReaderSupport for crate::fastq::Reader<R>
-where
-    R: io::Read + Send,
-{
-    type RecordSet = crate::fastq::RecordSet;
-    type Error = crate::Error;
-    type RefRecord<'a> = crate::fastq::RefRecord<'a>;
-
-    fn new_record_set(&self) -> Self::RecordSet {
-        if let Some(batch_size) = self.batch_size {
-            Self::RecordSet::new(batch_size)
-        } else {
-            Self::RecordSet::default()
-        }
-    }
-
-    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        record.fill(self)
-    }
-
-    fn iter(
-        record_set: &Self::RecordSet,
-    ) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
-        record_set
-            .positions
-            .iter()
-            .map(move |&pos| Self::RefRecord::new(&record_set.buffer, pos))
-    }
-}
-
-impl<S: PairedParallelReaderSupport, R> PairedParallelReader<R> for S
+impl<S: FastXReaderSupport, R> PairedParallelReader<R> for S
 where
     S: ParallelReader<R>,
     R: io::Read + Send,
