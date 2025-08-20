@@ -1,5 +1,6 @@
-use std::sync::Mutex;
 use std::{io, thread};
+
+use parking_lot::Mutex;
 
 use crate::parallel::error::{ProcessError, RecordPair, Result};
 use crate::parallel::{PairedParallelProcessor, PairedParallelReader};
@@ -111,35 +112,37 @@ where
             for thread_id in 0..num_threads {
                 let mut worker_processor = processor.clone();
                 let mut record_set_pair = (
-                    reader1.lock().unwrap().new_record_set(),
-                    reader2.lock().unwrap().new_record_set(),
+                    reader1.lock().new_record_set(),
+                    reader2.lock().new_record_set(),
                 );
 
                 let handle = scope.spawn(move || {
                     worker_processor.set_thread_id(thread_id);
 
                     loop {
-                        let mut r1 = reader1.lock().unwrap();
+                        let mut r1 = reader1.lock();
                         let s1 = r1.fill(&mut record_set_pair.0);
-                        let mut r2 = reader2.lock().unwrap();
+                        let mut r2 = reader2.lock();
                         drop(r1);
                         let s2 = r2.fill(&mut record_set_pair.1);
                         drop(r2);
 
-                        match (s1, s2) {
-                            (Ok(true), Ok(true)) => {
+                        match (s1?, s2?) {
+                            (true, true) => {
                                 // good case; record_set_pair is filled.
                             }
-                            (Ok(true), Ok(false)) => {
+                            (true, false) => {
                                 // Record count mismatch between files // R2 has less records
                                 return Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
                             }
-                            (Ok(false), Ok(true)) => {
+                            (false, true) => {
                                 // Record count mismatch between files // R1 has less records
                                 return Err(ProcessError::PairedRecordMismatch(RecordPair::R1));
                             }
-                            // FIXME? We should check that both hit EOF at the same time?
-                            _ => break, // EOF on either file
+                            (false, false) => {
+                                // Both files have reached EOF
+                                break;
+                            }
                         }
 
                         let mut records1 = Self::iter(&record_set_pair.0);
