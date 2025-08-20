@@ -138,6 +138,7 @@ where
                                 // Record count mismatch between files // R1 has less records
                                 return Err(ProcessError::PairedRecordMismatch(RecordPair::R1));
                             }
+                            // FIXME? We should check that both hit EOF at the same time?
                             _ => break, // EOF on either file
                         }
 
