@@ -11,6 +11,7 @@ impl<S: FastXReaderSupport, R> PairedParallelReader<R> for S
 where
     S: ParallelReader<R>,
     R: io::Read + Send,
+    for <'a> S::RefRecord<'a>: Record
 {
     fn process_parallel_paired<T>(
         self,

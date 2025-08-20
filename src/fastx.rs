@@ -303,7 +303,7 @@ impl Record for RefRecord<'_> {
 pub(crate) trait FastXReaderSupport: Send {
     type RecordSet: Default + Send;
     type Error;
-    type RefRecord<'a>: Record;
+    type RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet;
     fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error>;
