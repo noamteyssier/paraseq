@@ -1,14 +1,10 @@
-use std::io;
-
 use super::error::Result;
 use super::processor::{
     InterleavedMultiParallelProcessor, InterleavedParallelProcessor, MultiParallelProcessor,
     PairedParallelProcessor, ParallelProcessor,
 };
 
-pub trait ParallelReader<R>
-where
-    R: io::Read + Send,
+pub trait ParallelReader
 {
     fn process_parallel<T>(self, processor: T, num_threads: usize) -> Result<()>
     where
@@ -20,9 +16,7 @@ where
 }
 
 /// Trait for parallel processing of paired reads
-pub trait PairedParallelReader<R>: ParallelReader<R>
-where
-    R: io::Read + Send,
+pub trait PairedParallelReader: ParallelReader
 {
     /// Process paired FASTQ/FASTA files in parallel
     fn process_parallel_paired<T>(
@@ -41,9 +35,7 @@ where
 }
 
 /// Trait for parallel processing of fixed-arity read sets
-pub trait MultiParallelReader<R>: ParallelReader<R>
-where
-    R: io::Read + Send,
+pub trait MultiParallelReader: ParallelReader
 {
     /// Process groups of FASTQ/FASTA files in parallel
     /// The arity of the read groups (number of synchronized reads per group)
@@ -68,9 +60,7 @@ where
 }
 
 /// Trait for parallel processing of interleaved reads
-pub trait InterleavedParallelReader<R>: ParallelReader<R>
-where
-    R: io::Read + Send,
+pub trait InterleavedParallelReader: ParallelReader
 {
     /// Process interleaved FASTQ/FASTA files in parallel
     fn process_parallel_interleaved<T>(self, processor: T, num_threads: usize) -> Result<()>
@@ -84,9 +74,7 @@ where
 }
 
 /// Trait for parallel processing of interleaved reads
-pub trait InterleavedMultiParallelReader<R>: ParallelReader<R>
-where
-    R: io::Read + Send,
+pub trait InterleavedMultiParallelReader: ParallelReader
 {
     /// Process interleaved FASTQ/FASTA files in parallel
     fn process_parallel_interleaved_multi<T>(

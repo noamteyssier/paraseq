@@ -1,11 +1,9 @@
-use std::io;
 use std::thread;
 use parking_lot::Mutex;
 use crate::{fastx::FastXReaderSupport, parallel::{error::Result, ParallelProcessor, ParallelReader, ProcessError}, Record};
 
-impl<S: FastXReaderSupport, R> ParallelReader<R> for S
+impl<S: FastXReaderSupport> ParallelReader for S
 where
-    R: io::Read + Send,
     for <'a> S::RefRecord<'a>: Record
 {
     fn process_parallel<T>(
@@ -20,7 +18,7 @@ where
             return Err(ProcessError::InvalidThreadCount);
         }
         if num_threads == 1 {
-            return ParallelReader::<R>::process_sequential(self, processor);
+            return self.process_sequential(processor);
         }
 
         let reader = Mutex::new(self);

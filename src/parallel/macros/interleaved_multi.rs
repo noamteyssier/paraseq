@@ -98,7 +98,7 @@ where
 /// Macro to implement parallel reader for interleaved reads
 macro_rules! impl_interleaved_parallel_reader {
     ($reader:ty, $record_set:ty, $record_t: ty, $error:ty) => {
-        impl<R> InterleavedMultiParallelReader<R> for $reader
+        impl<R> InterleavedMultiParallelReader for $reader
         where
             R: io::Read + Send,
         {

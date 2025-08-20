@@ -1,4 +1,4 @@
-use std::{io, thread};
+use std::thread;
 
 use parking_lot::Mutex;
 
@@ -40,10 +40,9 @@ impl<'r, R: FastXReaderSupport> FastXReaderSupport for PairedEndReader<'r, R>
     }
 }
 
-impl<S: FastXReaderSupport, R> PairedParallelReader<R> for S
+impl<S: FastXReaderSupport> PairedParallelReader for S
 where
-    S: ParallelReader<R>,
-    R: io::Read + Send,
+    S: ParallelReader,
     for <'a> S::RefRecord<'a>: Record
 {
     fn process_parallel_paired<T>(
