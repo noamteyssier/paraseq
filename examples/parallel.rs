@@ -74,10 +74,10 @@ fn main() -> Result<(), ProcessError> {
 
     if path.ends_with(".fastq") {
         let reader = fastq::Reader::with_batch_size(file, batch_size)?;
-        reader.process_parallel(processor.clone(), num_threads)?;
+        Mutex::new(reader).process_parallel(processor.clone(), num_threads)?;
     } else if path.ends_with(".fasta") {
         let reader = fasta::Reader::with_batch_size(file, batch_size)?;
-        reader.process_parallel(processor.clone(), num_threads)?;
+        Mutex::new(reader).process_parallel(processor.clone(), num_threads)?;
     } else {
         panic!("Unknown file format {path}");
     }

@@ -99,7 +99,7 @@ fn main() -> Result<()> {
 
     let proc = Processor::new(out_handle, args.out_format);
     let reader = fastx::Reader::from_optional_path(args.input_file)?;
-    reader.process_parallel(proc, args.num_threads)?;
+    Mutex::new(reader).process_parallel(proc, args.num_threads)?;
 
     Ok(())
 }
