@@ -35,8 +35,9 @@ where
 
     fn fill(&mut self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
         let mut r1 = self.reader1.lock();
-        let mut r2 = self.reader2.lock();
         let filled1 = r1.fill(&mut record_set.0)?;
+        let mut r2 = self.reader2.lock();
+        drop(r1);
         let filled2 = r2.fill(&mut record_set.1)?;
         Ok(filled1 && filled2)
     }

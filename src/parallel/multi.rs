@@ -34,11 +34,14 @@ where
     }
 
     fn fill(&mut self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        let rs: SmallVec<[MutexGuard<_>; MAX_ARITY]> =
-            self.readers.iter().map(|r| r.lock()).collect();
+        let mut prev_lock: Option<MutexGuard<_>> = None;
+
         let mut filled = None;
-        for (i, (mut r, mut rs)) in std::iter::zip(rs, record_set).enumerate() {
-            let filledi = r.fill(&mut rs)?;
+
+        for i in 0..self.readers.len() {
+            let mut r = self.readers[i].lock();
+            prev_lock = None;
+            let filledi = r.fill(&mut record_set[i])?;
             match filled {
                 None => {
                     filled = Some(filledi);
@@ -49,7 +52,9 @@ where
                     }
                 }
             }
+            prev_lock = Some(r);
         }
+        drop(prev_lock);
         Ok(filled.unwrap())
     }
 
