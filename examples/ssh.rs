@@ -75,7 +75,7 @@ fn main() -> Result<()> {
     match args.url.len() {
         1 => {
             let reader = fastx::Reader::from_ssh(&args.url[0])?;
-            reader.process_parallel(processor, args.num_threads)?;
+            Mutex::new(reader).process_parallel(processor, args.num_threads)?;
         }
         2 => {
             let reader_r1 = fastx::Reader::from_ssh(&args.url[0])?;

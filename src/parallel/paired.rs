@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use parking_lot::Mutex;
 
-use crate::fastx::GenericReader;
+use crate::fastx::{GenericReader, MTGenericReader};
 use crate::parallel::error::ProcessError;
 
 pub struct PairedReader<R: GenericReader> {
@@ -18,7 +18,7 @@ impl<R: GenericReader> PairedReader<R> {
     }
 }
 
-impl<R: GenericReader> GenericReader for PairedReader<R>
+impl<R: GenericReader> MTGenericReader for PairedReader<R>
 where
     ProcessError: From<R::Error>,
 {
@@ -33,12 +33,13 @@ where
         )
     }
 
-    fn fill(&mut self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
         let mut r1 = self.reader1.lock();
-        let filled1 = r1.fill(&mut record_set.0)?;
+        let filled1 = R::fill(&mut r1, &mut record_set.0)?;
         let mut r2 = self.reader2.lock();
         drop(r1);
-        let filled2 = r2.fill(&mut record_set.1)?;
+        let filled2 = R::fill(&mut r2, &mut record_set.1)?;
+        drop(r2);
         Ok(filled1 && filled2)
     }
 
@@ -75,7 +76,7 @@ impl<R: GenericReader> InterleavedPairedReader<R> {
     }
 }
 
-impl<R: GenericReader> GenericReader for InterleavedPairedReader<R>
+impl<R: GenericReader> MTGenericReader for InterleavedPairedReader<R>
 where
     ProcessError: From<R::Error>,
 {
@@ -87,7 +88,7 @@ where
         self.reader.lock().new_record_set()
     }
 
-    fn fill(&mut self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
         // FIXME: ENSURE THIS READS AN EVEN NUMBER OF RECORDS.
         Ok(self.reader.lock().fill(record_set)?)
     }

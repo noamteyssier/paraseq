@@ -1,9 +1,9 @@
 mod error;
 mod multi;
 mod paired;
-mod single;
 mod processor;
 mod reader;
+mod single;
 
 pub use error::{IntoProcessError, ProcessError, Result};
 pub use processor::{MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor};

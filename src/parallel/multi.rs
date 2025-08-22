@@ -1,7 +1,7 @@
 use parking_lot::{Mutex, MutexGuard};
 use smallvec::SmallVec;
 
-use crate::fastx::GenericReader;
+use crate::fastx::{GenericReader, MTGenericReader};
 use crate::parallel::error::ProcessError;
 use crate::MAX_ARITY;
 
@@ -18,7 +18,7 @@ impl<R: GenericReader> MultiReader<R> {
     }
 }
 
-impl<R: GenericReader> GenericReader for MultiReader<R>
+impl<R: GenericReader> MTGenericReader for MultiReader<R>
 where
     ProcessError: From<R::Error>,
 {
@@ -33,14 +33,14 @@ where
             .collect()
     }
 
-    fn fill(&mut self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
         let mut prev_lock: Option<MutexGuard<_>> = None;
 
         let mut filled = None;
 
         for i in 0..self.readers.len() {
             let mut r = self.readers[i].lock();
-            prev_lock = None;
+            drop(prev_lock);
             let filledi = r.fill(&mut record_set[i])?;
             match filled {
                 None => {
@@ -129,7 +129,7 @@ impl<R: GenericReader> InterleavedMultiReader<R> {
     }
 }
 
-impl<R: GenericReader> GenericReader for InterleavedMultiReader<R>
+impl<R: GenericReader> MTGenericReader for InterleavedMultiReader<R>
 where
     ProcessError: From<R::Error>,
 {
@@ -141,7 +141,7 @@ where
         (self.reader.lock().new_record_set(), self.arity)
     }
 
-    fn fill(&mut self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
         Ok(self.reader.lock().fill(&mut record_set.0)?)
     }
 

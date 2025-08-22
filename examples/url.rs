@@ -76,7 +76,7 @@ fn main() -> Result<()> {
         eprintln!("Processing single-end from: {}", url);
         let processor = Processor::new();
         let reader = fastx::Reader::from_url(&url)?;
-        reader.process_parallel(processor, num_threads)?;
+        Mutex::new(reader).process_parallel(processor, num_threads)?;
     }
 
     // Paired-end example
