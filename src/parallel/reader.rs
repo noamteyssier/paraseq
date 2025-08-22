@@ -1,93 +1,14 @@
 use super::error::Result;
-use super::processor::{
-    InterleavedMultiParallelProcessor, InterleavedParallelProcessor, MultiParallelProcessor,
-    PairedParallelProcessor, ParallelProcessor,
-};
+use super::processor::GenericProcessor;
 
-pub trait ParallelReader
-{
+pub trait ParallelReader {
+    type Rf<'a>;
+
     fn process_parallel<T>(self, processor: T, num_threads: usize) -> Result<()>
     where
-        T: ParallelProcessor;
+        T: for<'a> GenericProcessor<Self::Rf<'a>>;
 
     fn process_sequential<T>(self, processor: T) -> Result<()>
     where
-        T: ParallelProcessor;
-}
-
-/// Trait for parallel processing of paired reads
-pub trait PairedParallelReader: ParallelReader
-{
-    /// Process paired FASTQ/FASTA files in parallel
-    fn process_parallel_paired<T>(
-        self,
-        reader2: Self,
-        processor: T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: PairedParallelProcessor;
-
-    /// Process paired FASTQ/FASTA files sequentially
-    fn process_sequential_paired<T>(self, reader2: Self, processor: T) -> Result<()>
-    where
-        T: PairedParallelProcessor;
-}
-
-/// Trait for parallel processing of fixed-arity read sets
-pub trait MultiParallelReader: ParallelReader
-{
-    /// Process groups of FASTQ/FASTA files in parallel
-    /// The arity of the read groups (number of synchronized reads per group)
-    /// is determined by the length of the `remaining_readers` slice provided
-    /// to this function.  If the slice has length `N`, then the groups will
-    /// be of airty `N`+1.
-    fn process_parallel_multi<T>(
-        self,
-        remaining_readers: Vec<Self>,
-        processor: T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: MultiParallelProcessor,
-        Self: std::marker::Sized;
-
-    /// Process paired FASTQ/FASTA files sequentially
-    fn process_sequential_multi<T>(self, remaining_readers: Vec<Self>, processor: T) -> Result<()>
-    where
-        T: MultiParallelProcessor,
-        Self: std::marker::Sized;
-}
-
-/// Trait for parallel processing of interleaved reads
-pub trait InterleavedParallelReader: ParallelReader
-{
-    /// Process interleaved FASTQ/FASTA files in parallel
-    fn process_parallel_interleaved<T>(self, processor: T, num_threads: usize) -> Result<()>
-    where
-        T: InterleavedParallelProcessor;
-
-    /// Process interleaved FASTQ/FASTA files sequentially
-    fn process_sequential_interleaved<T>(self, processor: T) -> Result<()>
-    where
-        T: InterleavedParallelProcessor;
-}
-
-/// Trait for parallel processing of interleaved reads
-pub trait InterleavedMultiParallelReader: ParallelReader
-{
-    /// Process interleaved FASTQ/FASTA files in parallel
-    fn process_parallel_interleaved_multi<T>(
-        self,
-        arity: usize,
-        processor: T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: InterleavedMultiParallelProcessor;
-
-    /// Process interleaved FASTQ/FASTA files sequentially
-    fn process_sequential_interleaved_multi<T>(self, arity: usize, processor: T) -> Result<()>
-    where
-        T: InterleavedMultiParallelProcessor;
+        T: for<'a> GenericProcessor<Self::Rf<'a>>;
 }

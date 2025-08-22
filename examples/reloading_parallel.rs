@@ -31,8 +31,8 @@ impl SeqSum {
         *self.num.lock()
     }
 }
-impl ParallelProcessor for SeqSum {
-    fn process_record<Rf: paraseq::Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: paraseq::Record> ParallelProcessor<Rf> for SeqSum {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         record
             .seq()
             .iter()
