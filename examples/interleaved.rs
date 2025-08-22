@@ -3,9 +3,7 @@ use std::sync::Arc;
 
 // use anyhow::Result;
 use paraseq::{
-    fasta, fastq,
-    parallel::{InterleavedParallelProcessor, InterleavedParallelReader, ProcessError},
-    Record,
+    fasta, fastq, parallel::{InterleavedPairedReader, PairedParallelProcessor, ProcessError}, prelude::ParallelReader, Record
 };
 use parking_lot::Mutex;
 
@@ -31,8 +29,8 @@ impl SeqSum {
         *self.global_byte_sum.lock()
     }
 }
-impl InterleavedParallelProcessor for SeqSum {
-    fn process_interleaved_pair<Rf: Record>(
+impl<Rf: Record> PairedParallelProcessor<Rf> for SeqSum {
+    fn process_record_pair(
         &mut self,
         record1: Rf,
         record2: Rf,
@@ -75,11 +73,11 @@ fn main() -> Result<(), ProcessError> {
     let processor = SeqSum::default();
 
     if path.ends_with(".fastq") {
-        let reader = fastq::Reader::new(file);
-        reader.process_parallel_interleaved(processor.clone(), num_threads)?;
+        let reader = InterleavedPairedReader::new( fastq::Reader::new(file));
+        reader.process_parallel(processor.clone(), num_threads)?;
     } else if path.ends_with(".fasta") {
-        let reader = fasta::Reader::new(file);
-        reader.process_parallel_interleaved(processor.clone(), num_threads)?;
+        let reader = InterleavedPairedReader::new( fasta::Reader::new(file));
+        reader.process_parallel(processor.clone(), num_threads)?;
     } else {
         panic!("Unknown file format {path}");
     }

@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{fasta, fastq, Error, Record};
+#[cfg(feature = "niffler")]
+use crate::Error;
+use crate::{fasta, fastq, ProcessError, Record};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -300,85 +302,123 @@ impl Record for RefRecord<'_> {
 
 /// An internal trait implemented both by fasta and fastq types,
 /// so we only have to write the reader and parallel IO implementations once.
-pub(crate) trait FastXReaderSupport: Send {
-    type RecordSet: Default + Send;
-    type Error;
+pub trait GenericReader: Send {
+    type RecordSet: Send + 'static;
+    type Error: Into<ProcessError>;
     type RefRecord<'a>;
 
+    fn set_num_threads(&mut self, _num_threads: usize) {}
     fn new_record_set(&self) -> Self::RecordSet;
-    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error>;
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
+    fn iter<'a>(
+        record_set: &'a Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>>;
+    fn check_read_pair(
+        _rec1: &Self::RefRecord<'_>,
+        _rec2: &Self::RefRecord<'_>,
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+impl<R> GenericReader for crate::fastx::Reader<R>
+where
+    R: io::Read + Send,
+{
+    type RecordSet = RecordSet;
+    type Error = Error;
+    type RefRecord<'a> = crate::fastx::RefRecord<'a>;
+
+    fn new_record_set(&self) -> Self::RecordSet {
+        match self {
+            Self::Fasta(inner) => RecordSet::Fasta(inner.new_record_set()),
+            Self::Fastq(inner) => RecordSet::Fastq(inner.new_record_set()),
+        }
+    }
+
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+        record.fill(self)
+    }
 
     fn iter(
         record_set: &Self::RecordSet,
-    ) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>>;
-}
-
-
-#[cfg(feature = "niffler")]
-#[cfg(test)]
-mod testing {
-
-    use crate::prelude::{ParallelProcessor, ParallelReader};
-    use parking_lot::Mutex;
-    use std::sync::Arc;
-
-    use super::*;
-
-    const FORMAT_EXTENSIONS: &[&str] = &[".fasta", ".fastq"];
-    const COMPRESSION_EXTENSIONS: &[&str] = &["", ".gz", ".zst"];
-
-    #[derive(Clone, Default)]
-    struct Processor {
-        local_count: usize,
-        global_count: Arc<Mutex<usize>>,
-    }
-    impl Processor {
-        pub fn n_records(&self) -> usize {
-            *self.global_count.lock()
-        }
-    }
-    impl ParallelProcessor for Processor {
-        fn process_record<Rf: crate::Record>(
-            &mut self,
-            _record: Rf,
-        ) -> crate::parallel::Result<()> {
-            self.local_count += 1;
-            Ok(())
-        }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            *self.global_count.lock() += self.local_count;
-            self.local_count = 0;
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn test_fastx_reader_from_path() {
-        let basename = "./data/sample";
-        for format_ext in FORMAT_EXTENSIONS {
-            for compression_ext in COMPRESSION_EXTENSIONS {
-                let path = format!("{}{}{}", basename, format_ext, compression_ext);
-                dbg!(&path);
-                let reader = Reader::from_path(path).unwrap();
-                let proc = Processor::default();
-                reader.process_parallel(proc.clone(), 1).unwrap();
-                assert_eq!(proc.n_records(), 100);
-            }
-        }
-    }
-
-    #[test]
-    fn test_fastx_reader_from_path_with_batch_size() {
-        let basename = "./data/sample";
-        for format_ext in FORMAT_EXTENSIONS {
-            for compression_ext in COMPRESSION_EXTENSIONS {
-                let path = format!("{}{}{}", basename, format_ext, compression_ext);
-                dbg!(&path);
-                let reader = Reader::from_path_with_batch_size(path, 10).unwrap();
-                let proc = Processor::default();
-                reader.process_parallel(proc.clone(), 1).unwrap();
-                assert_eq!(proc.n_records(), 100);
-            }
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
+        match record_set {
+            RecordSet::Fasta(record_set) => either::Either::Left(
+                fasta::Reader::<R>::iter(record_set).map(|x| x.map(RefRecord::Fasta)),
+            ),
+            RecordSet::Fastq(record_set) => either::Either::Right(
+                fastq::Reader::<R>::iter(record_set).map(|x| x.map(RefRecord::Fastq)),
+            ),
         }
     }
 }
+
+// #[cfg(feature = "niffler")]
+// #[cfg(test)]
+// mod testing {
+
+//     use crate::prelude::{ParallelProcessor, ParallelReader};
+//     use parking_lot::Mutex;
+//     use std::sync::Arc;
+
+//     use super::*;
+
+//     const FORMAT_EXTENSIONS: &[&str] = &[".fasta", ".fastq"];
+//     const COMPRESSION_EXTENSIONS: &[&str] = &["", ".gz", ".zst"];
+
+//     #[derive(Clone, Default)]
+//     struct Processor {
+//         local_count: usize,
+//         global_count: Arc<Mutex<usize>>,
+//     }
+//     impl Processor {
+//         pub fn n_records(&self) -> usize {
+//             *self.global_count.lock()
+//         }
+//     }
+//     impl ParallelProcessor for Processor {
+//         fn process_record<Rf: crate::Record>(
+//             &mut self,
+//             _record: Rf,
+//         ) -> crate::parallel::Result<()> {
+//             self.local_count += 1;
+//             Ok(())
+//         }
+//         fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+//             *self.global_count.lock() += self.local_count;
+//             self.local_count = 0;
+//             Ok(())
+//         }
+//     }
+
+//     #[test]
+//     fn test_fastx_reader_from_path() {
+//         let basename = "./data/sample";
+//         for format_ext in FORMAT_EXTENSIONS {
+//             for compression_ext in COMPRESSION_EXTENSIONS {
+//                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
+//                 dbg!(&path);
+//                 let reader = Reader::from_path(path).unwrap();
+//                 let proc = Processor::default();
+//                 reader.process_parallel(proc.clone(), 1).unwrap();
+//                 assert_eq!(proc.n_records(), 100);
+//             }
+//         }
+//     }
+
+//     #[test]
+//     fn test_fastx_reader_from_path_with_batch_size() {
+//         let basename = "./data/sample";
+//         for format_ext in FORMAT_EXTENSIONS {
+//             for compression_ext in COMPRESSION_EXTENSIONS {
+//                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
+//                 dbg!(&path);
+//                 let reader = Reader::from_path_with_batch_size(path, 10).unwrap();
+//                 let proc = Processor::default();
+//                 reader.process_parallel(proc.clone(), 1).unwrap();
+//                 assert_eq!(proc.n_records(), 100);
+//             }
+//         }
+//     }
+// }

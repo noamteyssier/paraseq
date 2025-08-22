@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use paraseq::{fastx, parallel::Result, prelude::*, MAX_ARITY};
+use paraseq::{fastx, parallel::{MultiParallelProcessor, MultiReader, Result}, prelude::*, MAX_ARITY};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]
@@ -30,8 +30,8 @@ impl SeqSum {
         println!("Total bytes: {}", self.get_byte_sum());
     }
 }
-impl MultiParallelProcessor for SeqSum {
-    fn process_record_multi<Rf: Record>(&mut self, records: &[Rf]) -> Result<()> {
+impl<Rf: Record> MultiParallelProcessor<Rf> for SeqSum {
+    fn process_multi_record(&mut self, records: &[Rf]) -> Result<()> {
         for _ in 0..100 {
             for rec in records.iter() {
                 // Simulate some work
@@ -68,17 +68,17 @@ pub struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let rdr_r1 = fastx::Reader::from_path(&args.input_fastx[0])?;
-    let remainder = args.input_fastx[1..]
+    let readers = args.input_fastx
         .iter()
         .map(|path| -> Result<_> {
             let reader = fastx::Reader::from_path(path)?;
             Ok(reader)
         })
         .collect::<Result<Vec<_>>>()?;
+    let multi_reader = MultiReader::new(readers);
 
     let processor = SeqSum::default();
-    rdr_r1.process_parallel_multi(remainder, processor.clone(), args.threads)?;
+    multi_reader.process_parallel(processor.clone(), args.threads)?;
     processor.pprint();
     Ok(())
 }

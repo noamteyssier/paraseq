@@ -3,7 +3,7 @@ use std::io;
 #[cfg(feature = "niffler")]
 use std::path::Path;
 
-use crate::{fastx::FastXReaderSupport, Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -287,7 +287,10 @@ impl RecordSet {
     }
 
     /// Main function to fill the record set
-    pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> std::result::Result<bool, Error> {
+    pub fn fill<R: io::Read>(
+        &mut self,
+        reader: &mut Reader<R>,
+    ) -> std::result::Result<bool, Error> {
         // Clear previous data
         self.clear();
 
@@ -546,8 +549,7 @@ impl Record for RefRecord<'_> {
     }
 }
 
-
-impl<R> FastXReaderSupport for crate::fasta::Reader<R>
+impl<R> GenericReader for crate::fasta::Reader<R>
 where
     R: io::Read + Send,
 {
@@ -567,9 +569,9 @@ where
         record.fill(self)
     }
 
-    fn iter(
-        record_set: &Self::RecordSet,
-    ) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
+    fn iter<'a>(
+        record_set: &'a Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, crate::Error>> {
         record_set
             .positions
             .iter()

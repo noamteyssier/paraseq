@@ -4,7 +4,8 @@ use std::sync::Arc;
 // use anyhow::Result;
 use paraseq::{
     fasta, fastq,
-    parallel::{PairedParallelProcessor, PairedParallelReader, ProcessError},
+    parallel::{PairedParallelProcessor, PairedReader, ProcessError},
+    prelude::ParallelReader,
     Record,
 };
 use parking_lot::Mutex;
@@ -31,12 +32,8 @@ impl SeqSum {
         *self.global_byte_sum.lock()
     }
 }
-impl PairedParallelProcessor for SeqSum {
-    fn process_record_pair<Rf: Record>(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> Result<(), ProcessError> {
+impl<Rf: Record> PairedParallelProcessor<Rf> for SeqSum {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> Result<(), ProcessError> {
         for _ in 0..100 {
             // Simulate some work
             record1
@@ -81,11 +78,11 @@ fn main() -> Result<(), ProcessError> {
     if path_r1.ends_with(".fastq") {
         let rdr_r1 = fastq::Reader::new(file_r1);
         let rdr_r2 = fastq::Reader::new(file_r2);
-        rdr_r1.process_parallel_paired(rdr_r2, processor.clone(), num_threads)?;
+        PairedReader::new(rdr_r1, rdr_r2).process_parallel(processor.clone(), num_threads)?;
     } else if path_r1.ends_with(".fasta") {
         let rdr_r1 = fasta::Reader::new(file_r1);
         let rdr_r2 = fasta::Reader::new(file_r2);
-        rdr_r1.process_parallel_paired(rdr_r2, processor.clone(), num_threads)?;
+        PairedReader::new(rdr_r1, rdr_r2).process_parallel(processor.clone(), num_threads)?;
     } else {
         panic!("Unknown file format");
     }

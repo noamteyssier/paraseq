@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use paraseq::{fastx, prelude::*, ProcessError, Record};
+use paraseq::{fastx, parallel::{InterleavedMultiReader, MultiParallelProcessor}, prelude::*, ProcessError, Record};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]
@@ -27,8 +27,8 @@ impl SeqSum {
     }
 }
 
-impl InterleavedMultiParallelProcessor for SeqSum {
-    fn process_interleaved_multi<Rf: Record>(
+impl<Rf: Record> MultiParallelProcessor<Rf> for SeqSum {
+    fn process_multi_record(
         &mut self,
         records: &[Rf],
     ) -> Result<(), ProcessError> {
@@ -68,7 +68,8 @@ fn main() -> Result<(), ProcessError> {
     let args = Args::parse();
     let rdr = fastx::Reader::from_path(&args.path)?;
     let processor = SeqSum::default();
-    rdr.process_parallel_interleaved_multi(args.arity, processor.clone(), args.threads)?;
+    InterleavedMultiReader::new(rdr, args.arity)
+    .process_parallel(processor.clone(), args.threads)?;
 
     println!("num_records: {}", processor.get_num_records());
     println!("byte_sum: {}", processor.get_byte_sum());

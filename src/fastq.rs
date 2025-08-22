@@ -3,7 +3,7 @@ use std::io;
 #[cfg(feature = "niffler")]
 use std::path::Path;
 
-use crate::{fastx::FastXReaderSupport, Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -498,7 +498,7 @@ impl Record for RefRecord<'_> {
     }
 }
 
-impl<R> FastXReaderSupport for crate::fastq::Reader<R>
+impl<R> GenericReader for crate::fastq::Reader<R>
 where
     R: io::Read + Send,
 {
@@ -520,14 +520,13 @@ where
 
     fn iter(
         record_set: &Self::RecordSet,
-    ) -> impl Iterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         record_set
             .positions
             .iter()
             .map(move |&pos| Self::RefRecord::new(&record_set.buffer, pos))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

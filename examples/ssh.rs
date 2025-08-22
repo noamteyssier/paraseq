@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use paraseq::{fastx, prelude::*};
+use paraseq::{
+    fastx,
+    parallel::{PairedParallelProcessor, PairedReader},
+    prelude::*,
+};
 use parking_lot::Mutex;
 
 type BoxedWriter = Box<dyn std::io::Write + Send>;
@@ -21,8 +25,8 @@ impl Processor {
         }
     }
 }
-impl ParallelProcessor for Processor {
-    fn process_record<Rf: Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> ParallelProcessor<Rf> for Processor {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         record.write_fastq(&mut self.local_buf)?;
         Ok(())
     }
@@ -37,12 +41,8 @@ impl ParallelProcessor for Processor {
     }
 }
 
-impl PairedParallelProcessor for Processor {
-    fn process_record_pair<Rf: Record>(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> PairedParallelProcessor<Rf> for Processor {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::parallel::Result<()> {
         record1.write_fastq(&mut self.local_buf)?;
         record2.write_fastq(&mut self.local_buf)?;
         Ok(())
@@ -80,7 +80,8 @@ fn main() -> Result<()> {
         2 => {
             let reader_r1 = fastx::Reader::from_ssh(&args.url[0])?;
             let reader_r2 = fastx::Reader::from_ssh(&args.url[1])?;
-            reader_r1.process_parallel_paired(reader_r2, processor, args.num_threads)?;
+            PairedReader::new(reader_r1, reader_r2)
+                .process_parallel(processor, args.num_threads)?;
         }
         _ => {
             eprintln!("Invalid number of URLs (expected 1 or 2)");

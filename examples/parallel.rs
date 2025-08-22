@@ -31,8 +31,8 @@ impl SeqSum {
         *self.global_byte_sum.lock()
     }
 }
-impl ParallelProcessor for SeqSum {
-    fn process_record<Rf: Record>(&mut self, record: Rf) -> Result<(), ProcessError> {
+impl<Rf: Record> ParallelProcessor<Rf> for SeqSum {
+    fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
         for _ in 0..100 {
             // Simulate some work
             record
