@@ -37,8 +37,8 @@ impl Processor {
         }
     }
 }
-impl ParallelProcessor for Processor {
-    fn process_record<Rf: paraseq::Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: paraseq::Record> ParallelProcessor<Rf> for Processor {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         match self.out_format {
             OutputFormat::Fasta => {
                 record.write_fasta(&mut self.local_out)?;
@@ -99,7 +99,7 @@ fn main() -> Result<()> {
 
     let proc = Processor::new(out_handle, args.out_format);
     let reader = fastx::Reader::from_optional_path(args.input_file)?;
-    reader.process_parallel(proc, args.num_threads)?;
+    Mutex::new(reader).process_parallel(proc, args.num_threads)?;
 
     Ok(())
 }

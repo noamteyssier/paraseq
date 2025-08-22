@@ -31,8 +31,8 @@ impl SeqSum {
         *self.num.lock()
     }
 }
-impl ParallelProcessor for SeqSum {
-    fn process_record<Rf: paraseq::Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: paraseq::Record> ParallelProcessor<Rf> for SeqSum {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         record
             .seq()
             .iter()
@@ -68,7 +68,7 @@ fn reload_fastq(path: &str, n_threads: usize) -> Result<()> {
 
     // Parallel process the reader
     let proc = SeqSum::default();
-    reader.process_parallel(proc.clone(), n_threads)?;
+    Mutex::new(reader).process_parallel(proc.clone(), n_threads)?;
 
     eprintln!("(fastq) num_records: {}", proc.get_num());
     eprintln!("(fastq) sum: {}", proc.get_sum());
@@ -95,7 +95,7 @@ fn reload_fasta(path: &str, n_threads: usize) -> Result<()> {
 
     // Parallel process the reader
     let proc = SeqSum::default();
-    reader.process_parallel(proc.clone(), n_threads)?;
+    Mutex::new(reader).process_parallel(proc.clone(), n_threads)?;
 
     eprintln!("(fasta) num_records: {}", proc.get_num());
     eprintln!("(fasta) sum: {}", proc.get_sum());
@@ -122,7 +122,7 @@ fn reload_fastx(path: &str, n_threads: usize) -> Result<()> {
 
     // Parallel process the reader
     let proc = SeqSum::default();
-    reader.process_parallel(proc.clone(), n_threads)?;
+    Mutex::new(reader).process_parallel(proc.clone(), n_threads)?;
 
     eprintln!("(fastx) num_records: {}", proc.get_num());
     eprintln!("(fastx) sum: {}", proc.get_sum());
