@@ -87,6 +87,59 @@ impl Reader<Box<dyn io::Read + Send>> {
     }
 }
 
+#[cfg(feature = "gcs")]
+impl Reader<Box<dyn io::Read + Send>> {
+    /// Create a GCS reader using Application Default Credentials
+    pub fn from_gcs(gcs_url: &str) -> Result<Self, Error> {
+        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
+        Self::new(reader)
+    }
+
+    /// Create a GCS reader using custom gcloud arguments
+    pub fn from_gcs_with_gcloud_args(gcs_url: &str, args: &[&str]) -> Result<Self, Error> {
+        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, args)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
+        Self::new(reader)
+    }
+
+    /// Create a GCS reader using a specific project ID
+    pub fn from_gcs_with_project(gcs_url: &str, project_id: &str) -> Result<Self, Error> {
+        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
+        Self::new(reader)
+    }
+
+    /// Create a GCS reader with custom batch size using Application Default Credentials
+    pub fn from_gcs_with_batch_size(gcs_url: &str, batch_size: usize) -> Result<Self, Error> {
+        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
+        Self::new_with_batch_size(reader, batch_size)
+    }
+
+    /// Create a GCS reader with custom batch size using custom gcloud arguments
+    pub fn from_gcs_with_gcloud_args_and_batch_size(
+        gcs_url: &str,
+        gcloud_args: &[&str],
+        batch_size: usize,
+    ) -> Result<Self, Error> {
+        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, gcloud_args)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
+        Self::new_with_batch_size(reader, batch_size)
+    }
+
+    /// Create a GCS reader with custom batch size using a specific project ID
+    pub fn from_gcs_with_project_and_batch_size(
+        gcs_url: &str,
+        project_id: &str,
+        batch_size: usize,
+    ) -> Result<Self, Error> {
+        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
+        Self::new_with_batch_size(reader, batch_size)
+    }
+}
+
 impl<R: io::Read> Reader<R> {
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let mut buffer = [0; 1];
