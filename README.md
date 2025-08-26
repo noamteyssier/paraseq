@@ -1,6 +1,5 @@
 # paraseq
 
-
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE.md)
 [![Crates.io](https://img.shields.io/crates/d/paraseq?color=orange&label=crates.io)](https://crates.io/crates/paraseq)
 [![docs.rs](https://img.shields.io/docsrs/paraseq?color=green&label=docs.rs)](https://docs.rs/paraseq/latest/paraseq/)
@@ -33,9 +32,11 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 - Generalized Map-Reduce pattern for processing sequencing data (single-end, paired-end, and interleaved)
 
 ### Optional Features (Feature Flags)
+
 - Supports parallel processing of SAM/BAM/CRAM files using [`rust_htslib`](https://crates.io/crates/rust_htslib) (with `htslib` feature flag)
-- Support URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag)
-- Support SSH paths as inputs respecting system configuration (with `ssh` feature flag)
+- Supports URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag)
+- Supports SSH paths as inputs respecting system configuration (with `ssh` feature flag)
+- Supports Google Cloud Storage (GCS) URIs (with `gcs` feature flag). _requires [`gcloud`](https://cloud.google.com/sdk/docs/install) to be installed and authenticated_
 
 ## Usage
 

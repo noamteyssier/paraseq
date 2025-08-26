@@ -17,12 +17,15 @@ pub extern crate rust_htslib;
 #[cfg(feature = "ssh")]
 pub mod ssh;
 
+#[cfg(feature = "gcs")]
+pub mod gcs;
+
 pub use error::Error;
 pub use parallel::ProcessError;
 pub use record::Record;
 
 /// Default maximum number of records in a record set.
 pub const DEFAULT_MAX_RECORDS: usize = 1024;
-/// The maximum number of record segments supported in a single synchronized record group. 
+/// The maximum number of record segments supported in a single synchronized record group.
 /// For example, single-end reads have arity 1, paired-end reads have arity 2, etc.
 pub const MAX_ARITY: usize = 8;

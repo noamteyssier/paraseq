@@ -25,6 +25,10 @@ pub enum Error {
     #[error("SSH error: {0}")]
     Ssh(#[from] crate::ssh::SshError),
 
+    #[cfg(feature = "gcs")]
+    #[error("GCS error: {0}")]
+    Gcs(#[from] crate::gcs::GcsError),
+
     #[error("Invalid batch size ({0}), must be greater than zero")]
     InvalidBatchSize(usize),
 
