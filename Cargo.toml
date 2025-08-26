@@ -29,8 +29,9 @@ niffler = ["dep:niffler"]
 htslib = ["dep:rust-htslib"]
 url = ["dep:reqwest", "dep:niffler"]
 ssh = ["dep:which"]
+gcs = ["dep:which"]
 
 [dev-dependencies]
 clap = { version = "4.5.40", features = ["derive"] }
 niffler = "3.0.0"
-paraseq = { path = ".", features = ["url", "htslib", "ssh"] }
+paraseq = { path = ".", features = ["url", "htslib", "ssh", "gcs"] }
