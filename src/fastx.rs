@@ -1,7 +1,11 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{fasta, fastq, Error, Record};
+use parking_lot::Mutex;
+
+#[cfg(feature = "niffler")]
+use crate::Error;
+use crate::{fasta, fastq, ProcessError, Record};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -278,7 +282,7 @@ impl Record for RefRecord<'_> {
             Self::Fastq(x) => x.id(),
         }
     }
-    fn seq(&self) -> Cow<[u8]> {
+    fn seq(&self) -> Cow<'_, [u8]> {
         match self {
             Self::Fasta(x) => x.seq(),
             Self::Fastq(x) => x.seq(),
@@ -297,6 +301,98 @@ impl Record for RefRecord<'_> {
         }
     }
 }
+
+/// An internal trait implemented both by fasta and fastq types,
+/// so we only have to write the reader and parallel IO implementations once.
+pub trait GenericReader: Send {
+    type RecordSet: Send + 'static;
+    type Error: Into<ProcessError>;
+    type RefRecord<'a>;
+
+    fn new_record_set(&self) -> Self::RecordSet;
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
+    fn iter<'a>(
+        record_set: &'a Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>>;
+    fn check_read_pair(
+        _rec1: &Self::RefRecord<'_>,
+        _rec2: &Self::RefRecord<'_>,
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+}
+pub trait MTGenericReader: Send + Sync {
+    type RecordSet: Send + 'static;
+    type Error: Into<ProcessError>;
+    type RefRecord<'a>;
+
+    fn set_num_threads(&mut self, _num_threads: usize) {}
+    fn new_record_set(&self) -> Self::RecordSet;
+    fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
+    fn iter<'a>(
+        record_set: &'a Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>>;
+    fn check_read_pair(
+        _rec1: &Self::RefRecord<'_>,
+        _rec2: &Self::RefRecord<'_>,
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+impl<T: GenericReader> MTGenericReader for Mutex<T> {
+    type RecordSet = T::RecordSet;
+    type Error = T::Error;
+    type RefRecord<'a> = T::RefRecord<'a>;
+
+    fn new_record_set(&self) -> Self::RecordSet {
+        self.lock().new_record_set()
+    }
+
+    fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+        self.lock().fill(record)
+    }
+
+    fn iter<'a>(
+        record_set: &'a Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>> {
+        T::iter(record_set)
+    }
+}
+
+impl<R> GenericReader for crate::fastx::Reader<R>
+where
+    R: io::Read + Send,
+{
+    type RecordSet = RecordSet;
+    type Error = Error;
+    type RefRecord<'a> = crate::fastx::RefRecord<'a>;
+
+    fn new_record_set(&self) -> Self::RecordSet {
+        match self {
+            Reader::Fasta(inner) => RecordSet::Fasta(inner.new_record_set()),
+            Reader::Fastq(inner) => RecordSet::Fastq(inner.new_record_set()),
+        }
+    }
+
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+        record.fill(self)
+    }
+
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
+        match record_set {
+            RecordSet::Fasta(record_set) => either::Either::Left(
+                fasta::Reader::<R>::iter(record_set).map(|x| x.map(RefRecord::Fasta)),
+            ),
+            RecordSet::Fastq(record_set) => either::Either::Right(
+                fastq::Reader::<R>::iter(record_set).map(|x| x.map(RefRecord::Fastq)),
+            ),
+        }
+    }
+}
+
 #[cfg(feature = "niffler")]
 #[cfg(test)]
 mod testing {
@@ -320,11 +416,8 @@ mod testing {
             *self.global_count.lock()
         }
     }
-    impl ParallelProcessor for Processor {
-        fn process_record<Rf: crate::Record>(
-            &mut self,
-            _record: Rf,
-        ) -> crate::parallel::Result<()> {
+    impl<Rf: crate::Record> ParallelProcessor<Rf> for Processor {
+        fn process_record(&mut self, _record: Rf) -> crate::parallel::Result<()> {
             self.local_count += 1;
             Ok(())
         }
@@ -344,7 +437,9 @@ mod testing {
                 dbg!(&path);
                 let reader = Reader::from_path(path).unwrap();
                 let proc = Processor::default();
-                reader.process_parallel(proc.clone(), 1).unwrap();
+                reader
+                    .process_parallel(proc.clone(), 1)
+                    .unwrap();
                 assert_eq!(proc.n_records(), 100);
             }
         }
@@ -359,7 +454,9 @@ mod testing {
                 dbg!(&path);
                 let reader = Reader::from_path_with_batch_size(path, 10).unwrap();
                 let proc = Processor::default();
-                reader.process_parallel(proc.clone(), 1).unwrap();
+                reader
+                    .process_parallel(proc.clone(), 1)
+                    .unwrap();
                 assert_eq!(proc.n_records(), 100);
             }
         }
