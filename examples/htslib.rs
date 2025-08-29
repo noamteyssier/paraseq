@@ -127,7 +127,7 @@ fn main() -> Result<()> {
         InterleavedPairedReader::new(reader)
             .process_parallel(proc, args.num_threads)?;
     } else {
-        Mutex::new(reader).process_parallel(proc, args.num_threads)?;
+        reader.process_parallel(proc, args.num_threads)?;
     }
     Ok(())
 }

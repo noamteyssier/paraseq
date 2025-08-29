@@ -99,6 +99,6 @@ fn main() -> Result<()> {
     let handle_out = args.output_handle()?;
     let reader = fastx::Reader::new(handle_in)?;
     let proc = Processor::new(handle_out, args.out_format);
-    Mutex::new(reader).process_parallel(proc, args.num_threads)?;
+    reader.process_parallel(proc, args.num_threads)?;
     Ok(())
 }

@@ -1,9 +1,13 @@
-use crate::fastx::MTGenericReader;
+use parking_lot::Mutex;
+
+use crate::fastx::{GenericReader, MTGenericReader};
 use crate::parallel::processor::GenericProcessor;
 use crate::parallel::{error::Result, ParallelReader, ProcessError};
 use std::thread;
 
-impl<S: MTGenericReader> ParallelReader for S {
+pub struct Wrapper<X>(pub(crate) X);
+
+impl<S: MTGenericReader> ParallelReader for Wrapper<S> {
     type Rf<'a> = S::RefRecord<'a>;
 
     fn process_parallel<T>(mut self, processor: T, num_threads: usize) -> Result<()>
@@ -19,7 +23,7 @@ impl<S: MTGenericReader> ParallelReader for S {
 
         eprintln!("num threads: {num_threads}");
 
-        self.set_num_threads(num_threads);
+        self.0.set_num_threads(num_threads);
 
         let reader = self;
         thread::scope(|scope| -> Result<()> {
@@ -29,19 +33,19 @@ impl<S: MTGenericReader> ParallelReader for S {
             let mut handles = Vec::new();
             for thread_id in 0..num_threads {
                 let mut worker_processor = processor.clone();
-                let mut record_set = reader.new_record_set();
+                let mut record_set = reader.0.new_record_set();
 
                 let handle = scope.spawn(move || {
                     worker_processor.set_thread_id(thread_id);
 
                     loop {
-                        let s1 = reader.fill(&mut record_set);
+                        let s1 = reader.0.fill(&mut record_set);
 
                         if !s1.map_err(Into::into)? {
                             break;
                         }
 
-                        let records = Self::iter(&record_set);
+                        let records = S::iter(&record_set);
 
                         for record in records {
                             worker_processor.process_record(record.map_err(Into::into)?)?;
@@ -76,12 +80,103 @@ impl<S: MTGenericReader> ParallelReader for S {
         T: for<'a> GenericProcessor<S::RefRecord<'a>>,
     {
         let reader = self;
+        let mut record_set = reader.0.new_record_set();
+
+        loop {
+            match reader.0.fill(&mut record_set).map_err(Into::into)? {
+                true => {
+                    for record in S::iter(&record_set) {
+                        processor.process_record(record.map_err(Into::into)?)?;
+                    }
+                    processor.on_batch_complete()?;
+                }
+                false => break,
+            }
+        }
+        processor.on_thread_complete()?;
+        Ok(())
+    }
+}
+
+impl<S: GenericReader> ParallelReader for S {
+    type Rf<'a> = S::RefRecord<'a>;
+
+    fn process_parallel<T>(self, processor: T, num_threads: usize) -> Result<()>
+    where
+        T: for<'a> GenericProcessor<S::RefRecord<'a>>,
+    {
+        if num_threads == 0 {
+            return Err(ProcessError::InvalidThreadCount);
+        }
+        if num_threads == 1 {
+            return ParallelReader::process_sequential(self, processor);
+        }
+
+        eprintln!("num threads: {num_threads}");
+
+        // self.set_num_threads(num_threads);
+
+        let reader = Mutex::new(self);
+        thread::scope(|scope| -> Result<()> {
+            let reader = &reader;
+
+            // Spawn worker threads
+            let mut handles = Vec::new();
+            for thread_id in 0..num_threads {
+                let mut worker_processor = processor.clone();
+                let mut record_set = reader.lock().new_record_set();
+
+                let handle = scope.spawn(move || {
+                    worker_processor.set_thread_id(thread_id);
+
+                    loop {
+                        let s1 = reader.lock().fill(&mut record_set);
+
+                        if !s1.map_err(Into::into)? {
+                            break;
+                        }
+
+                        let records = S::iter(&record_set);
+
+                        for record in records {
+                            worker_processor.process_record(record.map_err(Into::into)?)?;
+                        }
+
+                        worker_processor.on_batch_complete()?;
+                    }
+                    worker_processor.on_thread_complete()?;
+                    Ok(())
+                });
+
+                handles.push(handle);
+            }
+
+            // Wait for worker threads
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(())) => (),
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => return Err(ProcessError::JoinError),
+                }
+            }
+
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    fn process_sequential<T>(self, mut processor: T) -> Result<()>
+    where
+        T: for<'a> GenericProcessor<S::RefRecord<'a>>,
+    {
+        let mut reader = self;
         let mut record_set = reader.new_record_set();
 
         loop {
             match reader.fill(&mut record_set).map_err(Into::into)? {
                 true => {
-                    for record in Self::iter(&record_set) {
+                    for record in S::iter(&record_set) {
                         processor.process_record(record.map_err(Into::into)?)?;
                     }
                     processor.on_batch_complete()?;

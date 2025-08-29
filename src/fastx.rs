@@ -384,10 +384,10 @@ where
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         match record_set {
             RecordSet::Fasta(record_set) => either::Either::Left(
-                Mutex::<fasta::Reader<R>>::iter(record_set).map(|x| x.map(RefRecord::Fasta)),
+                fasta::Reader::<R>::iter(record_set).map(|x| x.map(RefRecord::Fasta)),
             ),
             RecordSet::Fastq(record_set) => either::Either::Right(
-                Mutex::<fastq::Reader<R>>::iter(record_set).map(|x| x.map(RefRecord::Fastq)),
+                fastq::Reader::<R>::iter(record_set).map(|x| x.map(RefRecord::Fastq)),
             ),
         }
     }
