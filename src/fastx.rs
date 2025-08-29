@@ -393,71 +393,72 @@ where
     }
 }
 
-// #[cfg(feature = "niffler")]
-// #[cfg(test)]
-// mod testing {
+#[cfg(feature = "niffler")]
+#[cfg(test)]
+mod testing {
 
-//     use crate::prelude::{ParallelProcessor, ParallelReader};
-//     use parking_lot::Mutex;
-//     use std::sync::Arc;
+    use crate::prelude::{ParallelProcessor, ParallelReader};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
 
-//     use super::*;
+    use super::*;
 
-//     const FORMAT_EXTENSIONS: &[&str] = &[".fasta", ".fastq"];
-//     const COMPRESSION_EXTENSIONS: &[&str] = &["", ".gz", ".zst"];
+    const FORMAT_EXTENSIONS: &[&str] = &[".fasta", ".fastq"];
+    const COMPRESSION_EXTENSIONS: &[&str] = &["", ".gz", ".zst"];
 
-//     #[derive(Clone, Default)]
-//     struct Processor {
-//         local_count: usize,
-//         global_count: Arc<Mutex<usize>>,
-//     }
-//     impl Processor {
-//         pub fn n_records(&self) -> usize {
-//             *self.global_count.lock()
-//         }
-//     }
-//     impl ParallelProcessor for Processor {
-//         fn process_record<Rf: crate::Record>(
-//             &mut self,
-//             _record: Rf,
-//         ) -> crate::parallel::Result<()> {
-//             self.local_count += 1;
-//             Ok(())
-//         }
-//         fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-//             *self.global_count.lock() += self.local_count;
-//             self.local_count = 0;
-//             Ok(())
-//         }
-//     }
+    #[derive(Clone, Default)]
+    struct Processor {
+        local_count: usize,
+        global_count: Arc<Mutex<usize>>,
+    }
+    impl Processor {
+        pub fn n_records(&self) -> usize {
+            *self.global_count.lock()
+        }
+    }
+    impl<Rf: crate::Record> ParallelProcessor<Rf> for Processor {
+        fn process_record(&mut self, _record: Rf) -> crate::parallel::Result<()> {
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+            *self.global_count.lock() += self.local_count;
+            self.local_count = 0;
+            Ok(())
+        }
+    }
 
-//     #[test]
-//     fn test_fastx_reader_from_path() {
-//         let basename = "./data/sample";
-//         for format_ext in FORMAT_EXTENSIONS {
-//             for compression_ext in COMPRESSION_EXTENSIONS {
-//                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
-//                 dbg!(&path);
-//                 let reader = Reader::from_path(path).unwrap();
-//                 let proc = Processor::default();
-//                 reader.process_parallel(proc.clone(), 1).unwrap();
-//                 assert_eq!(proc.n_records(), 100);
-//             }
-//         }
-//     }
+    #[test]
+    fn test_fastx_reader_from_path() {
+        let basename = "./data/sample";
+        for format_ext in FORMAT_EXTENSIONS {
+            for compression_ext in COMPRESSION_EXTENSIONS {
+                let path = format!("{}{}{}", basename, format_ext, compression_ext);
+                dbg!(&path);
+                let reader = Reader::from_path(path).unwrap();
+                let proc = Processor::default();
+                reader
+                    .process_parallel(proc.clone(), 1)
+                    .unwrap();
+                assert_eq!(proc.n_records(), 100);
+            }
+        }
+    }
 
-//     #[test]
-//     fn test_fastx_reader_from_path_with_batch_size() {
-//         let basename = "./data/sample";
-//         for format_ext in FORMAT_EXTENSIONS {
-//             for compression_ext in COMPRESSION_EXTENSIONS {
-//                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
-//                 dbg!(&path);
-//                 let reader = Reader::from_path_with_batch_size(path, 10).unwrap();
-//                 let proc = Processor::default();
-//                 reader.process_parallel(proc.clone(), 1).unwrap();
-//                 assert_eq!(proc.n_records(), 100);
-//             }
-//         }
-//     }
-// }
+    #[test]
+    fn test_fastx_reader_from_path_with_batch_size() {
+        let basename = "./data/sample";
+        for format_ext in FORMAT_EXTENSIONS {
+            for compression_ext in COMPRESSION_EXTENSIONS {
+                let path = format!("{}{}{}", basename, format_ext, compression_ext);
+                dbg!(&path);
+                let reader = Reader::from_path_with_batch_size(path, 10).unwrap();
+                let proc = Processor::default();
+                reader
+                    .process_parallel(proc.clone(), 1)
+                    .unwrap();
+                assert_eq!(proc.n_records(), 100);
+            }
+        }
+    }
+}
