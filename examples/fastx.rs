@@ -98,7 +98,7 @@ fn main() -> Result<()> {
     let handle_in = args.input_handle()?;
     let handle_out = args.output_handle()?;
     let reader = fastx::Reader::new(handle_in)?;
-    let proc = Processor::new(handle_out, args.out_format);
-    reader.process_parallel(proc, args.num_threads)?;
+    let mut proc = Processor::new(handle_out, args.out_format);
+    reader.process_parallel(&mut proc, args.num_threads)?;
     Ok(())
 }

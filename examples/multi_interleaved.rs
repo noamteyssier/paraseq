@@ -67,9 +67,9 @@ struct Args {
 fn main() -> Result<(), ProcessError> {
     let args = Args::parse();
     let rdr = fastx::Reader::from_path(&args.path)?;
-    let processor = SeqSum::default();
+    let mut processor = SeqSum::default();
     InterleavedMultiReader::new(rdr, args.arity)
-    .process_parallel(processor.clone(), args.threads)?;
+    .process_parallel(&mut processor, args.threads)?;
 
     println!("num_records: {}", processor.get_num_records());
     println!("byte_sum: {}", processor.get_byte_sum());

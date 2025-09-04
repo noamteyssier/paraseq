@@ -77,8 +77,8 @@ fn main() -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let multi_reader = MultiReader::new(readers);
 
-    let processor = SeqSum::default();
-    multi_reader.process_parallel(processor.clone(), args.threads)?;
+    let mut processor = SeqSum::default();
+    multi_reader.process_parallel(&mut processor, args.threads)?;
     processor.pprint();
     Ok(())
 }

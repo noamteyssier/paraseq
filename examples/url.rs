@@ -74,9 +74,9 @@ fn main() -> Result<()> {
     for example in &examples {
         let url = format!("{}/{}", base_url, example);
         eprintln!("Processing single-end from: {}", url);
-        let processor = Processor::new();
+        let mut processor = Processor::new();
         let reader = fastx::Reader::from_url(&url)?;
-        reader.process_parallel(processor, num_threads)?;
+        reader.process_parallel(&mut processor, num_threads)?;
     }
 
     // Paired-end example
@@ -86,10 +86,10 @@ fn main() -> Result<()> {
         "Processing paired-end example: \n1. {}\n2. {}",
         r1_url, r2_url
     );
-    let processor = Processor::new();
+    let mut processor = Processor::new();
     let reader_r1 = fastx::Reader::from_url(&r1_url)?;
     let reader_r2 = fastx::Reader::from_url(&r2_url)?;
-    PairedReader::new(reader_r1, reader_r2).process_parallel(processor, num_threads)?;
+    PairedReader::new(reader_r1, reader_r2).process_parallel(&mut processor, num_threads)?;
 
     Ok(())
 }

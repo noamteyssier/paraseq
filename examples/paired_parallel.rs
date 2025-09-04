@@ -73,16 +73,16 @@ fn main() -> Result<(), ProcessError> {
 
     let file_r1 = File::open(&path_r1)?;
     let file_r2 = File::open(&path_r2)?;
-    let processor = SeqSum::default();
+    let mut processor = SeqSum::default();
 
     if path_r1.ends_with(".fastq") {
         let rdr_r1 = fastq::Reader::new(file_r1);
         let rdr_r2 = fastq::Reader::new(file_r2);
-        PairedReader::new(rdr_r1, rdr_r2).process_parallel(processor.clone(), num_threads)?;
+        PairedReader::new(rdr_r1, rdr_r2).process_parallel(&mut processor, num_threads)?;
     } else if path_r1.ends_with(".fasta") {
         let rdr_r1 = fasta::Reader::new(file_r1);
         let rdr_r2 = fasta::Reader::new(file_r2);
-        PairedReader::new(rdr_r1, rdr_r2).process_parallel(processor.clone(), num_threads)?;
+        PairedReader::new(rdr_r1, rdr_r2).process_parallel(&mut processor, num_threads)?;
     } else {
         panic!("Unknown file format");
     }

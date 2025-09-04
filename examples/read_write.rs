@@ -97,9 +97,9 @@ fn main() -> Result<()> {
     let args = Cli::parse();
     let out_handle = args.output_handle()?;
 
-    let proc = Processor::new(out_handle, args.out_format);
+    let mut proc = Processor::new(out_handle, args.out_format);
     let reader = fastx::Reader::from_optional_path(args.input_file)?;
-    reader.process_parallel(proc, args.num_threads)?;
+    reader.process_parallel(&mut proc, args.num_threads)?;
 
     Ok(())
 }

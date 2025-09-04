@@ -67,8 +67,8 @@ fn reload_fastq(path: &str, n_threads: usize) -> Result<()> {
     reader.reload(&mut rset);
 
     // Parallel process the reader
-    let proc = SeqSum::default();
-    reader.process_parallel(proc.clone(), n_threads)?;
+    let mut proc = SeqSum::default();
+    reader.process_parallel(&mut proc, n_threads)?;
 
     eprintln!("(fastq) num_records: {}", proc.get_num());
     eprintln!("(fastq) sum: {}", proc.get_sum());
@@ -94,8 +94,8 @@ fn reload_fasta(path: &str, n_threads: usize) -> Result<()> {
     reader.reload(&mut rset);
 
     // Parallel process the reader
-    let proc = SeqSum::default();
-    reader.process_parallel(proc.clone(), n_threads)?;
+    let mut proc = SeqSum::default();
+    reader.process_parallel(&mut proc, n_threads)?;
 
     eprintln!("(fasta) num_records: {}", proc.get_num());
     eprintln!("(fasta) sum: {}", proc.get_sum());
@@ -121,8 +121,8 @@ fn reload_fastx(path: &str, n_threads: usize) -> Result<()> {
     reader.reload(&mut rset)?;
 
     // Parallel process the reader
-    let proc = SeqSum::default();
-    reader.process_parallel(proc.clone(), n_threads)?;
+    let mut proc = SeqSum::default();
+    reader.process_parallel(&mut proc, n_threads)?;
 
     eprintln!("(fastx) num_records: {}", proc.get_num());
     eprintln!("(fastx) sum: {}", proc.get_sum());

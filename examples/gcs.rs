@@ -75,19 +75,19 @@ fn main() -> Result<()> {
     match args.url.len() {
         1 => {
             let url = &args.url[0];
-            let processor = Processor::new();
+            let mut processor = Processor::new();
             let reader = fastx::Reader::from_gcs(url)?;
-            reader.process_parallel(processor, args.num_threads)?;
+            reader.process_parallel(&mut processor, args.num_threads)?;
             Ok(())
         }
         2 => {
             let url1 = &args.url[0];
             let url2 = &args.url[1];
-            let processor = Processor::new();
+            let mut processor = Processor::new();
             let r1 = fastx::Reader::from_gcs(url1)?;
             let r2 = fastx::Reader::from_gcs(url2)?;
             PairedReader::new(r1, r2).process_parallel(
-            processor, args.num_threads)?;
+            &mut processor, args.num_threads)?;
             Ok(())
         }
         _ => {

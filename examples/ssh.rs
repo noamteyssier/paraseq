@@ -71,17 +71,17 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let processor = Processor::new();
+    let mut processor = Processor::new();
     match args.url.len() {
         1 => {
             let reader = fastx::Reader::from_ssh(&args.url[0])?;
-            reader.process_parallel(processor, args.num_threads)?;
+            reader.process_parallel(&mut processor, args.num_threads)?;
         }
         2 => {
             let reader_r1 = fastx::Reader::from_ssh(&args.url[0])?;
             let reader_r2 = fastx::Reader::from_ssh(&args.url[1])?;
             PairedReader::new(reader_r1, reader_r2)
-                .process_parallel(processor, args.num_threads)?;
+                .process_parallel(&mut processor, args.num_threads)?;
         }
         _ => {
             eprintln!("Invalid number of URLs (expected 1 or 2)");

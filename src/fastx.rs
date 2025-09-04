@@ -436,9 +436,9 @@ mod testing {
                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
                 dbg!(&path);
                 let reader = Reader::from_path(path).unwrap();
-                let proc = Processor::default();
+                let mut proc = Processor::default();
                 reader
-                    .process_parallel(proc.clone(), 1)
+                    .process_parallel(&mut proc, 1)
                     .unwrap();
                 assert_eq!(proc.n_records(), 100);
             }
@@ -453,9 +453,9 @@ mod testing {
                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
                 dbg!(&path);
                 let reader = Reader::from_path_with_batch_size(path, 10).unwrap();
-                let proc = Processor::default();
+                let mut proc = Processor::default();
                 reader
-                    .process_parallel(proc.clone(), 1)
+                    .process_parallel(&mut proc, 1)
                     .unwrap();
                 assert_eq!(proc.n_records(), 100);
             }

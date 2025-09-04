@@ -70,14 +70,14 @@ fn main() -> Result<(), ProcessError> {
         .unwrap_or(1);
 
     let file = File::open(&path)?;
-    let processor = SeqSum::default();
+    let mut processor = SeqSum::default();
 
     if path.ends_with(".fastq") {
         let reader = InterleavedPairedReader::new( fastq::Reader::new(file));
-        reader.process_parallel(processor.clone(), num_threads)?;
+        reader.process_parallel(&mut processor, num_threads)?;
     } else if path.ends_with(".fasta") {
         let reader = InterleavedPairedReader::new( fasta::Reader::new(file));
-        reader.process_parallel(processor.clone(), num_threads)?;
+        reader.process_parallel(&mut processor, num_threads)?;
     } else {
         panic!("Unknown file format {path}");
     }

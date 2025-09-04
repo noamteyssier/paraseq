@@ -70,14 +70,14 @@ fn main() -> Result<(), ProcessError> {
         .unwrap_or(DEFAULT_MAX_RECORDS);
 
     let file = File::open(&path)?;
-    let processor = SeqSum::default();
+    let mut processor = SeqSum::default();
 
     if path.ends_with(".fastq") {
         let reader = fastq::Reader::with_batch_size(file, batch_size)?;
-        reader.process_parallel(processor.clone(), num_threads)?;
+        reader.process_parallel(&mut processor, num_threads)?;
     } else if path.ends_with(".fasta") {
         let reader = fasta::Reader::with_batch_size(file, batch_size)?;
-        reader.process_parallel(processor.clone(), num_threads)?;
+        reader.process_parallel(&mut processor, num_threads)?;
     } else {
         panic!("Unknown file format {path}");
     }

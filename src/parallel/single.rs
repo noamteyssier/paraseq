@@ -10,7 +10,7 @@ pub struct Wrapper<X>(pub(crate) X);
 impl<S: MTGenericReader> ParallelReader for Wrapper<S> {
     type Rf<'a> = S::RefRecord<'a>;
 
-    fn process_parallel<T>(mut self, processor: T, num_threads: usize) -> Result<()>
+    fn process_parallel<T>(mut self, processor: &mut T, num_threads: usize) -> Result<()>
     where
         T: for<'a> GenericProcessor<S::RefRecord<'a>>,
     {
@@ -75,7 +75,7 @@ impl<S: MTGenericReader> ParallelReader for Wrapper<S> {
         Ok(())
     }
 
-    fn process_sequential<T>(self, mut processor: T) -> Result<()>
+    fn process_sequential<T>(self, processor: &mut T) -> Result<()>
     where
         T: for<'a> GenericProcessor<S::RefRecord<'a>>,
     {
@@ -101,7 +101,7 @@ impl<S: MTGenericReader> ParallelReader for Wrapper<S> {
 impl<S: GenericReader> ParallelReader for S {
     type Rf<'a> = S::RefRecord<'a>;
 
-    fn process_parallel<T>(self, processor: T, num_threads: usize) -> Result<()>
+    fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
     where
         T: for<'a> GenericProcessor<S::RefRecord<'a>>,
     {
@@ -166,7 +166,7 @@ impl<S: GenericReader> ParallelReader for S {
         Ok(())
     }
 
-    fn process_sequential<T>(self, mut processor: T) -> Result<()>
+    fn process_sequential<T>(self, processor: &mut T) -> Result<()>
     where
         T: for<'a> GenericProcessor<S::RefRecord<'a>>,
     {
