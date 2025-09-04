@@ -1,15 +1,9 @@
 mod error;
-mod fastx;
-mod macros;
+mod multi;
+mod paired;
 mod processor;
-mod reader;
+mod single;
 
 pub use error::{IntoProcessError, ProcessError, Result};
-pub use processor::{
-    InterleavedMultiParallelProcessor, InterleavedParallelProcessor, MultiParallelProcessor,
-    PairedParallelProcessor, ParallelProcessor,
-};
-pub use reader::{
-    InterleavedMultiParallelReader, InterleavedParallelReader, MultiParallelReader,
-    PairedParallelReader, ParallelReader,
-};
+pub use processor::{MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor};
+pub use single::ParallelReader;

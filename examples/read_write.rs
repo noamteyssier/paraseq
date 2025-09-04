@@ -6,10 +6,7 @@ use std::{
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use paraseq::{
-    fastx,
-    parallel::{ParallelProcessor, ParallelReader},
-};
+use paraseq::{fastx, prelude::*};
 use parking_lot::Mutex;
 
 pub type BoxedReader = Box<dyn Read + Send>;
@@ -37,8 +34,8 @@ impl Processor {
         }
     }
 }
-impl ParallelProcessor for Processor {
-    fn process_record<Rf: paraseq::Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: paraseq::Record> ParallelProcessor<Rf> for Processor {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         match self.out_format {
             OutputFormat::Fasta => {
                 record.write_fasta(&mut self.local_out)?;
@@ -97,9 +94,9 @@ fn main() -> Result<()> {
     let args = Cli::parse();
     let out_handle = args.output_handle()?;
 
-    let proc = Processor::new(out_handle, args.out_format);
+    let mut proc = Processor::new(out_handle, args.out_format);
     let reader = fastx::Reader::from_optional_path(args.input_file)?;
-    reader.process_parallel(proc, args.num_threads)?;
+    reader.process_parallel(&mut proc, args.num_threads)?;
 
     Ok(())
 }

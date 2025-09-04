@@ -27,11 +27,8 @@ impl SeqSum {
     }
 }
 
-impl InterleavedMultiParallelProcessor for SeqSum {
-    fn process_interleaved_multi<Rf: Record>(
-        &mut self,
-        records: &[Rf],
-    ) -> Result<(), ProcessError> {
+impl<Rf: Record> MultiParallelProcessor<Rf> for SeqSum {
+    fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), ProcessError> {
         for _ in 0..100 {
             for rec in records.iter() {
                 // Simulate some work
@@ -66,9 +63,9 @@ struct Args {
 
 fn main() -> Result<(), ProcessError> {
     let args = Args::parse();
-    let rdr = fastx::Reader::from_path(&args.path)?;
-    let processor = SeqSum::default();
-    rdr.process_parallel_interleaved_multi(args.arity, processor.clone(), args.threads)?;
+    let reader = fastx::Reader::from_path(&args.path)?;
+    let mut processor = SeqSum::default();
+    reader.process_parallel_multi_interleaved(args.arity, &mut processor, args.threads)?;
 
     println!("num_records: {}", processor.get_num_records());
     println!("byte_sum: {}", processor.get_byte_sum());

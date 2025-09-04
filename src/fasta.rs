@@ -3,7 +3,7 @@ use std::io;
 #[cfg(feature = "niffler")]
 use std::path::Path;
 
-use crate::{Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -287,7 +287,10 @@ impl RecordSet {
     }
 
     /// Main function to fill the record set
-    pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
+    pub fn fill<R: io::Read>(
+        &mut self,
+        reader: &mut Reader<R>,
+    ) -> std::result::Result<bool, Error> {
         // Clear previous data
         self.clear();
 
@@ -486,7 +489,7 @@ impl<'a> RefRecord<'a> {
     /// Access the sequence bytes (handling multiline sequences)
     #[inline]
     #[must_use]
-    pub fn seq(&self) -> Cow<[u8]> {
+    pub fn seq(&self) -> Cow<'_, [u8]> {
         let seq_region = self.seq_raw();
 
         // // Count newlines in the sequence region
@@ -533,7 +536,7 @@ impl Record for RefRecord<'_> {
         self.id()
     }
 
-    fn seq(&self) -> Cow<[u8]> {
+    fn seq(&self) -> Cow<'_, [u8]> {
         self.seq()
     }
 
@@ -543,6 +546,36 @@ impl Record for RefRecord<'_> {
 
     fn qual(&self) -> Option<&[u8]> {
         None
+    }
+}
+
+impl<R> GenericReader for crate::fasta::Reader<R>
+where
+    R: io::Read + Send,
+{
+    type RecordSet = crate::fasta::RecordSet;
+    type Error = crate::Error;
+    type RefRecord<'a> = crate::fasta::RefRecord<'a>;
+
+    fn new_record_set(&self) -> Self::RecordSet {
+        if let Some(batch_size) = self.batch_size {
+            Self::RecordSet::new(batch_size)
+        } else {
+            Self::RecordSet::default()
+        }
+    }
+
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error> {
+        record.fill(self)
+    }
+
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
+        record_set
+            .positions
+            .iter()
+            .map(move |&pos| Self::RefRecord::new(&record_set.buffer, pos))
     }
 }
 

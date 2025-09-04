@@ -11,6 +11,12 @@ pub struct Processor {
     local_buf: Vec<u8>,
     writer: Arc<Mutex<BoxedWriter>>,
 }
+impl Default for Processor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Processor {
     pub fn new() -> Self {
         let writer = Box::new(std::io::stdout());
@@ -20,8 +26,8 @@ impl Processor {
         }
     }
 }
-impl ParallelProcessor for Processor {
-    fn process_record<Rf: Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> ParallelProcessor<Rf> for Processor {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         record.write_fastq(&mut self.local_buf)?;
         Ok(())
     }
@@ -36,12 +42,8 @@ impl ParallelProcessor for Processor {
     }
 }
 
-impl PairedParallelProcessor for Processor {
-    fn process_record_pair<Rf: Record>(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> PairedParallelProcessor<Rf> for Processor {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::parallel::Result<()> {
         record1.write_fastq(&mut self.local_buf)?;
         record2.write_fastq(&mut self.local_buf)?;
         Ok(())
@@ -74,9 +76,9 @@ fn main() -> Result<()> {
     for example in &examples {
         let url = format!("{}/{}", base_url, example);
         eprintln!("Processing single-end from: {}", url);
-        let processor = Processor::new();
+        let mut processor = Processor::new();
         let reader = fastx::Reader::from_url(&url)?;
-        reader.process_parallel(processor, num_threads)?;
+        reader.process_parallel(&mut processor, num_threads)?;
     }
 
     // Paired-end example
@@ -86,10 +88,10 @@ fn main() -> Result<()> {
         "Processing paired-end example: \n1. {}\n2. {}",
         r1_url, r2_url
     );
-    let processor = Processor::new();
-    let reader_r1 = fastx::Reader::from_url(&r1_url)?;
-    let reader_r2 = fastx::Reader::from_url(&r2_url)?;
-    reader_r1.process_parallel_paired(reader_r2, processor, num_threads)?;
+    let mut processor = Processor::new();
+    let r1 = fastx::Reader::from_url(&r1_url)?;
+    let r2 = fastx::Reader::from_url(&r2_url)?;
+    r1.process_parallel_paired(r2, &mut processor, num_threads)?;
 
     Ok(())
 }

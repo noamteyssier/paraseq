@@ -91,8 +91,8 @@ struct MyProcessor {
 // Your processing state here
 }
 
-impl ParallelProcessor for MyProcessor {
-    fn process_record<R: Record>(&mut self, record: R) -> Result<(), ProcessError> {
+impl<Rf: Record> ParallelProcessor<Rf> for MyProcessor {
+    fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
         // Process record in parallel
         Ok(())
     }
@@ -101,10 +101,10 @@ impl ParallelProcessor for MyProcessor {
 fn main() -> Result<(), ProcessError> {
     let path = "./data/sample.fastq";
     let reader = fastx::Reader::from_path(path)?;
-    let processor = MyProcessor::default();
+    let mut processor = MyProcessor::default();
     let num_threads = 8;
 
-    reader.process_parallel(processor, num_threads)?;
+    reader.process_parallel(&mut processor, num_threads)?;
     Ok(())
 
 }
@@ -129,8 +129,8 @@ struct MyPairedProcessor {
     // Your processing state here
 }
 
-impl PairedParallelProcessor for MyPairedProcessor {
-    fn process_record_pair<R: Record>(&mut self, r1: R, r2: R) -> Result<(), ProcessError> {
+impl<Rf: Record> PairedParallelProcessor<Rf> for MyPairedProcessor {
+    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), ProcessError> {
         // Process paired records in parallel
         Ok(())
     }
@@ -142,17 +142,17 @@ fn main() -> Result<(), ProcessError> {
 
     let reader1 = fastx::Reader::from_path(path1)?;
     let reader2 = fastx::Reader::from_path(path2)?;
-    let processor = MyPairedProcessor::default();
+    let mut processor = MyPairedProcessor::default();
     let num_threads = 8;
 
-    reader1.process_parallel_paired(reader2, processor, num_threads)?;
+    reader1.process_parallel_paired(reader2, &mut processor, num_threads)?;
     Ok(())
 }
 ```
 
 ### Interleaved Processing
 
-Interleaved processing is also supported by implementing the `InterleavedParallelProcessor` trait on your struct.
+Interleaved processing is also supported by default with the `PairedParallelProcessor` trait on your struct.
 
 For an example of interleaved parallel processing see the [interleaved example](https://github.com/noamteyssier/paraseq/blob/main/examples/interleaved.rs).
 
@@ -169,8 +169,8 @@ struct MyInterleavedProcessor {
     // Your processing state here
 }
 
-impl InterleavedParallelProcessor for MyInterleavedProcessor {
-    fn process_interleaved_pair<R: Record>(&mut self, r1: R, r2: R) -> Result<(), ProcessError> {
+impl<Rf: Record> PairedParallelProcessor<Rf> for MyInterleavedProcessor {
+    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), ProcessError> {
         // Process interleaved paired records in parallel
         Ok(())
     }
@@ -179,10 +179,10 @@ impl InterleavedParallelProcessor for MyInterleavedProcessor {
 fn main() -> Result<(), ProcessError> {
     let path = "./data/interleaved.fastq";
     let reader = fastx::Reader::from_path(path)?;
-    let processor = MyInterleavedProcessor::default();
+    let mut processor = MyInterleavedProcessor::default();
     let num_threads = 8;
 
-    reader.process_parallel_interleaved(processor, num_threads)?;
+    reader.process_parallel_interleaved(&mut processor, num_threads)?;
     Ok(())
 }
 ```

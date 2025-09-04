@@ -33,8 +33,8 @@ impl Processor {
         }
     }
 }
-impl ParallelProcessor for Processor {
-    fn process_record<Rf: paraseq::Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: paraseq::Record> ParallelProcessor<Rf> for Processor {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         match self.out_format {
             OutputFormat::Fasta => {
                 record.write_fasta(&mut self.local_out)?;
@@ -56,12 +56,8 @@ impl ParallelProcessor for Processor {
         Ok(())
     }
 }
-impl InterleavedParallelProcessor for Processor {
-    fn process_interleaved_pair<Rf: Record>(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> paraseq::parallel::Result<()> {
+impl<Rf: paraseq::Record> PairedParallelProcessor<Rf> for Processor {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::parallel::Result<()> {
         match self.out_format {
             OutputFormat::Fasta => {
                 record1.write_fasta(&mut self.local_out)?;
@@ -121,11 +117,11 @@ fn main() -> Result<()> {
     let args = Cli::parse();
     let handle_out = args.output_handle()?;
     let reader = htslib::Reader::from_optional_path(args.input_file.as_ref())?;
-    let proc = Processor::new(handle_out, args.out_format);
+    let mut proc = Processor::new(handle_out, args.out_format);
     if args.paired {
-        reader.process_parallel_interleaved(proc, args.num_threads)?;
+        reader.process_parallel_interleaved(&mut proc, args.num_threads)?;
     } else {
-        reader.process_parallel(proc, args.num_threads)?;
+        reader.process_parallel(&mut proc, args.num_threads)?;
     }
     Ok(())
 }
