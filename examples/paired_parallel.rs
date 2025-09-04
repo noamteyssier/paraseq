@@ -4,7 +4,7 @@ use std::sync::Arc;
 // use anyhow::Result;
 use paraseq::{
     fasta, fastq,
-    parallel::{PairedParallelProcessor, PairedReader, ProcessError},
+    parallel::{PairedParallelProcessor, ProcessError},
     prelude::ParallelReader,
     Record,
 };
@@ -76,13 +76,13 @@ fn main() -> Result<(), ProcessError> {
     let mut processor = SeqSum::default();
 
     if path_r1.ends_with(".fastq") {
-        let rdr_r1 = fastq::Reader::new(file_r1);
-        let rdr_r2 = fastq::Reader::new(file_r2);
-        PairedReader::new(rdr_r1, rdr_r2).process_parallel(&mut processor, num_threads)?;
+        let r1 = fastq::Reader::new(file_r1);
+        let r2 = fastq::Reader::new(file_r2);
+        r1.process_parallel_paired(r2, &mut processor, num_threads)?;
     } else if path_r1.ends_with(".fasta") {
-        let rdr_r1 = fasta::Reader::new(file_r1);
-        let rdr_r2 = fasta::Reader::new(file_r2);
-        PairedReader::new(rdr_r1, rdr_r2).process_parallel(&mut processor, num_threads)?;
+        let r1 = fasta::Reader::new(file_r1);
+        let r2 = fasta::Reader::new(file_r2);
+        r1.process_parallel_paired(r2, &mut processor, num_threads)?;
     } else {
         panic!("Unknown file format");
     }

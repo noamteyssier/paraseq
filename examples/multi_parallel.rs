@@ -3,7 +3,7 @@ use std::sync::Arc;
 use clap::Parser;
 use paraseq::{
     fastx,
-    parallel::{MultiParallelProcessor, MultiReader, Result},
+    parallel::{MultiParallelProcessor, Result},
     prelude::*,
     MAX_ARITY,
 };
@@ -73,7 +73,7 @@ pub struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let readers = args
+    let mut readers = args
         .input_fastx
         .iter()
         .map(|path| -> Result<_> {
@@ -81,10 +81,10 @@ fn main() -> Result<()> {
             Ok(reader)
         })
         .collect::<Result<Vec<_>>>()?;
-    let multi_reader = MultiReader::new(readers);
 
     let mut processor = SeqSum::default();
-    multi_reader.process_parallel(&mut processor, args.threads)?;
+    let reader = readers.remove(0);
+    reader.process_parallel_multi(readers, &mut processor, args.threads)?;
     processor.pprint();
     Ok(())
 }

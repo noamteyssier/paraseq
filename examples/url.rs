@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use paraseq::{
     fastx,
-    parallel::{PairedParallelProcessor, PairedReader},
+    parallel::{PairedParallelProcessor},
     prelude::*,
 };
 use parking_lot::Mutex;
@@ -87,9 +87,9 @@ fn main() -> Result<()> {
         r1_url, r2_url
     );
     let mut processor = Processor::new();
-    let reader_r1 = fastx::Reader::from_url(&r1_url)?;
-    let reader_r2 = fastx::Reader::from_url(&r2_url)?;
-    PairedReader::new(reader_r1, reader_r2).process_parallel(&mut processor, num_threads)?;
+    let r1 = fastx::Reader::from_url(&r1_url)?;
+    let r2 = fastx::Reader::from_url(&r2_url)?;
+    r1.process_parallel_paired(r2, &mut processor, num_threads)?;
 
     Ok(())
 }

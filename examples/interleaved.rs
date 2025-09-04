@@ -4,7 +4,7 @@ use std::sync::Arc;
 // use anyhow::Result;
 use paraseq::{
     fasta, fastq,
-    parallel::{InterleavedPairedReader, PairedParallelProcessor, ProcessError},
+    parallel::{PairedParallelProcessor, ProcessError},
     prelude::ParallelReader,
     Record,
 };
@@ -72,11 +72,11 @@ fn main() -> Result<(), ProcessError> {
     let mut processor = SeqSum::default();
 
     if path.ends_with(".fastq") {
-        let reader = InterleavedPairedReader::new(fastq::Reader::new(file));
-        reader.process_parallel(&mut processor, num_threads)?;
+        let reader = fastq::Reader::new(file);
+        reader.process_parallel_interleaved(&mut processor, num_threads)?;
     } else if path.ends_with(".fasta") {
-        let reader = InterleavedPairedReader::new(fasta::Reader::new(file));
-        reader.process_parallel(&mut processor, num_threads)?;
+        let reader = fasta::Reader::new(file);
+        reader.process_parallel_interleaved(&mut processor, num_threads)?;
     } else {
         panic!("Unknown file format {path}");
     }

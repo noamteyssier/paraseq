@@ -3,7 +3,7 @@ use std::sync::Arc;
 use clap::Parser;
 use paraseq::{
     fastx,
-    parallel::{InterleavedMultiReader, MultiParallelProcessor},
+    parallel::{MultiParallelProcessor},
     prelude::*,
     ProcessError, Record,
 };
@@ -68,9 +68,9 @@ struct Args {
 
 fn main() -> Result<(), ProcessError> {
     let args = Args::parse();
-    let rdr = fastx::Reader::from_path(&args.path)?;
+    let reader = fastx::Reader::from_path(&args.path)?;
     let mut processor = SeqSum::default();
-    InterleavedMultiReader::new(rdr, args.arity).process_parallel(&mut processor, args.threads)?;
+    reader.process_parallel_multi_interleaved(args.arity, &mut processor, args.threads)?;
 
     println!("num_records: {}", processor.get_num_records());
     println!("byte_sum: {}", processor.get_byte_sum());

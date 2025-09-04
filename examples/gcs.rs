@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use paraseq::{
     fastx,
-    parallel::{PairedParallelProcessor, PairedReader},
+    parallel::{PairedParallelProcessor},
     prelude::*,
 };
 use parking_lot::Mutex;
@@ -86,7 +86,7 @@ fn main() -> Result<()> {
             let mut processor = Processor::new();
             let r1 = fastx::Reader::from_gcs(url1)?;
             let r2 = fastx::Reader::from_gcs(url2)?;
-            PairedReader::new(r1, r2).process_parallel(&mut processor, args.num_threads)?;
+            r1.process_parallel_paired(r2, &mut processor, args.num_threads)?;
             Ok(())
         }
         _ => {

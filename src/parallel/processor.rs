@@ -31,7 +31,7 @@ pub trait GenericProcessor<Rf>: Send + Clone {
     }
 }
 
-pub trait ParallelProcessor<Rf>: Send + Clone {
+pub trait ParallelProcessor<Rf: Record>: Send + Clone {
     /// Called on an individual record
     fn process_record(&mut self, record: Rf) -> Result<()>;
 
@@ -75,7 +75,7 @@ impl<Rf: Record, P: ParallelProcessor<Rf>> GenericProcessor<Rf> for P {
     }
 }
 
-pub trait PairedParallelProcessor<Rf>: Send + Clone {
+pub trait PairedParallelProcessor<Rf: Record>: Send + Clone {
     /// Called on an individual record
     fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> Result<()>;
 

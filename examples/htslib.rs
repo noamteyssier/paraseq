@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use paraseq::htslib;
-use paraseq::parallel::{InterleavedPairedReader, PairedParallelProcessor};
+use paraseq::parallel::{PairedParallelProcessor};
 use paraseq::prelude::*;
 use parking_lot::Mutex;
 
@@ -120,7 +120,7 @@ fn main() -> Result<()> {
     let reader = htslib::Reader::from_optional_path(args.input_file.as_ref())?;
     let mut proc = Processor::new(handle_out, args.out_format);
     if args.paired {
-        InterleavedPairedReader::new(reader).process_parallel(&mut proc, args.num_threads)?;
+        reader.process_parallel_interleaved(&mut proc, args.num_threads)?;
     } else {
         reader.process_parallel(&mut proc, args.num_threads)?;
     }
