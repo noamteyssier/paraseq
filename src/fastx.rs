@@ -309,9 +309,9 @@ pub trait GenericReader: Send {
 
     fn new_record_set(&self) -> Self::RecordSet;
     fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
-    fn iter<'a>(
-        record_set: &'a Self::RecordSet,
-    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>>;
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>>;
     fn check_read_pair(
         _rec1: &Self::RefRecord<'_>,
         _rec2: &Self::RefRecord<'_>,

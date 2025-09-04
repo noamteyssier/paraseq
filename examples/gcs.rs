@@ -12,6 +12,12 @@ pub struct Processor {
     local_buf: Vec<u8>,
     writer: Arc<Mutex<BoxedWriter>>,
 }
+impl Default for Processor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Processor {
     pub fn new() -> Self {
         let writer = Box::new(std::io::stdout());

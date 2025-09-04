@@ -20,9 +20,9 @@ pub(crate) trait MTGenericReader: Send + Sync {
     fn set_num_threads(&mut self, _num_threads: usize) {}
     fn new_record_set(&self) -> Self::RecordSet;
     fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
-    fn iter<'a>(
-        record_set: &'a Self::RecordSet,
-    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>>;
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>>;
 }
 
 fn process_sequential_generic<S: MTGenericReader, T>(reader: S, processor: &mut T) -> Result<()>
@@ -250,6 +250,6 @@ where
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
-        R::iter(&record_set).map(|r| Ok(r?))
+        R::iter(record_set).map(|r| Ok(r?))
     }
 }

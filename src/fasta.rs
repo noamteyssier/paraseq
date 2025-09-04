@@ -569,9 +569,9 @@ where
         record.fill(self)
     }
 
-    fn iter<'a>(
-        record_set: &'a Self::RecordSet,
-    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, crate::Error>> {
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
         record_set
             .positions
             .iter()

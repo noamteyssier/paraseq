@@ -72,7 +72,7 @@ impl<'a> RefRecord<'a> {
     }
 }
 
-impl<'a> Record for RefRecord<'a> {
+impl Record for RefRecord<'_> {
     fn id(&self) -> &[u8] {
         self.inner.qname()
     }
@@ -116,9 +116,9 @@ impl GenericReader for Reader {
         }
     }
 
-    fn iter<'a>(
-        record_set: &'a Self::RecordSet,
-    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>> {
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         std::iter::once(Ok(RefRecord::new(record_set)))
     }
 
