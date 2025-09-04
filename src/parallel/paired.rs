@@ -4,19 +4,17 @@ use parking_lot::Mutex;
 use crate::fastx::{GenericReader, MTGenericReader};
 use crate::parallel::error::ProcessError;
 
-use super::single::Wrapper;
-
 pub struct PairedReader<R: GenericReader> {
     reader1: Mutex<R>,
     reader2: Mutex<R>,
 }
 
 impl<R: GenericReader> PairedReader<R> {
-    pub fn new(reader1: R, reader2: R) -> Wrapper<Self> {
-        Wrapper(PairedReader {
+    pub fn new(reader1: R, reader2: R) -> Self {
+        PairedReader {
             reader1: Mutex::new(reader1),
             reader2: Mutex::new(reader2),
-        })
+        }
     }
 }
 
@@ -75,10 +73,10 @@ pub struct InterleavedPairedReader<R: GenericReader> {
 }
 
 impl<R: GenericReader> InterleavedPairedReader<R> {
-    pub fn new(reader: R) -> Wrapper<Self> {
-        Wrapper(InterleavedPairedReader {
+    pub fn new(reader: R) -> Self {
+        InterleavedPairedReader {
             reader: Mutex::new(reader),
-        })
+        }
     }
 }
 

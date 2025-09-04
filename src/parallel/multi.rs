@@ -3,7 +3,6 @@ use smallvec::SmallVec;
 
 use crate::fastx::{GenericReader, MTGenericReader};
 use crate::parallel::error::ProcessError;
-use crate::parallel::single::Wrapper;
 use crate::MAX_ARITY;
 
 pub struct MultiReader<R: GenericReader> {
@@ -11,11 +10,11 @@ pub struct MultiReader<R: GenericReader> {
 }
 
 impl<R: GenericReader> MultiReader<R> {
-    pub fn new(readers: Vec<R>) -> Wrapper<Self> {
+    pub fn new(readers: Vec<R>) -> Self {
         assert!(!readers.is_empty());
-        Wrapper(Self {
+        Self {
             readers: readers.into_iter().map(Mutex::new).collect(),
-        })
+        }
     }
 }
 
@@ -119,12 +118,12 @@ pub struct InterleavedMultiReader<R: GenericReader> {
 }
 
 impl<R: GenericReader> InterleavedMultiReader<R> {
-    pub fn new(reader: R, arity: usize) -> Wrapper<Self> {
+    pub fn new(reader: R, arity: usize) -> Self {
         assert!(arity > 0);
-        Wrapper(Self {
+        Self {
             reader: Mutex::new(reader),
             arity,
-        })
+        }
     }
 }
 

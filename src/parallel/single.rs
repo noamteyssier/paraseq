@@ -11,19 +11,17 @@ use super::{
     PairedParallelProcessor, PairedReader, ParallelProcessor,
 };
 
-pub struct Wrapper<X>(pub(crate) X);
-
 fn process_sequential_generic<S: MTGenericReader, T>(
-    reader: Wrapper<S>,
+    reader: S,
     processor: &mut T,
 ) -> Result<()>
 where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
-    let mut record_set = reader.0.new_record_set();
+    let mut record_set = reader.new_record_set();
 
     loop {
-        match reader.0.fill(&mut record_set).map_err(Into::into)? {
+        match reader.fill(&mut record_set).map_err(Into::into)? {
             true => {
                 for record in S::iter(&record_set) {
                     processor.process_record(record.map_err(Into::into)?)?;
@@ -38,7 +36,7 @@ where
 }
 
 fn process_parallel_generic<S: MTGenericReader, T>(
-    mut reader: Wrapper<S>,
+    mut reader: S,
     processor: &mut T,
     num_threads: usize,
 ) -> Result<()>
@@ -54,7 +52,7 @@ where
 
     eprintln!("num threads: {num_threads}");
 
-    reader.0.set_num_threads(num_threads);
+    reader.set_num_threads(num_threads);
 
     thread::scope(|scope| -> Result<()> {
         let reader = &reader;
@@ -63,13 +61,13 @@ where
         let mut handles = Vec::new();
         for thread_id in 0..num_threads {
             let mut worker_processor = processor.clone();
-            let mut record_set = reader.0.new_record_set();
+            let mut record_set = reader.new_record_set();
 
             let handle = scope.spawn(move || {
                 worker_processor.set_thread_id(thread_id);
 
                 loop {
-                    let s1 = reader.0.fill(&mut record_set);
+                    let s1 = reader.fill(&mut record_set);
 
                     if !s1.map_err(Into::into)? {
                         break;
@@ -156,7 +154,7 @@ where
     where
         T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
     {
-        process_parallel_generic(Wrapper(Mutex::new(self)), processor, num_threads)
+        process_parallel_generic(Mutex::new(self), processor, num_threads)
     }
 
     fn process_parallel_interleaved<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
