@@ -27,6 +27,9 @@ pub enum ProcessError {
     #[error("Incompatible readers specified, expected both readers to be the same input format")]
     IncompatibleReaders,
 
+    #[error("Incompatible record set sizes: {0} != {1}")]
+    IncompatibleRecordSetSizes(usize, usize),
+
     /// Record synchronization error between paired files
     #[error("Record synchronization error between paired files. {0} has less records.")]
     PairedRecordMismatch(RecordPair),
