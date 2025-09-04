@@ -1,4 +1,6 @@
 pub use crate::{
-    parallel::{ParallelProcessor, ParallelReader},
+    parallel::{
+        MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor, ParallelReader,
+    },
     Record,
 };
