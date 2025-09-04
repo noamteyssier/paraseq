@@ -1,6 +1,6 @@
 use parking_lot::Mutex;
 
-use crate::fastx::{GenericReader, MTGenericReader};
+use crate::fastx::GenericReader;
 use crate::parallel::processor::GenericProcessor;
 use crate::parallel::{error::Result, ProcessError};
 use crate::Record;
@@ -10,6 +10,20 @@ use super::{
     multi::InterleavedMultiReader, multi::MultiReader, paired::InterleavedPairedReader,
     paired::PairedReader, MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
 };
+
+/// A Sync version of GenericReader, i.e. for types with internal mutexes that can be shared between threads.
+pub trait MTGenericReader: Send + Sync {
+    type RecordSet: Send + 'static;
+    type Error: Into<ProcessError>;
+    type RefRecord<'a>;
+
+    fn set_num_threads(&mut self, _num_threads: usize) {}
+    fn new_record_set(&self) -> Self::RecordSet;
+    fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
+    fn iter<'a>(
+        record_set: &'a Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>>;
+}
 
 fn process_sequential_generic<S: MTGenericReader, T>(reader: S, processor: &mut T) -> Result<()>
 where
@@ -205,7 +219,7 @@ where
     }
 }
 
-pub struct SingleReader<R: GenericReader> {
+struct SingleReader<R: GenericReader> {
     reader: Mutex<R>,
 }
 
@@ -237,8 +251,6 @@ where
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
-         R::iter(&record_set).map(|r| {
-            Ok(r?)
-        })
+        R::iter(&record_set).map(|r| Ok(r?))
     }
 }

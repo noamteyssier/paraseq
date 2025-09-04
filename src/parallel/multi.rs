@@ -1,9 +1,11 @@
 use parking_lot::{Mutex, MutexGuard};
 use smallvec::SmallVec;
 
-use crate::fastx::{GenericReader, MTGenericReader};
+use crate::fastx::GenericReader;
 use crate::parallel::error::ProcessError;
 use crate::MAX_ARITY;
+
+use super::single::MTGenericReader;
 
 pub struct MultiReader<R: GenericReader> {
     readers: SmallVec<[Mutex<R>; MAX_ARITY]>,

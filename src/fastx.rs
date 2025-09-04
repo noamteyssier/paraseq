@@ -319,18 +319,6 @@ pub trait GenericReader: Send {
         Ok(())
     }
 }
-pub(crate) trait MTGenericReader: Send + Sync {
-    type RecordSet: Send + 'static;
-    type Error: Into<ProcessError>;
-    type RefRecord<'a>;
-
-    fn set_num_threads(&mut self, _num_threads: usize) {}
-    fn new_record_set(&self) -> Self::RecordSet;
-    fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
-    fn iter<'a>(
-        record_set: &'a Self::RecordSet,
-    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>>;
-}
 
 impl<R> GenericReader for crate::fastx::Reader<R>
 where

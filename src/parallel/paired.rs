@@ -1,8 +1,10 @@
 use itertools::Itertools;
 use parking_lot::Mutex;
 
-use crate::fastx::{GenericReader, MTGenericReader};
+use crate::fastx::GenericReader;
 use crate::parallel::error::ProcessError;
+
+use super::single::MTGenericReader;
 
 pub struct PairedReader<R: GenericReader> {
     reader1: Mutex<R>,
