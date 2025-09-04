@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use anyhow::Result;
 use clap::Parser;
-use paraseq::{fastx, prelude::*, MAX_ARITY};
+use paraseq::{fastx, prelude::*, ProcessError, MAX_ARITY};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]
@@ -31,7 +32,7 @@ impl SeqSum {
     }
 }
 impl<Rf: Record> MultiParallelProcessor<Rf> for SeqSum {
-    fn process_multi_record(&mut self, records: &[Rf]) -> Result<()> {
+    fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), ProcessError> {
         for _ in 0..100 {
             for rec in records.iter() {
                 // Simulate some work
@@ -43,7 +44,7 @@ impl<Rf: Record> MultiParallelProcessor<Rf> for SeqSum {
         self.num_records += 1;
         Ok(())
     }
-    fn on_batch_complete(&mut self) -> Result<()> {
+    fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
         *self.global_byte_sum.lock() += self.byte_sum;
         *self.global_num_records.lock() += self.num_records;
         self.byte_sum = 0;

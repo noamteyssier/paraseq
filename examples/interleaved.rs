@@ -1,8 +1,7 @@
 use std::fs::File;
 use std::sync::Arc;
 
-// use anyhow::Result;
-use paraseq::{fasta, fastq, prelude::*};
+use paraseq::{fasta, fastq, prelude::*, ProcessError};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]
