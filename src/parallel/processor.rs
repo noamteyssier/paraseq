@@ -24,11 +24,6 @@ pub trait GenericProcessor<Rf>: Send + Clone {
     fn set_thread_id(&mut self, thread_id: usize) {
         // Default implementation does nothing
     }
-
-    /// Gets the thread id for the processor
-    fn get_thread_id(&self) -> usize {
-        unimplemented!("Must be implemented by the processor to be used")
-    }
 }
 
 pub trait ParallelProcessor<Rf: Record>: Send + Clone {
@@ -69,9 +64,6 @@ impl<Rf: Record, P: ParallelProcessor<Rf>> GenericProcessor<Rf> for P {
     }
     fn set_thread_id(&mut self, thread_id: usize) {
         self.set_thread_id(thread_id);
-    }
-    fn get_thread_id(&self) -> usize {
-        self.get_thread_id()
     }
 }
 
@@ -114,9 +106,6 @@ impl<Rf: Record, P: PairedParallelProcessor<Rf>> GenericProcessor<(Rf, Rf)> for 
     fn set_thread_id(&mut self, thread_id: usize) {
         self.set_thread_id(thread_id);
     }
-    fn get_thread_id(&self) -> usize {
-        self.get_thread_id()
-    }
 }
 
 pub trait MultiParallelProcessor<Rf: Record>: Send + Clone {
@@ -157,8 +146,5 @@ impl<Rf: Record, P: MultiParallelProcessor<Rf>> GenericProcessor<SmallVec<[Rf; M
     }
     fn set_thread_id(&mut self, thread_id: usize) {
         self.set_thread_id(thread_id);
-    }
-    fn get_thread_id(&self) -> usize {
-        self.get_thread_id()
     }
 }
