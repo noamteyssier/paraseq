@@ -12,7 +12,7 @@ use super::{
 };
 
 /// A Sync version of GenericReader, i.e. for types with internal mutexes that can be shared between threads.
-pub trait MTGenericReader: Send + Sync {
+pub(crate) trait MTGenericReader: Send + Sync {
     type RecordSet: Send + 'static;
     type Error: Into<ProcessError>;
     type RefRecord<'a>;
