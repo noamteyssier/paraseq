@@ -43,6 +43,9 @@ pub enum ProcessError {
     )]
     MultiRecordMismatch(usize),
 
+    #[error("Record set length ({0}) must be divisible by {1}")]
+    MultiRecordSetSizeMismatch(usize, usize),
+
     /// Error sending data between threads
     #[error("Channel error: {0}")]
     SendError(#[from] SendError<Option<usize>>),

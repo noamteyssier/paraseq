@@ -13,8 +13,7 @@ pub struct MultiReader<R: GenericReader> {
 impl<R: GenericReader> MultiReader<R> {
     pub fn new(readers: Vec<R>) -> Wrapper<Self> {
         assert!(!readers.is_empty());
-        Wrapper (
-        Self {
+        Wrapper(Self {
             readers: readers.into_iter().map(Mutex::new).collect(),
         })
     }
@@ -124,8 +123,7 @@ pub struct InterleavedMultiReader<R: GenericReader> {
 impl<R: GenericReader> InterleavedMultiReader<R> {
     pub fn new(reader: R, arity: usize) -> Wrapper<Self> {
         assert!(arity > 0);
-        Wrapper(
-        Self {
+        Wrapper(Self {
             reader: Mutex::new(reader),
             arity,
         })
@@ -152,15 +150,14 @@ where
         (record_set, arity): &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         let it = R::iter(record_set);
-        // FIXME: Propagate an error instead.
-        assert!(
-            it.len() % arity == 0,
-            "Record set must have a length divisible by {}, but {} is not",
-            arity,
-            it.len()
-        );
-
-        ChunkedIt { it, arity: *arity }
+        if it.len() % arity != 0 {
+            let err_iter = std::iter::once(Err(ProcessError::MultiRecordSetSizeMismatch(
+                it.len(),
+                *arity,
+            )));
+            return either::Either::Left(err_iter);
+        }
+        either::Either::Right(ChunkedIt { it, arity: *arity })
     }
 }
 
