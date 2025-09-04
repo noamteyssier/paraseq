@@ -58,11 +58,7 @@ impl<Rf: paraseq::Record> ParallelProcessor<Rf> for Processor {
     }
 }
 impl<Rf: paraseq::Record> PairedParallelProcessor<Rf> for Processor {
-    fn process_record_pair(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> paraseq::parallel::Result<()> {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::parallel::Result<()> {
         match self.out_format {
             OutputFormat::Fasta => {
                 record1.write_fasta(&mut self.local_out)?;
@@ -124,8 +120,7 @@ fn main() -> Result<()> {
     let reader = htslib::Reader::from_optional_path(args.input_file.as_ref())?;
     let mut proc = Processor::new(handle_out, args.out_format);
     if args.paired {
-        InterleavedPairedReader::new(reader)
-            .process_parallel(&mut proc, args.num_threads)?;
+        InterleavedPairedReader::new(reader).process_parallel(&mut proc, args.num_threads)?;
     } else {
         reader.process_parallel(&mut proc, args.num_threads)?;
     }

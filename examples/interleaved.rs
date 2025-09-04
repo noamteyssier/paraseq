@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 // use anyhow::Result;
 use paraseq::{
-    fasta, fastq, parallel::{InterleavedPairedReader, PairedParallelProcessor, ProcessError}, prelude::ParallelReader, Record
+    fasta, fastq,
+    parallel::{InterleavedPairedReader, PairedParallelProcessor, ProcessError},
+    prelude::ParallelReader,
+    Record,
 };
 use parking_lot::Mutex;
 
@@ -30,11 +33,7 @@ impl SeqSum {
     }
 }
 impl<Rf: Record> PairedParallelProcessor<Rf> for SeqSum {
-    fn process_record_pair(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> Result<(), ProcessError> {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> Result<(), ProcessError> {
         for _ in 0..100 {
             // Simulate some work
             record1
@@ -73,10 +72,10 @@ fn main() -> Result<(), ProcessError> {
     let mut processor = SeqSum::default();
 
     if path.ends_with(".fastq") {
-        let reader = InterleavedPairedReader::new( fastq::Reader::new(file));
+        let reader = InterleavedPairedReader::new(fastq::Reader::new(file));
         reader.process_parallel(&mut processor, num_threads)?;
     } else if path.ends_with(".fasta") {
-        let reader = InterleavedPairedReader::new( fasta::Reader::new(file));
+        let reader = InterleavedPairedReader::new(fasta::Reader::new(file));
         reader.process_parallel(&mut processor, num_threads)?;
     } else {
         panic!("Unknown file format {path}");

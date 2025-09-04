@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use clap::Parser;
-use paraseq::{fastx, parallel::{PairedParallelProcessor, PairedReader}, prelude::*};
+use paraseq::{
+    fastx,
+    parallel::{PairedParallelProcessor, PairedReader},
+    prelude::*,
+};
 use parking_lot::Mutex;
 
 type BoxedWriter = Box<dyn std::io::Write + Send>;
@@ -38,11 +42,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for Processor {
 }
 
 impl<Rf: Record> PairedParallelProcessor<Rf> for Processor {
-    fn process_record_pair(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> paraseq::parallel::Result<()> {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::parallel::Result<()> {
         record1.write_fastq(&mut self.local_buf)?;
         record2.write_fastq(&mut self.local_buf)?;
         Ok(())
@@ -86,8 +86,7 @@ fn main() -> Result<()> {
             let mut processor = Processor::new();
             let r1 = fastx::Reader::from_gcs(url1)?;
             let r2 = fastx::Reader::from_gcs(url2)?;
-            PairedReader::new(r1, r2).process_parallel(
-            &mut processor, args.num_threads)?;
+            PairedReader::new(r1, r2).process_parallel(&mut processor, args.num_threads)?;
             Ok(())
         }
         _ => {

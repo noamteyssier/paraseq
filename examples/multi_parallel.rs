@@ -1,7 +1,12 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use paraseq::{fastx, parallel::{MultiParallelProcessor, MultiReader, Result}, prelude::*, MAX_ARITY};
+use paraseq::{
+    fastx,
+    parallel::{MultiParallelProcessor, MultiReader, Result},
+    prelude::*,
+    MAX_ARITY,
+};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]
@@ -68,7 +73,8 @@ pub struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let readers = args.input_fastx
+    let readers = args
+        .input_fastx
         .iter()
         .map(|path| -> Result<_> {
             let reader = fastx::Reader::from_path(path)?;
