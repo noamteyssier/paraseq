@@ -6,7 +6,10 @@ use rust_htslib::bam::{self, Read as BamRead};
 use thiserror::Error;
 
 use crate::fastx::GenericReader;
-use crate::{parallel::Result, ProcessError, Record};
+use crate::{
+    parallel::{IntoProcessError, Result},
+    ProcessError, Record,
+};
 
 /// Type alias for the internal reader type used by htslib
 pub type HtslibReader = Box<dyn io::Read + Send>;
@@ -127,11 +130,11 @@ impl GenericReader for Reader {
         let rec2 = rec2.inner;
         if !rec1.is_paired() {
             let qname = std::str::from_utf8(rec1.qname()).unwrap().to_string();
-            return Err(ParallelHtslibError::UnpairedRecord(qname).into());
+            return Err(ParallelHtslibError::UnpairedRecord(qname).into_process_error());
         }
         if !rec2.is_paired() {
             let qname = std::str::from_utf8(rec2.qname()).unwrap().to_string();
-            return Err(ParallelHtslibError::UnpairedRecord(qname).into());
+            return Err(ParallelHtslibError::UnpairedRecord(qname).into_process_error());
         }
 
         if rec1.qname() != rec2.qname() {
@@ -139,11 +142,13 @@ impl GenericReader for Reader {
                 std::str::from_utf8(rec1.qname()).unwrap().to_string(),
                 std::str::from_utf8(rec2.qname()).unwrap().to_string(),
             )
-            .into());
+            .into_process_error());
         }
 
         if rec1.is_first_in_template() && rec2.is_first_in_template() {
-            return Err(ParallelHtslibError::PairedRecordsWithSameTemplatePosition.into());
+            return Err(
+                ParallelHtslibError::PairedRecordsWithSameTemplatePosition.into_process_error()
+            );
         }
 
         Ok(())

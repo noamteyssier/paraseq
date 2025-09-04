@@ -88,6 +88,21 @@ impl fmt::Display for RecordPair {
     }
 }
 
+/// Trait for converting arbitrary errors into `ProcessError`
+pub trait IntoProcessError {
+    fn into_process_error(self) -> ProcessError;
+}
+
+// Implement conversion for Box<dyn Error>
+impl<E> IntoProcessError for E
+where
+    E: StdError + Send + Sync + 'static,
+{
+    fn into_process_error(self) -> ProcessError {
+        ProcessError::Process(Box::new(self))
+    }
+}
+
 // Feature-gated anyhow support
 #[cfg(feature = "anyhow")]
 impl From<anyhow::Error> for ProcessError {
