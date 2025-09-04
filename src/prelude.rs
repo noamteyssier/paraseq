@@ -1,6 +1,7 @@
 pub use crate::{
     parallel::{
-        MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor, ParallelReader,
+        IntoProcessError, MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
+        ParallelReader,
     },
     Record,
 };
