@@ -2,7 +2,6 @@ mod error;
 mod multi;
 mod paired;
 mod processor;
-mod reader;
 mod single;
 
 pub use error::{IntoProcessError, ProcessError, Result};
