@@ -51,18 +51,22 @@ where
         let it1 = R::iter(&record_set.0);
         let it2 = R::iter(&record_set.1);
 
-        // FIXME: Propagate an error instead.
-        assert_eq!(
-            it1.len(),
-            it2.len(),
-            "Record sets must have the same length"
-        );
-        std::iter::zip(it1, it2).map(|(r1, r2)| {
+        // incompatible record set sizes
+        if it1.len() != it2.len() {
+            let error_iter = std::iter::once(Err(ProcessError::IncompatibleRecordSetSizes(
+                it1.len(),
+                it2.len(),
+            )));
+            return either::Either::Left(error_iter);
+        }
+
+        let record_iter = std::iter::zip(it1, it2).map(|(r1, r2)| {
             let r1 = r1?;
             let r2 = r2?;
             R::check_read_pair(&r1, &r2)?;
             std::result::Result::Ok((r1, r2))
-        })
+        });
+        either::Either::Right(record_iter)
     }
 }
 
@@ -72,8 +76,7 @@ pub struct InterleavedPairedReader<R: GenericReader> {
 
 impl<R: GenericReader> InterleavedPairedReader<R> {
     pub fn new(reader: R) -> Wrapper<Self> {
-        Wrapper(
-        InterleavedPairedReader {
+        Wrapper(InterleavedPairedReader {
             reader: Mutex::new(reader),
         })
     }
