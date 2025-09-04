@@ -31,16 +31,11 @@ where
 {
     let mut record_set = reader.new_record_set();
 
-    loop {
-        match reader.fill(&mut record_set).map_err(Into::into)? {
-            true => {
-                for record in S::iter(&record_set) {
-                    processor.process_record(record.map_err(Into::into)?)?;
-                }
-                processor.on_batch_complete()?;
-            }
-            false => break,
+    while reader.fill(&mut record_set).map_err(Into::into)? {
+        for record in S::iter(&record_set) {
+            processor.process_record(record.map_err(Into::into)?)?;
         }
+        processor.on_batch_complete()?;
     }
     processor.on_thread_complete()?;
     Ok(())
