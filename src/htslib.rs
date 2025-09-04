@@ -6,6 +6,7 @@ use rust_htslib::bam::{self, Read as BamRead};
 use thiserror::Error;
 
 use crate::fastx::GenericReader;
+use crate::DEFAULT_MAX_RECORDS;
 use crate::{
     parallel::{IntoProcessError, Result},
     ProcessError, Record,
@@ -33,28 +34,43 @@ pub enum ParallelHtslibError {
     PairedRecordsWithSameTemplatePosition,
 }
 
-pub struct Reader(bam::Reader);
+pub struct Reader {
+    reader: bam::Reader,
+    batch_size: Option<usize>,
+}
 impl Reader {
     pub fn from_optional_path<P: AsRef<Path>>(path: Option<P>) -> Result<Self> {
         let inner = match path {
             Some(path) => bam::Reader::from_path(path)?,
             None => bam::Reader::from_stdin()?,
         };
-        Ok(Self(inner))
+        Ok(Self {
+            reader: inner,
+            batch_size: None,
+        })
     }
 
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let inner = bam::Reader::from_path(path)?;
-        Ok(Self(inner))
+        Ok(Self {
+            reader: inner,
+            batch_size: None,
+        })
     }
 
     pub fn from_stdin() -> Result<Self> {
         let inner = bam::Reader::from_stdin()?;
-        Ok(Self(inner))
+        Ok(Self {
+            reader: inner,
+            batch_size: None,
+        })
     }
 
     pub fn from_reader(reader: bam::Reader) -> Self {
-        Self(reader)
+        Self {
+            reader,
+            batch_size: None,
+        }
     }
 }
 
@@ -96,36 +112,70 @@ impl Record for RefRecord<'_> {
     }
 }
 
+#[derive(Clone)]
+pub struct RecordSet {
+    records: Vec<bam::Record>,
+    n_records: usize,
+}
+impl Default for RecordSet {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_RECORDS)
+    }
+}
+impl RecordSet {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            records: vec![bam::Record::default(); capacity],
+            n_records: 0,
+        }
+    }
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Result<RefRecord<'_>>> {
+        self.records
+            .iter()
+            .take(self.n_records)
+            .map(|record| RefRecord::new(record))
+            .map(|record| Ok(record))
+    }
+}
+
 impl GenericReader for Reader {
-    // just one
-    type RecordSet = bam::Record;
+    type RecordSet = RecordSet;
     type Error = ProcessError;
     type RefRecord<'a> = RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet {
-        bam::Record::new()
+        if let Some(batch_size) = self.batch_size {
+            Self::RecordSet::new(batch_size)
+        } else {
+            Self::RecordSet::new(DEFAULT_MAX_RECORDS)
+        }
     }
 
-    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        match self.0.read(record) {
-            Some(r) => {
-                r?;
-                Ok(true)
+    fn fill(&mut self, record_set: &mut Self::RecordSet) -> Result<bool> {
+        // reset the counter
+        record_set.n_records = 0;
+
+        // fill the record set
+        for record in &mut record_set.records {
+            if let Some(res) = self.reader.read(record) {
+                res?;
+                record_set.n_records += 1;
+            } else {
+                break;
             }
-            None => Ok(false),
         }
+
+        // false if reader is exhausted
+        Ok(record_set.n_records > 0)
     }
 
     fn iter(
         record_set: &Self::RecordSet,
-    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
-        std::iter::once(Ok(RefRecord::new(record_set)))
+    ) -> impl ExactSizeIterator<Item = Result<Self::RefRecord<'_>>> {
+        record_set.iter()
     }
 
-    fn check_read_pair(
-        rec1: &Self::RefRecord<'_>,
-        rec2: &Self::RefRecord<'_>,
-    ) -> std::result::Result<(), Self::Error> {
+    fn check_read_pair(rec1: &Self::RefRecord<'_>, rec2: &Self::RefRecord<'_>) -> Result<()> {
         let rec1 = rec1.inner;
         let rec2 = rec2.inner;
         if !rec1.is_paired() {
