@@ -64,12 +64,10 @@ where
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         let its: SmallVec<[_; MAX_ARITY]> = record_set.iter().map(|rs| R::iter(rs)).collect();
         if let Some(pos) = its.iter().position(|it| it.len() != its[0].len()) {
-            panic!("Unequal length at index {pos}");
-            // FIXME: Propagate an error instead.
-            // return Err(ProcessError::MultiRecordMismatch(pos));
+            let err_iter = std::iter::once(Err(ProcessError::MultiRecordMismatch(pos)));
+            return either::Either::Left(err_iter);
         }
-
-        SmallVecIt { its }
+        either::Either::Right(SmallVecIt { its })
     }
 }
 
