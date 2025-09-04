@@ -5,8 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use paraseq::parallel::ParallelReader;
-use paraseq::Record;
-use paraseq::{fastx, parallel::ParallelProcessor};
+use paraseq::{fastx, prelude::*};
 use parking_lot::Mutex;
 
 type BoxedReader = Box<dyn Read + Send>;

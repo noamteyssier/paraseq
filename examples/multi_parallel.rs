@@ -1,12 +1,7 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use paraseq::{
-    fastx,
-    parallel::{MultiParallelProcessor, Result},
-    prelude::*,
-    MAX_ARITY,
-};
+use paraseq::{fastx, prelude::*, MAX_ARITY};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]

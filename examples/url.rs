@@ -1,11 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use paraseq::{
-    fastx,
-    parallel::{PairedParallelProcessor},
-    prelude::*,
-};
+use paraseq::{fastx, prelude::*};
 use parking_lot::Mutex;
 
 type BoxedWriter = Box<dyn std::io::Write + Send>;

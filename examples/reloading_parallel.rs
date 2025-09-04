@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use paraseq::{
-    fasta, fastq, fastx,
-    parallel::{ParallelProcessor, ParallelReader},
-};
+use paraseq::{fasta, fastq, fastx, prelude::*};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]

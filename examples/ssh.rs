@@ -2,11 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use paraseq::{
-    fastx,
-    parallel::{PairedParallelProcessor},
-    prelude::*,
-};
+use paraseq::{fastx, prelude::*};
 use parking_lot::Mutex;
 
 type BoxedWriter = Box<dyn std::io::Write + Send>;
@@ -80,7 +76,7 @@ fn main() -> Result<()> {
         2 => {
             let r1 = fastx::Reader::from_ssh(&args.url[0])?;
             let r2 = fastx::Reader::from_ssh(&args.url[1])?;
-            r1.process_parallel_paired(r2,&mut processor, args.num_threads)?;
+            r1.process_parallel_paired(r2, &mut processor, args.num_threads)?;
         }
         _ => {
             eprintln!("Invalid number of URLs (expected 1 or 2)");

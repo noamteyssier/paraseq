@@ -5,7 +5,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use paraseq::htslib;
-use paraseq::parallel::{PairedParallelProcessor};
 use paraseq::prelude::*;
 use parking_lot::Mutex;
 

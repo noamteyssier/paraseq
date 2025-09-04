@@ -2,12 +2,7 @@ use std::fs::File;
 use std::sync::Arc;
 
 // use anyhow::Result;
-use paraseq::{
-    fasta, fastq,
-    parallel::{PairedParallelProcessor, ProcessError},
-    prelude::ParallelReader,
-    Record,
-};
+use paraseq::{fasta, fastq, prelude::*};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]

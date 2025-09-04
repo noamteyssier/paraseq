@@ -6,10 +6,7 @@ use std::{
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use paraseq::{
-    fastx,
-    parallel::{ParallelProcessor, ParallelReader},
-};
+use paraseq::{fastx, prelude::*};
 use parking_lot::Mutex;
 
 pub type BoxedReader = Box<dyn Read + Send>;
