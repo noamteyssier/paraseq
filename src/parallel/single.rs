@@ -56,8 +56,6 @@ where
         return process_sequential_generic(reader, processor);
     }
 
-    eprintln!("num threads: {num_threads}");
-
     reader.set_num_threads(num_threads);
 
     thread::scope(|scope| -> Result<()> {
