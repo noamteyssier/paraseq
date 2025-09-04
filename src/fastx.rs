@@ -1,9 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-#[cfg(feature = "niffler")]
-use crate::Error;
-use crate::{fasta, fastq, Record};
+use crate::{fasta, fastq, Error, Record};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
