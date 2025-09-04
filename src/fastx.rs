@@ -437,9 +437,7 @@ mod testing {
                 dbg!(&path);
                 let reader = Reader::from_path(path).unwrap();
                 let mut proc = Processor::default();
-                reader
-                    .process_parallel(&mut proc, 1)
-                    .unwrap();
+                reader.process_parallel(&mut proc, 1).unwrap();
                 assert_eq!(proc.n_records(), 100);
             }
         }
@@ -454,9 +452,7 @@ mod testing {
                 dbg!(&path);
                 let reader = Reader::from_path_with_batch_size(path, 10).unwrap();
                 let mut proc = Processor::default();
-                reader
-                    .process_parallel(&mut proc, 1)
-                    .unwrap();
+                reader.process_parallel(&mut proc, 1).unwrap();
                 assert_eq!(proc.n_records(), 100);
             }
         }
