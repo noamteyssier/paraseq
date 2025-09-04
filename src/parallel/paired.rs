@@ -103,10 +103,16 @@ where
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         let it = R::iter(record_set);
-        // FIXME: Propagate an error instead.
-        assert!(it.len() % 2 == 0, "Record set must have an even length");
 
-        it.tuples()
-            .map(|(r1, r2)| std::result::Result::Ok((r1?, r2?)))
+        if it.len() % 2 != 0 {
+            let error_iter =
+                std::iter::once(Err(ProcessError::IncompatibleInterleavedSetSize(it.len())));
+            return either::Either::Left(error_iter);
+        }
+
+        let tuple_iter = it
+            .tuples()
+            .map(|(r1, r2)| std::result::Result::Ok((r1?, r2?)));
+        either::Either::Right(tuple_iter)
     }
 }
