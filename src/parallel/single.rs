@@ -7,14 +7,11 @@ use crate::Record;
 use std::thread;
 
 use super::{
-    InterleavedMultiReader, InterleavedPairedReader, MultiParallelProcessor, MultiReader,
-    PairedParallelProcessor, PairedReader, ParallelProcessor,
+    multi::InterleavedMultiReader, multi::MultiReader, paired::InterleavedPairedReader,
+    paired::PairedReader, MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
 };
 
-fn process_sequential_generic<S: MTGenericReader, T>(
-    reader: S,
-    processor: &mut T,
-) -> Result<()>
+fn process_sequential_generic<S: MTGenericReader, T>(reader: S, processor: &mut T) -> Result<()>
 where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
