@@ -21,7 +21,7 @@ pub mod ssh;
 pub mod gcs;
 
 pub use error::Error;
-pub use parallel::ProcessError;
+pub use parallel::{ProcessError, Result};
 pub use record::Record;
 
 /// Default maximum number of records in a record set.
