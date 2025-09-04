@@ -1,9 +1,10 @@
 use std::borrow::Cow;
 use std::io;
+
 #[cfg(feature = "niffler")]
 use std::path::Path;
 
-use crate::{Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -484,7 +485,7 @@ impl Record for RefRecord<'_> {
         self.id()
     }
 
-    fn seq(&self) -> std::borrow::Cow<[u8]> {
+    fn seq(&self) -> std::borrow::Cow<'_, [u8]> {
         Cow::Borrowed(self.seq_raw())
     }
 
@@ -495,6 +496,36 @@ impl Record for RefRecord<'_> {
 
     fn qual(&self) -> Option<&[u8]> {
         Some(self.access_buffer(self.positions.qual_start, self.positions.end))
+    }
+}
+
+impl<R> GenericReader for crate::fastq::Reader<R>
+where
+    R: io::Read + Send,
+{
+    type RecordSet = crate::fastq::RecordSet;
+    type Error = crate::Error;
+    type RefRecord<'a> = crate::fastq::RefRecord<'a>;
+
+    fn new_record_set(&self) -> Self::RecordSet {
+        if let Some(batch_size) = self.batch_size {
+            Self::RecordSet::new(batch_size)
+        } else {
+            Self::RecordSet::default()
+        }
+    }
+
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+        record.fill(self)
+    }
+
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
+        record_set
+            .positions
+            .iter()
+            .map(move |&pos| Self::RefRecord::new(&record_set.buffer, pos))
     }
 }
 

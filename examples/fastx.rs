@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use paraseq::parallel::ParallelReader;
-use paraseq::{fastx, parallel::ParallelProcessor};
+use paraseq::{fastx, prelude::*};
 use parking_lot::Mutex;
 
 type BoxedReader = Box<dyn Read + Send>;
@@ -33,8 +33,8 @@ impl Processor {
         }
     }
 }
-impl ParallelProcessor for Processor {
-    fn process_record<Rf: paraseq::Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> ParallelProcessor<Rf> for Processor {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         match self.out_format {
             OutputFormat::Fasta => {
                 record.write_fasta(&mut self.local_out)?;
@@ -97,7 +97,7 @@ fn main() -> Result<()> {
     let handle_in = args.input_handle()?;
     let handle_out = args.output_handle()?;
     let reader = fastx::Reader::new(handle_in)?;
-    let proc = Processor::new(handle_out, args.out_format);
-    reader.process_parallel(proc, args.num_threads)?;
+    let mut proc = Processor::new(handle_out, args.out_format);
+    reader.process_parallel(&mut proc, args.num_threads)?;
     Ok(())
 }

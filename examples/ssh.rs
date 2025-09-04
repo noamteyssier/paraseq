@@ -12,6 +12,12 @@ pub struct Processor {
     local_buf: Vec<u8>,
     writer: Arc<Mutex<BoxedWriter>>,
 }
+impl Default for Processor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Processor {
     pub fn new() -> Self {
         let writer = Box::new(std::io::stdout());
@@ -21,8 +27,8 @@ impl Processor {
         }
     }
 }
-impl ParallelProcessor for Processor {
-    fn process_record<Rf: Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> ParallelProcessor<Rf> for Processor {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         record.write_fastq(&mut self.local_buf)?;
         Ok(())
     }
@@ -37,12 +43,8 @@ impl ParallelProcessor for Processor {
     }
 }
 
-impl PairedParallelProcessor for Processor {
-    fn process_record_pair<Rf: Record>(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> PairedParallelProcessor<Rf> for Processor {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::parallel::Result<()> {
         record1.write_fastq(&mut self.local_buf)?;
         record2.write_fastq(&mut self.local_buf)?;
         Ok(())
@@ -71,16 +73,16 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let processor = Processor::new();
+    let mut processor = Processor::new();
     match args.url.len() {
         1 => {
             let reader = fastx::Reader::from_ssh(&args.url[0])?;
-            reader.process_parallel(processor, args.num_threads)?;
+            reader.process_parallel(&mut processor, args.num_threads)?;
         }
         2 => {
-            let reader_r1 = fastx::Reader::from_ssh(&args.url[0])?;
-            let reader_r2 = fastx::Reader::from_ssh(&args.url[1])?;
-            reader_r1.process_parallel_paired(reader_r2, processor, args.num_threads)?;
+            let r1 = fastx::Reader::from_ssh(&args.url[0])?;
+            let r2 = fastx::Reader::from_ssh(&args.url[1])?;
+            r1.process_parallel_paired(r2, &mut processor, args.num_threads)?;
         }
         _ => {
             eprintln!("Invalid number of URLs (expected 1 or 2)");

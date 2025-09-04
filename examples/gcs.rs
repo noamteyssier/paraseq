@@ -12,6 +12,12 @@ pub struct Processor {
     local_buf: Vec<u8>,
     writer: Arc<Mutex<BoxedWriter>>,
 }
+impl Default for Processor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Processor {
     pub fn new() -> Self {
         let writer = Box::new(std::io::stdout());
@@ -21,8 +27,8 @@ impl Processor {
         }
     }
 }
-impl ParallelProcessor for Processor {
-    fn process_record<Rf: Record>(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> ParallelProcessor<Rf> for Processor {
+    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         record.write_fastq(&mut self.local_buf)?;
         Ok(())
     }
@@ -37,12 +43,8 @@ impl ParallelProcessor for Processor {
     }
 }
 
-impl PairedParallelProcessor for Processor {
-    fn process_record_pair<Rf: Record>(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> paraseq::parallel::Result<()> {
+impl<Rf: Record> PairedParallelProcessor<Rf> for Processor {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::parallel::Result<()> {
         record1.write_fastq(&mut self.local_buf)?;
         record2.write_fastq(&mut self.local_buf)?;
         Ok(())
@@ -75,18 +77,18 @@ fn main() -> Result<()> {
     match args.url.len() {
         1 => {
             let url = &args.url[0];
-            let processor = Processor::new();
+            let mut processor = Processor::new();
             let reader = fastx::Reader::from_gcs(url)?;
-            reader.process_parallel(processor, args.num_threads)?;
+            reader.process_parallel(&mut processor, args.num_threads)?;
             Ok(())
         }
         2 => {
             let url1 = &args.url[0];
             let url2 = &args.url[1];
-            let processor = Processor::new();
+            let mut processor = Processor::new();
             let r1 = fastx::Reader::from_gcs(url1)?;
             let r2 = fastx::Reader::from_gcs(url2)?;
-            r1.process_parallel_paired(r2, processor, args.num_threads)?;
+            r1.process_parallel_paired(r2, &mut processor, args.num_threads)?;
             Ok(())
         }
         _ => {

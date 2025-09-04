@@ -1,7 +1,7 @@
 use std::fs::File;
 
 use paraseq::fasta::{Reader, RecordSet};
-use paraseq::Record;
+use paraseq::prelude::*;
 
 fn main() -> Result<(), paraseq::Error> {
     println!("Demonstrating multiline FASTA parsing with paraseq");

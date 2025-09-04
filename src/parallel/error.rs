@@ -27,6 +27,12 @@ pub enum ProcessError {
     #[error("Incompatible readers specified, expected both readers to be the same input format")]
     IncompatibleReaders,
 
+    #[error("Incompatible record set sizes: {0} != {1}")]
+    IncompatibleRecordSetSizes(usize, usize),
+
+    #[error("Incompatible interleaved set size - expected an even number: {0}")]
+    IncompatibleInterleavedSetSize(usize),
+
     /// Record synchronization error between paired files
     #[error("Record synchronization error between paired files. {0} has less records.")]
     PairedRecordMismatch(RecordPair),
@@ -36,6 +42,9 @@ pub enum ProcessError {
         "Record synchronization error between multiple files. (at least) File {0} has fewer records."
     )]
     MultiRecordMismatch(usize),
+
+    #[error("Record set length ({0}) must be divisible by {1}")]
+    MultiRecordSetSizeMismatch(usize, usize),
 
     /// Error sending data between threads
     #[error("Channel error: {0}")]

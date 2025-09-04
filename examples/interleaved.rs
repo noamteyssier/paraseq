@@ -1,12 +1,7 @@
 use std::fs::File;
 use std::sync::Arc;
 
-// use anyhow::Result;
-use paraseq::{
-    fasta, fastq,
-    parallel::{InterleavedParallelProcessor, InterleavedParallelReader, ProcessError},
-    Record,
-};
+use paraseq::{fasta, fastq, prelude::*, ProcessError};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]
@@ -31,12 +26,8 @@ impl SeqSum {
         *self.global_byte_sum.lock()
     }
 }
-impl InterleavedParallelProcessor for SeqSum {
-    fn process_interleaved_pair<Rf: Record>(
-        &mut self,
-        record1: Rf,
-        record2: Rf,
-    ) -> Result<(), ProcessError> {
+impl<Rf: Record> PairedParallelProcessor<Rf> for SeqSum {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> Result<(), ProcessError> {
         for _ in 0..100 {
             // Simulate some work
             record1
@@ -72,14 +63,14 @@ fn main() -> Result<(), ProcessError> {
         .unwrap_or(1);
 
     let file = File::open(&path)?;
-    let processor = SeqSum::default();
+    let mut processor = SeqSum::default();
 
     if path.ends_with(".fastq") {
         let reader = fastq::Reader::new(file);
-        reader.process_parallel_interleaved(processor.clone(), num_threads)?;
+        reader.process_parallel_interleaved(&mut processor, num_threads)?;
     } else if path.ends_with(".fasta") {
         let reader = fasta::Reader::new(file);
-        reader.process_parallel_interleaved(processor.clone(), num_threads)?;
+        reader.process_parallel_interleaved(&mut processor, num_threads)?;
     } else {
         panic!("Unknown file format {path}");
     }

@@ -1,12 +1,7 @@
 use std::fs::File;
 use std::sync::Arc;
 
-// use anyhow::Result;
-use paraseq::{
-    fasta, fastq,
-    parallel::{ParallelProcessor, ParallelReader, ProcessError},
-    Record, DEFAULT_MAX_RECORDS,
-};
+use paraseq::{fasta, fastq, prelude::*, ProcessError, DEFAULT_MAX_RECORDS};
 use parking_lot::Mutex;
 
 #[derive(Default, Clone)]
@@ -31,8 +26,8 @@ impl SeqSum {
         *self.global_byte_sum.lock()
     }
 }
-impl ParallelProcessor for SeqSum {
-    fn process_record<Rf: Record>(&mut self, record: Rf) -> Result<(), ProcessError> {
+impl<Rf: Record> ParallelProcessor<Rf> for SeqSum {
+    fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
         for _ in 0..100 {
             // Simulate some work
             record
@@ -70,14 +65,14 @@ fn main() -> Result<(), ProcessError> {
         .unwrap_or(DEFAULT_MAX_RECORDS);
 
     let file = File::open(&path)?;
-    let processor = SeqSum::default();
+    let mut processor = SeqSum::default();
 
     if path.ends_with(".fastq") {
         let reader = fastq::Reader::with_batch_size(file, batch_size)?;
-        reader.process_parallel(processor.clone(), num_threads)?;
+        reader.process_parallel(&mut processor, num_threads)?;
     } else if path.ends_with(".fasta") {
         let reader = fasta::Reader::with_batch_size(file, batch_size)?;
-        reader.process_parallel(processor.clone(), num_threads)?;
+        reader.process_parallel(&mut processor, num_threads)?;
     } else {
         panic!("Unknown file format {path}");
     }

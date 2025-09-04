@@ -13,7 +13,7 @@ pub trait Record {
     ///
     /// If the sequence is multi-line, the newline characters are removed.
     /// This incurs a copy, but will not allocate if the sequence is already a single line.
-    fn seq(&self) -> Cow<[u8]>;
+    fn seq(&self) -> Cow<'_, [u8]>;
 
     /// Get the sequence as a borrowed slice.
     ///
