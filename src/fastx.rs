@@ -3,7 +3,7 @@ use std::io;
 
 #[cfg(feature = "niffler")]
 use crate::Error;
-use crate::{fasta, fastq, ProcessError, Record};
+use crate::{fasta, fastq, Record};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -304,7 +304,7 @@ impl Record for RefRecord<'_> {
 /// so we only have to write the reader and parallel IO implementations once.
 pub trait GenericReader: Send {
     type RecordSet: Send + 'static;
-    type Error: Into<ProcessError>;
+    type Error;
     type RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet;

@@ -157,8 +157,7 @@ pub trait ParallelReader {
 impl<S: GenericReader> ParallelReader for S
 where
     for<'a> <S as GenericReader>::RefRecord<'a>: Record,
-// FIXME: Can we get rid of this?
-    ProcessError: From<<S as GenericReader>::Error>
+    ProcessError: From<S::Error>,
 {
     type Rf<'a> = S::RefRecord<'a>;
 
