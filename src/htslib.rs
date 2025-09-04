@@ -133,8 +133,8 @@ impl RecordSet {
         self.records
             .iter()
             .take(self.n_records)
-            .map(|record| RefRecord::new(record))
-            .map(|record| Ok(record))
+            .map(RefRecord::new)
+            .map(Ok)
     }
 }
 
