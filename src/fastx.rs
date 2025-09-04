@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::io;
 
-use parking_lot::Mutex;
-
 #[cfg(feature = "niffler")]
 use crate::Error;
 use crate::{fasta, fastq, ProcessError, Record};
@@ -337,26 +335,6 @@ pub trait MTGenericReader: Send + Sync {
         _rec2: &Self::RefRecord<'_>,
     ) -> std::result::Result<(), Self::Error> {
         Ok(())
-    }
-}
-
-impl<T: GenericReader> MTGenericReader for Mutex<T> {
-    type RecordSet = T::RecordSet;
-    type Error = T::Error;
-    type RefRecord<'a> = T::RefRecord<'a>;
-
-    fn new_record_set(&self) -> Self::RecordSet {
-        self.lock().new_record_set()
-    }
-
-    fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        self.lock().fill(record)
-    }
-
-    fn iter<'a>(
-        record_set: &'a Self::RecordSet,
-    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'a>, Self::Error>> {
-        T::iter(record_set)
     }
 }
 

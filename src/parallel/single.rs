@@ -151,7 +151,7 @@ where
     where
         T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
     {
-        process_parallel_generic(Mutex::new(self), processor, num_threads)
+        process_parallel_generic(SingleReader::new(self), processor, num_threads)
     }
 
     fn process_parallel_interleaved<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
@@ -201,5 +201,43 @@ where
             processor,
             num_threads,
         )
+    }
+}
+
+pub struct SingleReader<R: GenericReader> {
+    reader: Mutex<R>,
+}
+
+impl<R: GenericReader> SingleReader<R> {
+    pub fn new(reader1: R) -> Self {
+        SingleReader {
+            reader: Mutex::new(reader1),
+        }
+    }
+}
+
+impl<R: GenericReader> MTGenericReader for SingleReader<R>
+where
+    ProcessError: From<R::Error>,
+{
+    type RecordSet = R::RecordSet;
+    type Error = ProcessError;
+    type RefRecord<'a> = R::RefRecord<'a>;
+
+    fn new_record_set(&self) -> Self::RecordSet {
+        self.reader.lock().new_record_set()
+    }
+
+    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+        let mut r1 = self.reader.lock();
+        Ok(R::fill(&mut r1, record_set)?)
+    }
+
+    fn iter(
+        record_set: &Self::RecordSet,
+    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
+         R::iter(&record_set).map(|r| {
+            Ok(r?)
+        })
     }
 }
