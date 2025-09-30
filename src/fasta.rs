@@ -94,6 +94,26 @@ impl<R: io::Read> Reader<R> {
         reader.batch_size = Some(batch_size);
         Ok(reader)
     }
+
+    /// Use the first record in the input to set the number of records per batch
+    /// so that the expected length per batch is approximately `batch_size_in_bp`.
+    pub fn update_batch_size_in_bp(&mut self, batch_size_in_bp: usize) -> Result<(), Error> {
+        let mut rset = self.new_record_set_with_size(1);
+        rset.fill(self)?;
+        let mut batch_size = 1;
+        if let Some(record) = rset.iter().next() {
+            let len = record?.seq_raw().len();
+            if len > 0 {
+                batch_size = batch_size_in_bp.div_ceil(len);
+            }
+        }
+        // Push the record back at the front of the reader.
+        self.reload(&mut rset);
+        // Update the batch size.
+        self.batch_size = Some(batch_size);
+        Ok(())
+    }
+
     /// Initialize a new record set with a configured or default batch size
     pub fn new_record_set(&self) -> RecordSet {
         if let Some(batch_size) = self.batch_size {
