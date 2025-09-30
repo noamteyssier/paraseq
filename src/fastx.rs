@@ -177,6 +177,15 @@ impl<R: io::Read> Reader<R> {
         }
     }
 
+    /// Use the first record in the input to set the number of records per batch
+    /// so that the expected length per batch is approximately `batch_size_in_bp`.
+    pub fn update_batch_size_in_bp(&mut self, batch_size_in_bp: usize) -> Result<(), Error> {
+        match self {
+            Self::Fasta(inner) => inner.update_batch_size_in_bp(batch_size_in_bp),
+            Self::Fastq(inner) => inner.update_batch_size_in_bp(batch_size_in_bp),
+        }
+    }
+
     pub fn format(&self) -> Format {
         match self {
             Self::Fasta(_) => Format::Fasta,
