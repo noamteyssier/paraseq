@@ -299,6 +299,8 @@ impl RecordSet {
     }
 
     /// Main function to fill the record set
+    ///
+    /// Returns true if records were added to the set, false if not
     pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
         // Clear previous data
         self.clear();
