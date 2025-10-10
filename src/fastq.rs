@@ -687,12 +687,27 @@ mod tests {
 
     #[test]
     fn test_partial_record() {
-        let partial_record = "@test1\nACTG\n+\nIII"; // Missing final newline
+        let partial_record = "@test1\nACTG\n+\nIIII"; // Missing final newline
         let mut reader = Reader::new(Cursor::new(partial_record));
         let mut record_set = RecordSet::new(1);
 
-        assert!(!record_set.fill(&mut reader).unwrap());
-        assert!(record_set.iter().next().is_none());
+        assert!(record_set.fill(&mut reader).unwrap());
+
+        for record in record_set.iter() {
+            println!("Record: {:?}", record);
+        }
+
+        assert!(record_set.iter().next().unwrap().is_ok());
+    }
+
+    #[test]
+    fn test_partial_record_invalid() {
+        let partial_record = "@test1\nACTG\n+\nII"; // Missing final newline with broken quality scores
+        let mut reader = Reader::new(Cursor::new(partial_record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert!(record_set.iter().next().unwrap().is_err());
     }
 
     #[test]
