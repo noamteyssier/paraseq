@@ -367,17 +367,25 @@ impl RecordSet {
 
     // Split out record processing to separate function
     fn process_records<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
-        let available_complete = self.newlines.len() / 4;
+        let mut available_complete = self.newlines.len() / 4;
+
+        // At EOF, check if we have exactly 3 newlines remaining (final record without trailing newline)
+        let has_final_incomplete = reader.eof && (self.newlines.len() % 4 == 3);
+        if has_final_incomplete {
+            available_complete += 1;
+        }
+
         let records_to_process = available_complete.min(self.capacity);
 
         if records_to_process > 0 {
-            let last_complete_newline = self.newlines[4 * records_to_process - 1];
-
             // Build position entries
             let mut record_start = 0;
+            let mut last_end = 0;
+
+            // Process complete records with 4 newlines
             self.newlines
                 .chunks_exact(4)
-                .take(records_to_process)
+                .take(records_to_process.saturating_sub(if has_final_incomplete { 1 } else { 0 }))
                 .for_each(|chunk| {
                     let (seq_start, sep_start, qual_start, end) =
                         (chunk[0], chunk[1], chunk[2], chunk[3]);
@@ -387,18 +395,39 @@ impl RecordSet {
                         seq_start,
                         sep_start,
                         qual_start,
+                        qual_end: end - 1,
                         end,
                     });
                     record_start = end;
+                    last_end = end;
                 });
 
-            self.update_avg_record_size(last_complete_newline);
+            // Handle final record with only 3 newlines at EOF
+            if has_final_incomplete {
+                let remaining = self.newlines.len() % 4;
+                let start_idx = self.newlines.len() - remaining;
+                let (seq_start, sep_start, qual_start) = (
+                    self.newlines[start_idx],
+                    self.newlines[start_idx + 1],
+                    self.newlines[start_idx + 2],
+                );
+
+                self.positions.push(Positions {
+                    start: record_start,
+                    seq_start,
+                    sep_start,
+                    qual_start,
+                    qual_end: self.buffer.len(),
+                    end: self.buffer.len(),
+                });
+                last_end = self.buffer.len();
+            }
+
+            self.update_avg_record_size(last_end);
 
             // Move remaining partial data to overflow
-            reader
-                .overflow
-                .extend_from_slice(&self.buffer[last_complete_newline..]);
-            self.buffer.truncate(last_complete_newline);
+            reader.overflow.extend_from_slice(&self.buffer[last_end..]);
+            self.buffer.truncate(last_end);
         } else if !self.buffer.is_empty() {
             reader.overflow.extend_from_slice(&self.buffer);
             self.buffer.clear();
@@ -420,6 +449,7 @@ struct Positions {
     seq_start: usize,
     sep_start: usize,
     qual_start: usize,
+    qual_end: usize,
     end: usize,
 }
 
@@ -463,12 +493,12 @@ impl<'a> RefRecord<'a> {
         }
 
         // Check that sequence and quality lengths match
-        if self.positions.sep_start - self.positions.seq_start
-            != self.positions.end - self.positions.qual_start
+        if self.positions.sep_start - self.positions.seq_start - 1
+            != self.positions.qual_end - self.positions.qual_start
         {
             return Err(Error::UnequalLengths(
                 self.positions.sep_start - self.positions.seq_start - 1, // subtract 1 for embedded newline
-                self.positions.end - self.positions.qual_start - 1, // subtract 1 for embedded newline
+                self.positions.qual_end - self.positions.qual_start,
             ));
         }
 
@@ -517,7 +547,10 @@ impl Record for RefRecord<'_> {
     }
 
     fn qual(&self) -> Option<&[u8]> {
-        Some(self.access_buffer(self.positions.qual_start, self.positions.end))
+        Some(self.access_buffer(
+            self.positions.qual_start,
+            self.positions.qual_end.max(self.positions.end),
+        ))
     }
 }
 
