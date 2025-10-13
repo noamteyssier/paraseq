@@ -7,6 +7,7 @@ pub mod fastx;
 pub mod parallel;
 pub mod prelude;
 mod record;
+pub mod validation;
 
 #[cfg(feature = "htslib")]
 pub mod htslib;

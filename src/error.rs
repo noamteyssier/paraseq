@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, str::Utf8Error};
 
 use thiserror::Error;
 
@@ -12,6 +12,13 @@ pub enum Error {
 
     #[error("Error reading from buffer: {0}")]
     Io(#[from] io::Error),
+
+    #[error("Error encountered while validating input data:\n\n{0}")]
+    ValidationError(#[from] crate::validation::error::ValidationError),
+
+    /// Error parsing valid UTF-8, indicating invalid characters in the input data.
+    #[error("Invalid UTF-8 error: {0}")]
+    Utf8Error(#[from] Utf8Error),
 
     #[cfg(feature = "url")]
     #[error("Networking error: {0}")]
@@ -43,6 +50,9 @@ pub enum Error {
 
     #[error("FASTQ Sequence length ({0}) and quality length ({1}) do not match")]
     UnequalLengths(usize, usize),
+
+    #[error("Paired records with different identifiers encountered when expected: {0} != {1}")]
+    PairedRecordsWithDifferentIds(String, String),
 
     #[error("Unexpected format request. Found fastx: {0}, requested: {1}")]
     UnexpectedFormatRequest(String, String),
