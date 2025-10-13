@@ -4,7 +4,7 @@ use std::io;
 #[cfg(feature = "niffler")]
 use std::path::Path;
 
-use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{fastx::GenericReader, validation::ValidationMode, Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
     /// Handle to the underlying reader (byte stream)
@@ -581,6 +581,16 @@ where
             .positions
             .iter()
             .map(move |&pos| Self::RefRecord::new(&record_set.buffer, pos))
+    }
+
+    fn check_read_pair(
+        rec1: &Self::RefRecord<'_>,
+        rec2: &Self::RefRecord<'_>,
+        mode: ValidationMode,
+    ) -> std::result::Result<(), Self::Error> {
+        mode.check_read_ids(rec1, rec2)?;
+
+        Ok(())
     }
 }
 

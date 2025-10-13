@@ -3,6 +3,7 @@ use parking_lot::Mutex;
 
 use crate::fastx::GenericReader;
 use crate::parallel::error::ProcessError;
+use crate::validation::ValidationMode;
 
 use super::single::MTGenericReader;
 
@@ -63,7 +64,9 @@ where
         let record_iter = std::iter::zip(it1, it2).map(|(r1, r2)| {
             let r1 = r1?;
             let r2 = r2?;
-            R::check_read_pair(&r1, &r2)?;
+
+            let mode = ValidationMode::default();
+            R::check_read_pair(&r1, &r2, mode)?;
             std::result::Result::Ok((r1, r2))
         });
         either::Either::Right(record_iter)
@@ -110,9 +113,14 @@ where
             return either::Either::Left(error_iter);
         }
 
-        let tuple_iter = it
-            .tuples()
-            .map(|(r1, r2)| std::result::Result::Ok((r1?, r2?)));
+        let tuple_iter = it.tuples().map(|(r1, r2)| {
+            let r1 = r1?;
+            let r2 = r2?;
+
+            let mode = ValidationMode::default();
+            R::check_read_pair(&r1, &r2, mode)?;
+            std::result::Result::Ok((r1, r2))
+        });
         either::Either::Right(tuple_iter)
     }
 }

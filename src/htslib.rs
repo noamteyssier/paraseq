@@ -6,6 +6,7 @@ use rust_htslib::bam::{self, Read as BamRead};
 use thiserror::Error;
 
 use crate::fastx::GenericReader;
+use crate::validation::ValidationMode;
 use crate::DEFAULT_MAX_RECORDS;
 use crate::{
     parallel::{IntoProcessError, Result},
@@ -175,7 +176,15 @@ impl GenericReader for Reader {
         record_set.iter()
     }
 
-    fn check_read_pair(rec1: &Self::RefRecord<'_>, rec2: &Self::RefRecord<'_>) -> Result<()> {
+    fn check_read_pair(
+        rec1: &Self::RefRecord<'_>,
+        rec2: &Self::RefRecord<'_>,
+        mode: ValidationMode,
+    ) -> Result<()> {
+        if matches!(mode, ValidationMode::Skip) {
+            return Ok(());
+        }
+
         let rec1 = rec1.inner;
         let rec2 = rec2.inner;
         if !rec1.is_paired() {

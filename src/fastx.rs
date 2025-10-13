@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::{fasta, fastq, Error, Record};
+use crate::{fasta, fastq, validation::ValidationMode, Error, Record};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -322,6 +322,7 @@ pub trait GenericReader: Send {
     fn check_read_pair(
         _rec1: &Self::RefRecord<'_>,
         _rec2: &Self::RefRecord<'_>,
+        _mode: ValidationMode,
     ) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
