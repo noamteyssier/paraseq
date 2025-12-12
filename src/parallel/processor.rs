@@ -7,6 +7,14 @@ use super::error::Result;
 /// Trait implemented for a type that processes records in parallel
 pub trait GenericProcessor<Rf>: Send + Clone {
     /// Called on an individual record
+    fn process_record_batch(&mut self, records: impl Iterator<Item = Rf>) -> Result<()> {
+        for record in records {
+            self.process_record(record)?;
+        }
+        Ok(())
+    }
+
+    /// Called on an individual record
     fn process_record(&mut self, record: Rf) -> Result<()>;
 
     /// Called when a batch of records is complete
