@@ -189,3 +189,41 @@ impl<Rf: Record, P: MultiParallelProcessor<Rf>> GenericProcessor<SmallVec<[Rf; M
         self.set_thread_id(thread_id);
     }
 }
+
+/// A convenience wrapper that can create a [`ParallelProcessor`] from a closure
+/// that takes an `&dyn Iterator<Item=Rf>` iterator over records.
+///
+/// (To avoid the `&dyn`, we would have to lift the exact type of the iterator
+/// as a generic of `ParallelProcessor`, but that does not seem worth it.)
+impl<Rf: Record, F> ParallelProcessor<Rf> for F
+where
+    F: for<'a> FnMut(&'a mut dyn Iterator<Item = Rf>) -> Result<()> + Send + Clone,
+{
+    fn process_record_batch(&mut self, mut records: impl Iterator<Item = Rf>) -> Result<()> {
+        self(&mut records)
+    }
+}
+
+impl<Rf: Record, F> PairedParallelProcessor<Rf> for F
+where
+    F: FnMut(&mut dyn Iterator<Item = (Rf, Rf)>) -> Result<()> + Send + Clone,
+{
+    fn process_record_pair_batch(
+        &mut self,
+        mut record_pairs: impl Iterator<Item = (Rf, Rf)>,
+    ) -> Result<()> {
+        self(&mut record_pairs)
+    }
+}
+
+impl<Rf: Record, F> MultiParallelProcessor<Rf> for F
+where
+    F: FnMut(&mut dyn Iterator<Item = SmallVec<[Rf; MAX_ARITY]>>) -> Result<()> + Send + Clone,
+{
+    fn process_multi_record_batch(
+        &mut self,
+        mut multi_records: impl Iterator<Item = SmallVec<[Rf; MAX_ARITY]>>,
+    ) -> Result<()> {
+        self(&mut multi_records)
+    }
+}
