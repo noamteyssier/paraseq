@@ -342,7 +342,8 @@ impl RecordSet {
         let target_read_size = self
             .avg_record_size
             .saturating_mul(records_needed)
-            .saturating_add(self.avg_record_size * 2); // padding
+            .saturating_add(self.avg_record_size * 2) // padding
+            .min(4096); // read at most 4kB at a time
 
         // Start with current buffer size
         let mut current_pos = self.buffer.len();
