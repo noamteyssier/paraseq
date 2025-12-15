@@ -48,6 +48,9 @@ impl<R: io::Read> Collection<R> {
     }
 
     fn validate_arity(&self) -> crate::Result<()> {
+        if self.inner.is_empty() {
+            return Err(ProcessError::CollectionSizeMismatch { arity: 1, found: 0 });
+        }
         match self.collection_type {
             CollectionType::Paired => {
                 if !self.inner.len().is_multiple_of(2) {
@@ -68,6 +71,37 @@ impl<R: io::Read> Collection<R> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Returns a reference to the inner vector of readers.
+    ///
+    /// This method is useful for inspecting the internal readers without modifying them.
+    pub fn inner(&self) -> &Vec<Reader<R>> {
+        &self.inner
+    }
+
+    /// Returns a mutable reference to the inner vector of readers.
+    ///
+    /// Note: This method is intended for advanced use cases where internal readers need to be modified directly.
+    /// Use with caution, as improper modifications can lead to undefined behavior.
+    pub fn inner_mut(&mut self) -> &mut Vec<Reader<R>> {
+        &mut self.inner
+    }
+
+    /// Checks if all readers have the same format.
+    ///
+    /// Will return `None` if the format is not unique and `Some(format)` if it is with the format.
+    pub fn unique_format(&self) -> Option<Format> {
+        let format = self.inner.first().map(|reader| reader.format());
+        if format.is_none() {
+            return None;
+        }
+        let format = format.unwrap();
+        if self.inner.iter().all(|reader| reader.format() == format) {
+            Some(format)
+        } else {
+            None
+        }
     }
 }
 
