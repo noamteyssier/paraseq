@@ -81,7 +81,7 @@ impl Collection<BoxedReader> {
         for path in paths {
             inner.push(Reader::from_path(path)?);
         }
-        Ok(Self::new(inner, collection_type)?)
+        Self::new(inner, collection_type)
     }
 }
 
