@@ -29,11 +29,11 @@ pub enum CollectionType {
 }
 
 /// A reader over multiple `fastx::Reader`s.
-pub struct ManyReader<R: io::Read> {
+pub struct Collection<R: io::Read> {
     inner: Vec<Reader<R>>,
     collection_type: CollectionType,
 }
-impl<R: io::Read> ManyReader<R> {
+impl<R: io::Read> Collection<R> {
     pub fn new(inner: Vec<Reader<R>>, collection_type: CollectionType) -> crate::Result<Self> {
         let reader = Self {
             inner,
@@ -66,7 +66,7 @@ impl<R: io::Read> ManyReader<R> {
         Ok(())
     }
 }
-impl ManyReader<Box<dyn io::Read + Send>> {
+impl Collection<Box<dyn io::Read + Send>> {
     pub fn from_paths<P: AsRef<Path>>(
         paths: &[P],
         collection_type: CollectionType,
@@ -79,7 +79,7 @@ impl ManyReader<Box<dyn io::Read + Send>> {
     }
 }
 
-impl<R: io::Read + Send> ManyReader<R> {
+impl<R: io::Read + Send> Collection<R> {
     pub fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> crate::Result<()>
     where
         T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,

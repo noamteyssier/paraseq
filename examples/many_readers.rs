@@ -51,7 +51,7 @@ fn main() -> Result<()> {
     } else {
         CollectionType::Single
     };
-    let reader = fastx::ManyReader::from_paths(&args.input, collection_type)?;
+    let reader = fastx::Collection::from_paths(&args.input, collection_type)?;
     let mut proc = Processor::default();
     if args.paired {
         eprintln!("Processing paired-end reads...");
