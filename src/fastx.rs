@@ -80,6 +80,71 @@ impl Collection<Box<dyn io::Read + Send>> {
 }
 
 impl<R: io::Read + Send> Collection<R> {
+    /// Generic handler for single-reader-per-thread pattern
+    fn handle_single_readers<T, F>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+        scope_fn: F,
+    ) -> crate::Result<()>
+    where
+        T: Clone + Send,
+        F: Fn(Reader<R>, &mut T, usize) -> crate::Result<()> + Send + Sync,
+    {
+        thread::scope(|scope| -> crate::Result<()> {
+            let scope_fn = &scope_fn;
+            let handles: Vec<_> = self
+                .inner
+                .into_iter()
+                .map(|reader| {
+                    let mut thread_proc = processor.clone();
+                    scope.spawn(move || scope_fn(reader, &mut thread_proc, num_threads))
+                })
+                .collect();
+
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| crate::ProcessError::JoinError)??;
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Generic handler for arity-based (grouped readers) pattern
+    fn handle_grouped_readers<T, F>(
+        mut self,
+        processor: &mut T,
+        num_threads: usize,
+        arity: usize,
+        scope_fn: F,
+    ) -> crate::Result<()>
+    where
+        T: Clone + Send,
+        F: Fn(Vec<Reader<R>>, &mut T, usize) -> crate::Result<()> + Send + Sync,
+    {
+        thread::scope(|scope| -> crate::Result<()> {
+            let scope_fn = &scope_fn;
+            let mut handles = Vec::new();
+            let total_groups = self.inner.len() / arity;
+
+            for _ in 0..total_groups {
+                let mut thread_proc = processor.clone();
+                let group: Vec<_> = self.inner.drain(..arity).collect();
+                handles.push(scope.spawn(move || scope_fn(group, &mut thread_proc, num_threads)));
+            }
+
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| crate::ProcessError::JoinError)??;
+            }
+
+            Ok(())
+        })
+    }
+
     pub fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> crate::Result<()>
     where
         T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
@@ -100,33 +165,13 @@ impl<R: io::Read + Send> Collection<R> {
             }
         }
 
-        thread::scope(|scope| -> crate::Result<()> {
-            let mut handles = Vec::new();
-
-            for reader in self.inner {
-                let mut thread_proc = processor.clone();
-                let handle = scope.spawn(move || {
-                    process_parallel_generic(
-                        SingleReader::new(reader),
-                        &mut thread_proc,
-                        num_threads,
-                    )
-                });
-                handles.push(handle);
-            }
-
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| crate::ProcessError::JoinError)??;
-            }
-
-            Ok(())
+        self.handle_single_readers(processor, num_threads, |reader, proc, threads| {
+            process_parallel_generic(SingleReader::new(reader), proc, threads)
         })
     }
 
     pub fn process_parallel_paired<T>(
-        mut self,
+        self,
         processor: &mut T,
         num_threads: usize,
     ) -> crate::Result<()>
@@ -153,34 +198,10 @@ impl<R: io::Read + Send> Collection<R> {
             }
         }
 
-        thread::scope(|scope| -> crate::Result<()> {
-            let mut handles = Vec::new();
-
-            let total_pairs = self.inner.len() / 2;
-            let mut proc_pairs = 0;
-            while proc_pairs < total_pairs {
-                let mut thread_proc = processor.clone();
-                let r1 = self.inner.drain(..1).next().unwrap();
-                let r2 = self.inner.drain(..1).next().unwrap();
-
-                let handle = scope.spawn(move || {
-                    process_parallel_generic(
-                        PairedReader::new(r1, r2),
-                        &mut thread_proc,
-                        num_threads,
-                    )
-                });
-                handles.push(handle);
-                proc_pairs += 1;
-            }
-
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| crate::ProcessError::JoinError)??;
-            }
-
-            Ok(())
+        self.handle_grouped_readers(processor, num_threads, 2, |mut readers, proc, threads| {
+            let r1 = readers.remove(0);
+            let r2 = readers.remove(0);
+            process_parallel_generic(PairedReader::new(r1, r2), proc, threads)
         })
     }
 
@@ -212,33 +233,13 @@ impl<R: io::Read + Send> Collection<R> {
             }
         }
 
-        thread::scope(|scope| -> crate::Result<()> {
-            let mut handles = Vec::new();
-
-            for reader in self.inner {
-                let mut thread_proc = processor.clone();
-                let handle = scope.spawn(move || {
-                    process_parallel_generic(
-                        InterleavedPairedReader::new(reader),
-                        &mut thread_proc,
-                        num_threads,
-                    )
-                });
-                handles.push(handle);
-            }
-
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| crate::ProcessError::JoinError)??;
-            }
-
-            Ok(())
+        self.handle_single_readers(processor, num_threads, |reader, proc, threads| {
+            process_parallel_generic(InterleavedPairedReader::new(reader), proc, threads)
         })
     }
 
     pub fn process_parallel_multi<T>(
-        mut self,
+        self,
         processor: &mut T,
         num_threads: usize,
     ) -> crate::Result<()>
@@ -270,30 +271,16 @@ impl<R: io::Read + Send> Collection<R> {
             }
         };
 
-        thread::scope(|scope| -> crate::Result<()> {
-            let mut handles = Vec::new();
-
-            let total_pairs = self.inner.len() / arity;
-            let mut proc_pairs = 0;
-            while proc_pairs < total_pairs {
-                let mut thread_proc = processor.clone();
+        self.handle_grouped_readers(
+            processor,
+            num_threads,
+            arity,
+            |mut readers, proc, threads| {
                 let mut rest = Vec::new();
-                rest.extend(self.inner.drain(..arity));
-                let handle = scope.spawn(move || {
-                    process_parallel_generic(MultiReader::new(rest), &mut thread_proc, num_threads)
-                });
-                handles.push(handle);
-                proc_pairs += 1;
-            }
-
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| crate::ProcessError::JoinError)??;
-            }
-
-            Ok(())
-        })
+                rest.extend(readers.drain(..arity));
+                process_parallel_generic(MultiReader::new(rest), proc, threads)
+            },
+        )
     }
 
     pub fn process_parallel_multi_interleaved<T>(
@@ -324,28 +311,8 @@ impl<R: io::Read + Send> Collection<R> {
             CollectionType::InterleavedMulti { arity } => arity,
         };
 
-        thread::scope(|scope| -> crate::Result<()> {
-            let mut handles = Vec::new();
-
-            for reader in self.inner {
-                let mut thread_proc = processor.clone();
-                let handle = scope.spawn(move || {
-                    process_parallel_generic(
-                        InterleavedMultiReader::new(reader, arity),
-                        &mut thread_proc,
-                        num_threads,
-                    )
-                });
-                handles.push(handle);
-            }
-
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| crate::ProcessError::JoinError)??;
-            }
-
-            Ok(())
+        self.handle_single_readers(processor, num_threads, |reader, proc, threads| {
+            process_parallel_generic(InterleavedMultiReader::new(reader, arity), proc, threads)
         })
     }
 }
