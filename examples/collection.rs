@@ -38,9 +38,13 @@ struct Args {
     #[clap(long)]
     paired: bool,
 
-    /// Number of threads to use, 0=auto
+    /// Number of threads to use; 0 sets to maximum available
     #[clap(short = 'T', long, default_value_t = 0)]
     threads: usize,
+
+    /// Number of threads per reader
+    #[clap(short = 'R', long)]
+    reader_threads: Option<usize>,
 }
 
 fn main() -> Result<()> {
@@ -55,10 +59,10 @@ fn main() -> Result<()> {
     let mut proc = Processor::default();
     if args.paired {
         eprintln!("Processing paired-end reads...");
-        reader.process_parallel_paired(&mut proc, args.threads)?;
+        reader.process_parallel_paired(&mut proc, args.threads, args.reader_threads)?;
     } else {
         eprintln!("Processing single-end reads...");
-        reader.process_parallel(&mut proc, args.threads)?;
+        reader.process_parallel(&mut proc, args.threads, args.reader_threads)?;
     }
 
     let total_reads = proc.total_reads.lock().clone();
