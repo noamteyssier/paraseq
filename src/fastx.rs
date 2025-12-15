@@ -66,6 +66,8 @@ impl<R: io::Read> Collection<R> {
         Ok(())
     }
 }
+
+#[cfg(feature = "niffler")]
 impl Collection<Box<dyn io::Read + Send>> {
     pub fn from_paths<P: AsRef<Path>>(
         paths: &[P],
