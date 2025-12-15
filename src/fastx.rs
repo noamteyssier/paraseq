@@ -1,12 +1,353 @@
-use std::borrow::Cow;
 use std::io;
+use std::path::Path;
+use std::{borrow::Cow, thread};
 
-use crate::{fasta, fastq, Error, Record};
+use log::warn;
+
+use crate::parallel::multi::{InterleavedMultiReader, MultiReader};
+use crate::parallel::paired::{InterleavedPairedReader, PairedReader};
+use crate::ProcessError;
+use crate::{
+    fasta, fastq,
+    parallel::single::{process_parallel_generic, SingleReader},
+    Error, Record,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Fasta,
     Fastq,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectionType {
+    Single,
+    Paired,
+    Interleaved,
+    Multi { arity: usize },
+    InterleavedMulti { arity: usize },
+}
+
+/// A reader over multiple `fastx::Reader`s.
+pub struct ManyReader<R: io::Read> {
+    inner: Vec<Reader<R>>,
+    collection_type: CollectionType,
+}
+impl<R: io::Read> ManyReader<R> {
+    pub fn new(inner: Vec<Reader<R>>, collection_type: CollectionType) -> crate::Result<Self> {
+        let reader = Self {
+            inner,
+            collection_type,
+        };
+        reader.validate_arity()?;
+        Ok(reader)
+    }
+
+    fn validate_arity(&self) -> crate::Result<()> {
+        match self.collection_type {
+            CollectionType::Paired => {
+                if !self.inner.len().is_multiple_of(2) {
+                    return Err(ProcessError::CollectionSizeMismatch {
+                        arity: 2,
+                        found: self.inner.len(),
+                    });
+                }
+            }
+            CollectionType::Multi { arity } => {
+                if !self.inner.len().is_multiple_of(arity) {
+                    return Err(ProcessError::CollectionSizeMismatch {
+                        arity,
+                        found: self.inner.len(),
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+impl ManyReader<Box<dyn io::Read + Send>> {
+    pub fn from_paths<P: AsRef<Path>>(
+        paths: &[P],
+        collection_type: CollectionType,
+    ) -> crate::Result<Self> {
+        let mut inner = Vec::new();
+        for path in paths {
+            inner.push(Reader::from_path(path)?);
+        }
+        Ok(Self::new(inner, collection_type)?)
+    }
+}
+
+impl<R: io::Read + Send> ManyReader<R> {
+    pub fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
+    {
+        match self.collection_type {
+            CollectionType::Single => {}
+            CollectionType::Paired => {
+                warn!("Processing paired reads as single reads")
+            }
+            CollectionType::Interleaved => {
+                warn!("Processing interleaved reads as single reads")
+            }
+            CollectionType::Multi { arity } => {
+                warn!("Processing multi reads (arity: {arity}) as single reads");
+            }
+            CollectionType::InterleavedMulti { arity } => {
+                warn!("Processing interleaved multi reads (arity: {arity}) as single reads");
+            }
+        }
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let mut handles = Vec::new();
+
+            for reader in self.inner {
+                let mut thread_proc = processor.clone();
+                let handle = scope.spawn(move || {
+                    process_parallel_generic(
+                        SingleReader::new(reader),
+                        &mut thread_proc,
+                        num_threads,
+                    )
+                });
+                handles.push(handle);
+            }
+
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| crate::ProcessError::JoinError)??;
+            }
+
+            Ok(())
+        })
+    }
+
+    pub fn process_parallel_paired<T>(
+        mut self,
+        processor: &mut T,
+        num_threads: usize,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+    {
+        match self.collection_type {
+            CollectionType::Single => {
+                warn!("Processing single reads as paired reads")
+            }
+            CollectionType::Paired => {}
+            CollectionType::Interleaved => {
+                warn!("Processing interleaved reads as paired reads")
+            }
+            CollectionType::Multi { arity } => {
+                if arity != 2 {
+                    warn!("Processing multi reads (arity: {arity}) as paired reads");
+                }
+            }
+            CollectionType::InterleavedMulti { arity } => {
+                if arity != 2 {
+                    warn!("Processing interleaved multi reads (arity: {arity}) as paired reads");
+                }
+            }
+        }
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let mut handles = Vec::new();
+
+            let total_pairs = self.inner.len() / 2;
+            let mut proc_pairs = 0;
+            while proc_pairs < total_pairs {
+                let mut thread_proc = processor.clone();
+                let r1 = self.inner.drain(..1).next().unwrap();
+                let r2 = self.inner.drain(..1).next().unwrap();
+
+                let handle = scope.spawn(move || {
+                    process_parallel_generic(
+                        PairedReader::new(r1, r2),
+                        &mut thread_proc,
+                        num_threads,
+                    )
+                });
+                handles.push(handle);
+                proc_pairs += 1;
+            }
+
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| crate::ProcessError::JoinError)??;
+            }
+
+            Ok(())
+        })
+    }
+
+    pub fn process_parallel_interleaved<T>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+    {
+        match self.collection_type {
+            CollectionType::Single => {
+                warn!("Processing single reads as interleaved reads")
+            }
+            CollectionType::Paired => {
+                warn!("Processing paired reads as interleaved reads")
+            }
+            CollectionType::Interleaved => {}
+            CollectionType::Multi { arity } => {
+                warn!("Processing multi reads (arity: {arity}) as interleaved reads");
+            }
+            CollectionType::InterleavedMulti { arity } => {
+                if arity != 2 {
+                    warn!(
+                        "Processing interleaved multi reads (arity: {arity}) as interleaved reads"
+                    );
+                }
+            }
+        }
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let mut handles = Vec::new();
+
+            for reader in self.inner {
+                let mut thread_proc = processor.clone();
+                let handle = scope.spawn(move || {
+                    process_parallel_generic(
+                        InterleavedPairedReader::new(reader),
+                        &mut thread_proc,
+                        num_threads,
+                    )
+                });
+                handles.push(handle);
+            }
+
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| crate::ProcessError::JoinError)??;
+            }
+
+            Ok(())
+        })
+    }
+
+    pub fn process_parallel_multi<T>(
+        mut self,
+        processor: &mut T,
+        num_threads: usize,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+        Self: Sized,
+    {
+        let arity = match self.collection_type {
+            CollectionType::Single => {
+                warn!("Processing single reads as multi-reads (arity=1)");
+                1
+            }
+            CollectionType::Paired => {
+                warn!("Processing paired reads as multi-reads (arity=2)");
+                2
+            }
+            CollectionType::Interleaved => {
+                warn!("Processing interleaved reads as multi-reads (arity=1)");
+                1
+            }
+            CollectionType::Multi { arity } => arity,
+            CollectionType::InterleavedMulti { arity } => {
+                if arity != 2 {
+                    warn!(
+                        "Processing interleaved multi reads (arity: {arity}) as multi-reads (arity={arity})"
+                    );
+                }
+                arity
+            }
+        };
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let mut handles = Vec::new();
+
+            let total_pairs = self.inner.len() / arity;
+            let mut proc_pairs = 0;
+            while proc_pairs < total_pairs {
+                let mut thread_proc = processor.clone();
+                let mut rest = Vec::new();
+                rest.extend(self.inner.drain(..arity));
+                let handle = scope.spawn(move || {
+                    process_parallel_generic(MultiReader::new(rest), &mut thread_proc, num_threads)
+                });
+                handles.push(handle);
+                proc_pairs += 1;
+            }
+
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| crate::ProcessError::JoinError)??;
+            }
+
+            Ok(())
+        })
+    }
+
+    pub fn process_parallel_multi_interleaved<T>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+    {
+        let arity = match self.collection_type {
+            CollectionType::Single => {
+                warn!("Processing single reads as interleaved multi reads (arity: 1)");
+                1
+            }
+            CollectionType::Paired => {
+                warn!("Processing paired reads as interleaved multi reads (arity: 2)");
+                2
+            }
+            CollectionType::Interleaved => {
+                warn!("Processing interleaved reads as interleaved multi reads (arity: 2)");
+                2
+            }
+            CollectionType::Multi { arity } => {
+                warn!("Processing multi reads (arity: {arity}) as interleaved multi reads");
+                arity
+            }
+            CollectionType::InterleavedMulti { arity } => arity,
+        };
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let mut handles = Vec::new();
+
+            for reader in self.inner {
+                let mut thread_proc = processor.clone();
+                let handle = scope.spawn(move || {
+                    process_parallel_generic(
+                        InterleavedMultiReader::new(reader, arity),
+                        &mut thread_proc,
+                        num_threads,
+                    )
+                });
+                handles.push(handle);
+            }
+
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| crate::ProcessError::JoinError)??;
+            }
+
+            Ok(())
+        })
+    }
 }
 
 pub enum Reader<R: io::Read> {
