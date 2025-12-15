@@ -1,5 +1,4 @@
 use std::io;
-use std::path::Path;
 use std::{borrow::Cow, thread};
 
 use log::warn;
@@ -12,6 +11,11 @@ use crate::{
     parallel::single::{process_parallel_generic, SingleReader},
     Error, Record,
 };
+
+#[cfg(feature = "niffler")]
+use crate::BoxedReader;
+#[cfg(feature = "niffler")]
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -68,7 +72,7 @@ impl<R: io::Read> Collection<R> {
 }
 
 #[cfg(feature = "niffler")]
-impl Collection<Box<dyn io::Read + Send>> {
+impl Collection<BoxedReader> {
     pub fn from_paths<P: AsRef<Path>>(
         paths: &[P],
         collection_type: CollectionType,
@@ -315,7 +319,7 @@ pub enum Reader<R: io::Read> {
 }
 
 #[cfg(feature = "niffler")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let (reader, _format) = niffler::send::from_path(path)?;
         Self::new(reader)
@@ -358,7 +362,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "url")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_url(url: &str) -> Result<Self, Error> {
         let stream = reqwest::blocking::get(url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
@@ -373,7 +377,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "ssh")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_ssh(ssh_url: &str) -> Result<Self, Error> {
         let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
@@ -388,7 +392,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "gcs")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     /// Create a GCS reader using Application Default Credentials
     pub fn from_gcs(gcs_url: &str) -> Result<Self, Error> {
         let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
