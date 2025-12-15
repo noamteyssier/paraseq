@@ -44,16 +44,16 @@ where
     Ok(())
 }
 
-fn process_parallel_generic<S: MTGenericReader, T>(
+pub(crate) fn process_parallel_generic<S: MTGenericReader, T>(
     mut reader: S,
     processor: &mut T,
-    num_threads: usize,
+    mut num_threads: usize,
 ) -> Result<()>
 where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
     if num_threads == 0 {
-        return Err(ProcessError::InvalidThreadCount);
+        num_threads = num_cpus::get();
     }
     if num_threads == 1 {
         return process_sequential_generic(reader, processor);
@@ -215,7 +215,7 @@ where
     }
 }
 
-struct SingleReader<R: GenericReader> {
+pub(crate) struct SingleReader<R: GenericReader> {
     reader: Mutex<R>,
 }
 

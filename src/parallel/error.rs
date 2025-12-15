@@ -23,6 +23,13 @@ pub enum ProcessError {
     #[error("Invalid thread count specified")]
     InvalidThreadCount,
 
+    #[error(
+        "Collection size mismatch, expected multiple of {} found {}",
+        arity,
+        found
+    )]
+    CollectionSizeMismatch { arity: usize, found: usize },
+
     /// Incompatible readers specified
     #[error("Incompatible readers specified, expected both readers to be the same input format")]
     IncompatibleReaders,

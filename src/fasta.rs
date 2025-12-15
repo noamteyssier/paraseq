@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::io;
 
 #[cfg(feature = "niffler")]
+use crate::BoxedReader;
+#[cfg(feature = "niffler")]
 use std::path::Path;
 
 use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
@@ -20,7 +22,7 @@ pub struct Reader<R: io::Read> {
 }
 
 #[cfg(feature = "niffler")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let (reader, _format) = niffler::send::from_path(path)?;
         Ok(Self::new(reader))
@@ -63,7 +65,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "url")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_url(url: &str) -> Result<Self, Error> {
         let stream = reqwest::blocking::get(url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
@@ -175,7 +177,7 @@ impl<R: io::Read> Reader<R> {
 }
 
 #[cfg(feature = "ssh")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_ssh(ssh_url: &str) -> Result<Self, Error> {
         let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
@@ -190,7 +192,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "gcs")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     /// Create a GCS reader using Application Default Credentials
     pub fn from_gcs(gcs_url: &str) -> Result<Self, Error> {
         let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;

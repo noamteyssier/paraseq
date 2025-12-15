@@ -29,3 +29,6 @@ pub const DEFAULT_MAX_RECORDS: usize = 1024;
 /// The maximum number of record segments supported in a single synchronized record group.
 /// For example, single-end reads have arity 1, paired-end reads have arity 2, etc.
 pub const MAX_ARITY: usize = 8;
+
+/// A boxed reader trait object used by many functions in this crate.
+pub type BoxedReader = Box<dyn std::io::Read + Send>;

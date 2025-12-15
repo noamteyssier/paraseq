@@ -1,12 +1,439 @@
-use std::borrow::Cow;
 use std::io;
+use std::{borrow::Cow, thread};
 
-use crate::{fasta, fastq, Error, Record};
+use log::warn;
+
+use crate::parallel::multi::{InterleavedMultiReader, MultiReader};
+use crate::parallel::paired::{InterleavedPairedReader, PairedReader};
+use crate::ProcessError;
+use crate::{
+    fasta, fastq,
+    parallel::single::{process_parallel_generic, SingleReader},
+    Error, Record,
+};
+
+#[cfg(feature = "niffler")]
+use crate::BoxedReader;
+#[cfg(feature = "niffler")]
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Fasta,
     Fastq,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectionType {
+    Single,
+    Paired,
+    Interleaved,
+    Multi { arity: usize },
+    InterleavedMulti { arity: usize },
+}
+
+/// A reader over multiple `fastx::Reader`s.
+pub struct Collection<R: io::Read> {
+    inner: Vec<Reader<R>>,
+    collection_type: CollectionType,
+}
+impl<R: io::Read> Collection<R> {
+    pub fn new(inner: Vec<Reader<R>>, collection_type: CollectionType) -> crate::Result<Self> {
+        let reader = Self {
+            inner,
+            collection_type,
+        };
+        reader.validate_arity()?;
+        Ok(reader)
+    }
+
+    fn validate_arity(&self) -> crate::Result<()> {
+        match self.collection_type {
+            CollectionType::Paired => {
+                if !self.inner.len().is_multiple_of(2) {
+                    return Err(ProcessError::CollectionSizeMismatch {
+                        arity: 2,
+                        found: self.inner.len(),
+                    });
+                }
+            }
+            CollectionType::Multi { arity } => {
+                if !self.inner.len().is_multiple_of(arity) {
+                    return Err(ProcessError::CollectionSizeMismatch {
+                        arity,
+                        found: self.inner.len(),
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "niffler")]
+impl Collection<BoxedReader> {
+    pub fn from_paths<P: AsRef<Path>>(
+        paths: &[P],
+        collection_type: CollectionType,
+    ) -> crate::Result<Self> {
+        let mut inner = Vec::new();
+        for path in paths {
+            inner.push(Reader::from_path(path)?);
+        }
+        Self::new(inner, collection_type)
+    }
+}
+
+impl<R: io::Read + Send> Collection<R> {
+    // Generic handler for single-reader pattern
+    fn handle_single_readers<T, F>(
+        mut self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+        scope_fn: F,
+    ) -> crate::Result<()>
+    where
+        T: Clone + Send,
+        F: Fn(Reader<R>, &mut T, usize) -> crate::Result<()> + Send + Sync,
+    {
+        let total_readers = self.inner.len();
+
+        // Determine the maximum number of threads available (or provided)
+        let total_threads = match total_threads {
+            0 => num_cpus::get(),
+            _ => num_cpus::get().min(total_threads),
+        };
+
+        // Calculate the number of threads per reader
+        let threads_per_reader = match threads_per_reader {
+            Some(num) => num.min(total_threads),
+            None => (total_threads / total_readers).max(1),
+        };
+
+        // Find the batch size (i.e. number of readers per batch)
+        let batch_size = total_threads / threads_per_reader;
+
+        // Calculate the number of batches
+        let num_batches = total_readers.div_ceil(batch_size);
+
+        // eprintln!(
+        //     "Processing {} readers; {} threads per reader; {} readers per batch; {} batches",
+        //     total_readers, threads_per_reader, batch_size, num_batches
+        // );
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let scope_fn = &scope_fn;
+
+            for _batch_idx in 0..num_batches {
+                // Pull the readers for the batch
+                let mut batch = Vec::new();
+                let rbound = batch_size.min(self.inner.len());
+                batch.extend(self.inner.drain(..rbound));
+
+                // create threads for all readers in this batch
+                let mut subhandles = Vec::new();
+                for reader in batch {
+                    let mut thread_proc = processor.clone();
+                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
+                        scope_fn(reader, &mut thread_proc, threads_per_reader)?;
+                        Ok(())
+                    }));
+                }
+
+                // join all threads in this batch
+                // eprintln!(
+                //     "Joining threads in batch {_batch_idx}; # readers: {}",
+                //     rbound,
+                // );
+                for handle in subhandles {
+                    handle
+                        .join()
+                        .map_err(|_| crate::ProcessError::JoinError)??;
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Generic handler for arity-based (grouped readers) pattern
+    fn handle_grouped_readers<T, F>(
+        mut self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_group: Option<usize>,
+        arity: usize,
+        scope_fn: F,
+    ) -> crate::Result<()>
+    where
+        T: Clone + Send,
+        F: Fn(Vec<Reader<R>>, &mut T, usize) -> crate::Result<()> + Send + Sync,
+    {
+        let total_groups = self.inner.len() / arity;
+
+        // Determine the maximum number of threads available (or provided)
+        let total_threads = match total_threads {
+            0 => num_cpus::get(),
+            _ => num_cpus::get().min(total_threads),
+        };
+
+        // Calculate the number of threads per group
+        let threads_per_group = match threads_per_group {
+            Some(num) => num.min(total_threads),
+            None => {
+                if total_threads >= arity {
+                    (total_threads / total_groups).max(arity)
+                } else {
+                    (total_threads / total_groups).max(1)
+                }
+            }
+        };
+
+        // Find the batch size (i.e. number of groups per batch)
+        let batch_size = total_threads / threads_per_group;
+
+        // Calculate the number of batches
+        let num_batches = total_groups.div_ceil(batch_size);
+
+        // eprintln!("Total groups: {}, Total threads: {}, Threads per group: {}, Batch size: {}, Number of batches: {}", total_groups, total_threads, threads_per_group, batch_size, num_batches);
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let scope_fn = &scope_fn;
+
+            for _batch_idx in 0..num_batches {
+                // Pull the groups for the batch
+                let mut batch = Vec::new();
+                let groups_in_batch = batch_size.min(total_groups - (_batch_idx * batch_size));
+
+                for _ in 0..groups_in_batch {
+                    let group: Vec<_> = self.inner.drain(..arity).collect();
+                    batch.push(group);
+                }
+
+                // Create threads for all groups in this batch
+                let mut subhandles = Vec::new();
+                for group in batch {
+                    let mut thread_proc = processor.clone();
+                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
+                        scope_fn(group, &mut thread_proc, threads_per_group)?;
+                        Ok(())
+                    }));
+                }
+
+                // Join all threads in this batch
+                // eprintln!(
+                //     "Joining batch {}; number of groups: {}",
+                //     _batch_idx, groups_in_batch
+                // );
+                for handle in subhandles {
+                    handle
+                        .join()
+                        .map_err(|_| crate::ProcessError::JoinError)??;
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Warn if collection type doesn't match expected processing mode
+    fn warn_if_mismatch(&self, expected: CollectionType) {
+        if self.collection_type == expected {
+            return;
+        }
+
+        match (&self.collection_type, &expected) {
+            // Exact arity matches - no warning needed
+            (CollectionType::Multi { arity: a }, CollectionType::Multi { arity: b }) if a == b => {}
+            (
+                CollectionType::InterleavedMulti { arity: a },
+                CollectionType::InterleavedMulti { arity: b },
+            ) if a == b => {}
+
+            // Multi arity=2 treated as Paired - no warning needed
+            (CollectionType::Multi { arity: 2 }, CollectionType::Paired) => {}
+            (CollectionType::InterleavedMulti { arity: 2 }, CollectionType::Paired) => {}
+            (CollectionType::InterleavedMulti { arity: 2 }, CollectionType::Interleaved) => {}
+
+            // Everything else gets a warning
+            _ => {
+                let from = match self.collection_type {
+                    CollectionType::Single => "single reads".to_string(),
+                    CollectionType::Paired => "paired reads".to_string(),
+                    CollectionType::Interleaved => "interleaved reads".to_string(),
+                    CollectionType::Multi { arity } => format!("multi reads (arity: {arity})"),
+                    CollectionType::InterleavedMulti { arity } => {
+                        format!("interleaved multi reads (arity: {arity})")
+                    }
+                };
+                let to = match expected {
+                    CollectionType::Single => "single reads".to_string(),
+                    CollectionType::Paired => "paired reads".to_string(),
+                    CollectionType::Interleaved => "interleaved reads".to_string(),
+                    CollectionType::Multi { arity } => format!("multi-reads (arity={arity})"),
+                    CollectionType::InterleavedMulti { arity } => {
+                        format!("interleaved multi reads (arity: {arity})")
+                    }
+                };
+                warn!("Processing {from} as {to}");
+            }
+        }
+    }
+
+    /// Get the effective arity for multi-read processing
+    fn get_arity_for_multi(&self) -> usize {
+        match self.collection_type {
+            CollectionType::Single => {
+                warn!("Processing single reads as multi-reads (arity=1)");
+                1
+            }
+            CollectionType::Paired => {
+                warn!("Processing paired reads as multi-reads (arity=2)");
+                2
+            }
+            CollectionType::Interleaved => {
+                warn!("Processing interleaved reads as multi-reads (arity=1)");
+                1
+            }
+            CollectionType::Multi { arity } => arity,
+            CollectionType::InterleavedMulti { arity } => {
+                if arity != 2 {
+                    warn!("Processing interleaved multi reads (arity: {arity}) as multi-reads (arity={arity})");
+                }
+                arity
+            }
+        }
+    }
+
+    /// Get the effective arity for interleaved multi-read processing
+    fn get_arity_for_interleaved_multi(&self) -> usize {
+        match self.collection_type {
+            CollectionType::Single => {
+                warn!("Processing single reads as interleaved multi reads (arity: 1)");
+                1
+            }
+            CollectionType::Paired => {
+                warn!("Processing paired reads as interleaved multi reads (arity: 2)");
+                2
+            }
+            CollectionType::Interleaved => {
+                warn!("Processing interleaved reads as interleaved multi reads (arity: 2)");
+                2
+            }
+            CollectionType::Multi { arity } => {
+                warn!("Processing multi reads (arity: {arity}) as interleaved multi reads");
+                arity
+            }
+            CollectionType::InterleavedMulti { arity } => arity,
+        }
+    }
+
+    pub fn process_parallel<T>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Single);
+        self.handle_single_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            |reader, proc, threads| {
+                process_parallel_generic(SingleReader::new(reader), proc, threads)
+            },
+        )
+    }
+
+    pub fn process_parallel_paired<T>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Paired);
+        self.handle_grouped_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            2,
+            |mut readers, proc, threads| {
+                let r1 = readers.remove(0);
+                let r2 = readers.remove(0);
+                process_parallel_generic(PairedReader::new(r1, r2), proc, threads)
+            },
+        )
+    }
+
+    pub fn process_parallel_interleaved<T>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Interleaved);
+        self.handle_single_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            |reader, proc, threads| {
+                process_parallel_generic(InterleavedPairedReader::new(reader), proc, threads)
+            },
+        )
+    }
+
+    pub fn process_parallel_multi<T>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+        Self: Sized,
+    {
+        let arity = self.get_arity_for_multi();
+        self.handle_grouped_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            arity,
+            |readers, proc, threads| {
+                process_parallel_generic(MultiReader::new(readers), proc, threads)
+            },
+        )
+    }
+
+    pub fn process_parallel_multi_interleaved<T>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+    {
+        let arity = self.get_arity_for_interleaved_multi();
+        self.handle_single_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            move |reader, proc, threads| {
+                process_parallel_generic(InterleavedMultiReader::new(reader, arity), proc, threads)
+            },
+        )
+    }
 }
 
 pub enum Reader<R: io::Read> {
@@ -15,7 +442,7 @@ pub enum Reader<R: io::Read> {
 }
 
 #[cfg(feature = "niffler")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let (reader, _format) = niffler::send::from_path(path)?;
         Self::new(reader)
@@ -58,7 +485,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "url")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_url(url: &str) -> Result<Self, Error> {
         let stream = reqwest::blocking::get(url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
@@ -73,7 +500,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "ssh")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     pub fn from_ssh(ssh_url: &str) -> Result<Self, Error> {
         let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
@@ -88,7 +515,7 @@ impl Reader<Box<dyn io::Read + Send>> {
 }
 
 #[cfg(feature = "gcs")]
-impl Reader<Box<dyn io::Read + Send>> {
+impl Reader<BoxedReader> {
     /// Create a GCS reader using Application Default Credentials
     pub fn from_gcs(gcs_url: &str) -> Result<Self, Error> {
         let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
