@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use parking_lot::Mutex;
 
 use crate::fastx::GenericReader;
@@ -32,9 +33,11 @@ where
     let mut record_set = reader.new_record_set();
 
     while reader.fill(&mut record_set).map_err(Into::into)? {
-        for record in S::iter(&record_set) {
-            processor.process_record(record.map_err(Into::into)?)?;
-        }
+        let records = S::iter(&record_set).map(|r| r.map_err(Into::into));
+
+        // One ? for record parsing errors, and one ? for errors from worker_processor.
+        records.process_results(|records| processor.process_record_batch(records))??;
+
         processor.on_batch_complete()?;
     }
     processor.on_thread_complete()?;
@@ -77,11 +80,12 @@ where
                         break;
                     }
 
-                    let records = S::iter(&record_set);
+                    let records = S::iter(&record_set).map(|r| r.map_err(Into::into));
 
-                    for record in records {
-                        worker_processor.process_record(record.map_err(Into::into)?)?;
-                    }
+                    // One ? for record parsing errors, and one ? for errors from worker_processor.
+                    records.process_results(|records| {
+                        worker_processor.process_record_batch(records)
+                    })??;
 
                     worker_processor.on_batch_complete()?;
                 }
