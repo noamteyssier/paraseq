@@ -145,109 +145,53 @@ impl<R: io::Read + Send> Collection<R> {
         })
     }
 
-    pub fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> crate::Result<()>
-    where
-        T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
-    {
-        match self.collection_type {
-            CollectionType::Single => {}
-            CollectionType::Paired => {
-                warn!("Processing paired reads as single reads")
-            }
-            CollectionType::Interleaved => {
-                warn!("Processing interleaved reads as single reads")
-            }
-            CollectionType::Multi { arity } => {
-                warn!("Processing multi reads (arity: {arity}) as single reads");
-            }
-            CollectionType::InterleavedMulti { arity } => {
-                warn!("Processing interleaved multi reads (arity: {arity}) as single reads");
-            }
+    /// Warn if collection type doesn't match expected processing mode
+    fn warn_if_mismatch(&self, expected: CollectionType) {
+        if self.collection_type == expected {
+            return;
         }
 
-        self.handle_single_readers(processor, num_threads, |reader, proc, threads| {
-            process_parallel_generic(SingleReader::new(reader), proc, threads)
-        })
-    }
+        match (&self.collection_type, &expected) {
+            // Exact arity matches - no warning needed
+            (CollectionType::Multi { arity: a }, CollectionType::Multi { arity: b }) if a == b => {}
+            (
+                CollectionType::InterleavedMulti { arity: a },
+                CollectionType::InterleavedMulti { arity: b },
+            ) if a == b => {}
 
-    pub fn process_parallel_paired<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> crate::Result<()>
-    where
-        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
-    {
-        match self.collection_type {
-            CollectionType::Single => {
-                warn!("Processing single reads as paired reads")
-            }
-            CollectionType::Paired => {}
-            CollectionType::Interleaved => {
-                warn!("Processing interleaved reads as paired reads")
-            }
-            CollectionType::Multi { arity } => {
-                if arity != 2 {
-                    warn!("Processing multi reads (arity: {arity}) as paired reads");
-                }
-            }
-            CollectionType::InterleavedMulti { arity } => {
-                if arity != 2 {
-                    warn!("Processing interleaved multi reads (arity: {arity}) as paired reads");
-                }
+            // Multi arity=2 treated as Paired - no warning needed
+            (CollectionType::Multi { arity: 2 }, CollectionType::Paired) => {}
+            (CollectionType::InterleavedMulti { arity: 2 }, CollectionType::Paired) => {}
+            (CollectionType::InterleavedMulti { arity: 2 }, CollectionType::Interleaved) => {}
+
+            // Everything else gets a warning
+            _ => {
+                let from = match self.collection_type {
+                    CollectionType::Single => "single reads".to_string(),
+                    CollectionType::Paired => "paired reads".to_string(),
+                    CollectionType::Interleaved => "interleaved reads".to_string(),
+                    CollectionType::Multi { arity } => format!("multi reads (arity: {arity})"),
+                    CollectionType::InterleavedMulti { arity } => {
+                        format!("interleaved multi reads (arity: {arity})")
+                    }
+                };
+                let to = match expected {
+                    CollectionType::Single => "single reads".to_string(),
+                    CollectionType::Paired => "paired reads".to_string(),
+                    CollectionType::Interleaved => "interleaved reads".to_string(),
+                    CollectionType::Multi { arity } => format!("multi-reads (arity={arity})"),
+                    CollectionType::InterleavedMulti { arity } => {
+                        format!("interleaved multi reads (arity: {arity})")
+                    }
+                };
+                warn!("Processing {from} as {to}");
             }
         }
-
-        self.handle_grouped_readers(processor, num_threads, 2, |mut readers, proc, threads| {
-            let r1 = readers.remove(0);
-            let r2 = readers.remove(0);
-            process_parallel_generic(PairedReader::new(r1, r2), proc, threads)
-        })
     }
 
-    pub fn process_parallel_interleaved<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> crate::Result<()>
-    where
-        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
-    {
+    /// Get the effective arity for multi-read processing
+    fn get_arity_for_multi(&self) -> usize {
         match self.collection_type {
-            CollectionType::Single => {
-                warn!("Processing single reads as interleaved reads")
-            }
-            CollectionType::Paired => {
-                warn!("Processing paired reads as interleaved reads")
-            }
-            CollectionType::Interleaved => {}
-            CollectionType::Multi { arity } => {
-                warn!("Processing multi reads (arity: {arity}) as interleaved reads");
-            }
-            CollectionType::InterleavedMulti { arity } => {
-                if arity != 2 {
-                    warn!(
-                        "Processing interleaved multi reads (arity: {arity}) as interleaved reads"
-                    );
-                }
-            }
-        }
-
-        self.handle_single_readers(processor, num_threads, |reader, proc, threads| {
-            process_parallel_generic(InterleavedPairedReader::new(reader), proc, threads)
-        })
-    }
-
-    pub fn process_parallel_multi<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> crate::Result<()>
-    where
-        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
-        Self: Sized,
-    {
-        let arity = match self.collection_type {
             CollectionType::Single => {
                 warn!("Processing single reads as multi-reads (arity=1)");
                 1
@@ -263,35 +207,16 @@ impl<R: io::Read + Send> Collection<R> {
             CollectionType::Multi { arity } => arity,
             CollectionType::InterleavedMulti { arity } => {
                 if arity != 2 {
-                    warn!(
-                        "Processing interleaved multi reads (arity: {arity}) as multi-reads (arity={arity})"
-                    );
+                    warn!("Processing interleaved multi reads (arity: {arity}) as multi-reads (arity={arity})");
                 }
                 arity
             }
-        };
-
-        self.handle_grouped_readers(
-            processor,
-            num_threads,
-            arity,
-            |mut readers, proc, threads| {
-                let mut rest = Vec::new();
-                rest.extend(readers.drain(..arity));
-                process_parallel_generic(MultiReader::new(rest), proc, threads)
-            },
-        )
+        }
     }
 
-    pub fn process_parallel_multi_interleaved<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> crate::Result<()>
-    where
-        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
-    {
-        let arity = match self.collection_type {
+    /// Get the effective arity for interleaved multi-read processing
+    fn get_arity_for_interleaved_multi(&self) -> usize {
+        match self.collection_type {
             CollectionType::Single => {
                 warn!("Processing single reads as interleaved multi reads (arity: 1)");
                 1
@@ -309,9 +234,74 @@ impl<R: io::Read + Send> Collection<R> {
                 arity
             }
             CollectionType::InterleavedMulti { arity } => arity,
-        };
+        }
+    }
 
+    pub fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Single);
         self.handle_single_readers(processor, num_threads, |reader, proc, threads| {
+            process_parallel_generic(SingleReader::new(reader), proc, threads)
+        })
+    }
+
+    pub fn process_parallel_paired<T>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Paired);
+        self.handle_grouped_readers(processor, num_threads, 2, |mut readers, proc, threads| {
+            let r1 = readers.remove(0);
+            let r2 = readers.remove(0);
+            process_parallel_generic(PairedReader::new(r1, r2), proc, threads)
+        })
+    }
+
+    pub fn process_parallel_interleaved<T>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Interleaved);
+        self.handle_single_readers(processor, num_threads, |reader, proc, threads| {
+            process_parallel_generic(InterleavedPairedReader::new(reader), proc, threads)
+        })
+    }
+
+    pub fn process_parallel_multi<T>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+        Self: Sized,
+    {
+        let arity = self.get_arity_for_multi();
+        self.handle_grouped_readers(processor, num_threads, arity, |readers, proc, threads| {
+            process_parallel_generic(MultiReader::new(readers), proc, threads)
+        })
+    }
+
+    pub fn process_parallel_multi_interleaved<T>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+    {
+        let arity = self.get_arity_for_interleaved_multi();
+        self.handle_single_readers(processor, num_threads, move |reader, proc, threads| {
             process_parallel_generic(InterleavedMultiReader::new(reader, arity), proc, threads)
         })
     }
