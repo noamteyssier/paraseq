@@ -103,6 +103,11 @@ impl<R: io::Read> Collection<R> {
             None
         }
     }
+
+    /// Returns the type of collection.
+    pub fn collection_type(&self) -> CollectionType {
+        self.collection_type
+    }
 }
 
 #[cfg(feature = "niffler")]
