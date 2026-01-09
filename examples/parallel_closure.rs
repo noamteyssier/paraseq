@@ -1,12 +1,39 @@
+use std::{fs::File, io, sync::atomic::AtomicU64};
+
+use anyhow::Result;
+use clap::Parser;
 use paraseq::fastx::RefRecord;
 use paraseq::{fastx, prelude::*, ProcessError};
-use std::{fs::File, sync::atomic::AtomicU64};
+
+type BoxedReader = Box<dyn io::Read + Send>;
+
+#[derive(Parser)]
+struct Cli {
+    /// Input file path
+    input_file: Option<String>,
+
+    /// Number of threads to use for processing
+    #[clap(short = 'T', default_value = "1")]
+    num_threads: usize,
+
+    /// Number of records to process in each batch
+    #[clap(short = 'B', default_value = "10")]
+    batch_size: usize,
+}
+impl Cli {
+    pub fn input_handle(&self) -> Result<BoxedReader> {
+        if let Some(path) = &self.input_file {
+            let file = File::open(path)?;
+            Ok(Box::new(file))
+        } else {
+            Ok(Box::new(io::stdin()))
+        }
+    }
+}
 
 fn main() -> Result<(), ProcessError> {
-    let path = "./data/example.fastq";
-    let num_threads = 4;
-    let batch_size = 10;
-    let file = File::open(&path)?;
+    let args = Cli::parse();
+    let input_handle = args.input_handle()?;
 
     // This does the same as examples/parallel.rs,
     // but is implemented using a closure that takes an iterator over the records in a batch.
@@ -38,10 +65,10 @@ fn main() -> Result<(), ProcessError> {
         Ok(())
     };
 
-    let reader = fastx::Reader::new_with_batch_size(file, batch_size)?;
+    let reader = fastx::Reader::new_with_batch_size(input_handle, args.batch_size)?;
     // NOTE: If you get lifetime issues, make sure that the reader and the processor use
     // exactly the same `RefRecord` type (and do not e.g. mix fasta and fastq variants).
-    reader.process_parallel(&mut processor, num_threads)?;
+    reader.process_parallel(&mut processor, args.num_threads)?;
 
     println!("num_records: {}", num_records.into_inner());
     println!("byte_sum: {}", byte_sum.into_inner());
