@@ -61,6 +61,8 @@ jobs:
   build-fastx:
     name: Build FASTX
     runs-on: "ubuntu-latest"
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
     steps:
       - uses: actions/checkout@v3
       - name: Build target
@@ -105,6 +107,8 @@ jobs:
   build-multi:
     name: Build Multi
     runs-on: "ubuntu-latest"
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
     steps:
       - uses: actions/checkout@v3
       - name: build target
@@ -141,6 +145,8 @@ jobs:
   build-multi-interleaved:
     name: Build Multi Interleaved
     runs-on: "ubuntu-latest"
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
     steps:
       - uses: actions/checkout@v3
       - name: build target
@@ -175,6 +181,8 @@ jobs:
   build-read-write:
     name: Build Read Write
     runs-on: "ubuntu-latest"
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
     steps:
       - uses: actions/checkout@v3
       - name: build target
@@ -211,6 +219,8 @@ jobs:
   build-htslib:
     name: Build Htslib
     runs-on: "ubuntu-latest"
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
     steps:
       - uses: actions/checkout@v3
       - name: build target
