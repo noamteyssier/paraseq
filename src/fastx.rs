@@ -88,6 +88,17 @@ impl<R: io::Read> Collection<R> {
         &mut self.inner
     }
 
+    /// Limit processing to the first `n` records per reader in the collection.
+    ///
+    /// When used with parallel processing, each reader will truncate batches to
+    /// stay within the limit and return `false` once the limit is reached,
+    /// stopping its worker threads cleanly.
+    pub fn set_record_limit(&mut self, n: usize) {
+        for reader in &mut self.inner {
+            reader.set_record_limit(n);
+        }
+    }
+
     /// Checks if all readers have the same format.
     ///
     /// Will return `None` if the format is not unique and `Some(format)` if it is with the format.
@@ -656,6 +667,18 @@ impl<R: io::Read> Reader<R> {
         match self {
             Self::Fasta(_) => Format::Fasta,
             Self::Fastq(_) => Format::Fastq,
+        }
+    }
+
+    /// Limit processing to the first `n` records.
+    ///
+    /// When used with parallel processing, `fill()` will truncate batches to
+    /// stay within the limit and return `false` once the limit is reached,
+    /// stopping all worker threads cleanly.
+    pub fn set_record_limit(&mut self, n: usize) {
+        match self {
+            Self::Fasta(inner) => inner.set_record_limit(n),
+            Self::Fastq(inner) => inner.set_record_limit(n),
         }
     }
 
