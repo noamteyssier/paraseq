@@ -250,3 +250,120 @@ where
         R::iter(record_set).map(|r| Ok(r?))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use crate::fastq;
+    use crate::parallel::single::ParallelReader;
+    use crate::parallel::{ParallelProcessor, ProcessError};
+    use crate::Record;
+
+    fn make_fastq(n: usize) -> Vec<u8> {
+        (0..n)
+            .flat_map(|i| format!("@seq{i}\nACGT\n+\nIIII\n").into_bytes())
+            .collect()
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingProcessor {
+        local_count: usize,
+        global_count: Arc<AtomicUsize>,
+    }
+
+    impl CountingProcessor {
+        fn count(&self) -> usize {
+            self.global_count.load(Ordering::Relaxed)
+        }
+    }
+
+    impl<Rf: Record> ParallelProcessor<Rf> for CountingProcessor {
+        fn process_record(&mut self, _record: Rf) -> Result<(), ProcessError> {
+            self.local_count += 1;
+            Ok(())
+        }
+
+        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+            self.global_count
+                .fetch_add(self.local_count, Ordering::Relaxed);
+            self.local_count = 0;
+            Ok(())
+        }
+    }
+
+    const N_RECORDS: usize = 500;
+    const BATCH_SIZE: usize = 10;
+    const LIMIT: usize = 50;
+
+    fn make_limited_reader(data: Vec<u8>, limit: usize) -> fastq::Reader<Cursor<Vec<u8>>> {
+        let mut reader =
+            fastq::Reader::with_batch_size(Cursor::new(data), BATCH_SIZE).unwrap();
+        reader.set_record_limit(limit);
+        reader
+    }
+
+    #[test]
+    fn test_record_limit_sequential() {
+        let reader = make_limited_reader(make_fastq(N_RECORDS), LIMIT);
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel(&mut processor, 1).unwrap();
+
+        assert_eq!(processor.count(), LIMIT);
+    }
+
+    #[test]
+    fn test_record_limit_parallel() {
+        let reader = make_limited_reader(make_fastq(N_RECORDS), LIMIT);
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel(&mut processor, 4).unwrap();
+
+        assert_eq!(processor.count(), LIMIT);
+    }
+
+    #[test]
+    fn test_record_limit_non_multiple_of_batch() {
+        // 45 is not a multiple of BATCH_SIZE (10), so the last batch is truncated.
+        let reader = make_limited_reader(make_fastq(N_RECORDS), 45);
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel(&mut processor, 4).unwrap();
+
+        assert_eq!(processor.count(), 45);
+    }
+
+    #[test]
+    fn test_no_limit_processes_all_sequential() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel(&mut processor, 1).unwrap();
+
+        assert_eq!(processor.count(), N_RECORDS);
+    }
+
+    #[test]
+    fn test_no_limit_processes_all_parallel() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel(&mut processor, 4).unwrap();
+
+        assert_eq!(processor.count(), N_RECORDS);
+    }
+
+    #[test]
+    fn test_record_limit_larger_than_file() {
+        // Limit larger than file: process all available records.
+        let reader = make_limited_reader(make_fastq(N_RECORDS), N_RECORDS * 2);
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel(&mut processor, 4).unwrap();
+
+        assert_eq!(processor.count(), N_RECORDS);
+    }
+}
