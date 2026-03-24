@@ -19,6 +19,8 @@ pub struct Reader<R: io::Read> {
     ///
     /// If not set, the default `RecordSet` capacity is used.
     batch_size: Option<usize>,
+    /// Maximum number of records to process before stopping
+    record_limit: Option<usize>,
 }
 
 #[cfg(feature = "niffler")]
@@ -154,6 +156,7 @@ impl<R: io::Read> Reader<R> {
             reader,
             eof: false,
             batch_size: None,
+            record_limit: None,
         }
     }
     pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
@@ -163,6 +166,15 @@ impl<R: io::Read> Reader<R> {
         let mut reader = Self::new(reader);
         reader.batch_size = Some(batch_size);
         Ok(reader)
+    }
+
+    /// Limit processing to the first `n` records.
+    ///
+    /// When used with parallel processing, `fill()` will truncate batches to
+    /// stay within the limit and return `false` once the limit is reached,
+    /// stopping all worker threads cleanly.
+    pub fn set_record_limit(&mut self, n: usize) {
+        self.record_limit = Some(n);
     }
 
     /// Use the first record in the input to set the number of records per batch
@@ -280,6 +292,16 @@ impl RecordSet {
         self.newlines.clear();
         self.positions.clear();
         self.last_searched_pos = 0;
+    }
+
+    /// Returns the number of records currently in this set.
+    pub fn n_records(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// Truncate the record set to at most `n` records.
+    pub fn truncate(&mut self, n: usize) {
+        self.positions.truncate(n);
     }
 
     /// Find all newlines currently in the buffer starting from the last searched position
@@ -573,7 +595,18 @@ where
     }
 
     fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        record.fill(self)
+        if let Some(0) = self.record_limit {
+            return Ok(false);
+        }
+        let filled = record.fill(self)?;
+        if filled {
+            if let Some(remaining) = &mut self.record_limit {
+                let n = record.n_records().min(*remaining);
+                record.truncate(n);
+                *remaining -= n;
+            }
+        }
+        Ok(filled)
     }
 
     fn iter(
