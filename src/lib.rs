@@ -24,7 +24,7 @@ pub mod gcs;
 pub use error::Error;
 pub use parallel::{ProcessError, Result};
 pub use record::Record;
-pub use validation::{RecordValidation, ValidationError};
+pub use validation::{NucleotideAlphabet, RecordValidation, ValidationError};
 
 /// Default maximum number of records in a record set.
 pub const DEFAULT_MAX_RECORDS: usize = 1024;
