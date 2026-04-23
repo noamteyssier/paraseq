@@ -391,14 +391,13 @@ impl RecordSet {
 
     // Split out record processing to separate function
     fn process_records<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
-        let mut available_complete = self.newlines.len() / 4;
-
         // At EOF, check if we have exactly 3 newlines remaining (final record without trailing newline)
-        let has_final_incomplete = reader.eof && (self.newlines.len() % 4 == 3);
-        if has_final_incomplete {
-            available_complete += 1;
+        if reader.eof && self.newlines.len() % 4 == 3 {
+            // If we just have 3 lines (no trailing newline), add a synthetic newline to the buffer
+            self.buffer.push(b'\n');
+            self.find_newlines(self.buffer.len());
         }
-
+        let available_complete = self.newlines.len() / 4;
         let records_to_process = available_complete.min(self.capacity);
 
         if records_to_process > 0 {
@@ -409,7 +408,7 @@ impl RecordSet {
             // Process complete records with 4 newlines
             self.newlines
                 .chunks_exact(4)
-                .take(records_to_process.saturating_sub(if has_final_incomplete { 1 } else { 0 }))
+                .take(records_to_process)
                 .for_each(|chunk| {
                     let (seq_start, sep_start, qual_start, end) =
                         (chunk[0], chunk[1], chunk[2], chunk[3]);
@@ -425,30 +424,7 @@ impl RecordSet {
                     record_start = end;
                     last_end = end;
                 });
-
-            // Handle final record with only 3 newlines at EOF
-            if has_final_incomplete {
-                let remaining = self.newlines.len() % 4;
-                let start_idx = self.newlines.len() - remaining;
-                let (seq_start, sep_start, qual_start) = (
-                    self.newlines[start_idx],
-                    self.newlines[start_idx + 1],
-                    self.newlines[start_idx + 2],
-                );
-
-                self.positions.push(Positions {
-                    start: record_start,
-                    seq_start,
-                    sep_start,
-                    qual_start,
-                    qual_end: self.buffer.len(),
-                    end: self.buffer.len(),
-                });
-                last_end = self.buffer.len();
-            }
-
             self.update_avg_record_size(last_end);
-
             // Move remaining partial data to overflow
             reader.overflow.extend_from_slice(&self.buffer[last_end..]);
             self.buffer.truncate(last_end);
