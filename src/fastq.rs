@@ -729,10 +729,9 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
 
         for record in record_set.iter() {
-            println!("Record: {:?}", record);
+            let record = record.unwrap();
+            assert_eq!(record.seq().len(), record.qual().unwrap().len());
         }
-
-        assert!(record_set.iter().next().unwrap().is_ok());
     }
 
     #[test]
