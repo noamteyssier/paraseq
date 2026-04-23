@@ -708,6 +708,7 @@ mod tests {
             let record = record.unwrap();
             assert_eq!(record.seq().len(), record.qual().unwrap().len());
         }
+        assert!(record_set.iter().next().unwrap().is_ok());
     }
 
     #[test]
