@@ -140,10 +140,6 @@ pub trait RecordValidation: Record {
         let id1 = self.id();
         let id2 = other.id();
 
-        if id1 == id2 {
-            return Ok(());
-        }
-
         match (id1, id2) {
             // Common FASTQ pairing convention where mates are denoted by `/1` and `/2`.
             (left_id @ [.., b'/', b'1'], right_id @ [.., b'/', b'2'])
@@ -192,6 +188,7 @@ pub trait RecordValidation: Record {
                     _ => Err(pair_name_mismatch(id1, id2)),
                 }
             }
+            _ if id1 == id2 => Ok(()),
             _ => Err(pair_name_mismatch(id1, id2)),
         }
     }
