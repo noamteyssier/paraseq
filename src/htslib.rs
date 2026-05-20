@@ -203,4 +203,10 @@ impl GenericReader for Reader {
 
         Ok(())
     }
+
+    fn set_threads(&mut self, threads: usize) -> std::result::Result<(), Self::Error> {
+        self.reader
+            .set_threads(threads)
+            .map_err(IntoProcessError::into_process_error)
+    }
 }
