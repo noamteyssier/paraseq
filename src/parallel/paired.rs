@@ -70,13 +70,9 @@ where
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
-        self.reader1
-            .lock()
-            .set_threads(num_threads)?;
+        self.reader1.lock().set_threads(num_threads)?;
 
-        self.reader2
-            .lock()
-            .set_threads(num_threads)?;
+        self.reader2.lock().set_threads(num_threads)?;
 
         Ok(())
     }

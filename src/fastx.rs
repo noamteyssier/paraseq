@@ -52,20 +52,18 @@ impl<R: io::Read> Collection<R> {
             return Err(ProcessError::CollectionSizeMismatch { arity: 1, found: 0 });
         }
         match self.collection_type {
-            CollectionType::Paired
-                if !self.inner.len().is_multiple_of(2) => {
-                    return Err(ProcessError::CollectionSizeMismatch {
-                        arity: 2,
-                        found: self.inner.len(),
-                    });
-                }
-            CollectionType::Multi { arity }
-                if !self.inner.len().is_multiple_of(arity) => {
-                    return Err(ProcessError::CollectionSizeMismatch {
-                        arity,
-                        found: self.inner.len(),
-                    });
-                }
+            CollectionType::Paired if !self.inner.len().is_multiple_of(2) => {
+                return Err(ProcessError::CollectionSizeMismatch {
+                    arity: 2,
+                    found: self.inner.len(),
+                });
+            }
+            CollectionType::Multi { arity } if !self.inner.len().is_multiple_of(arity) => {
+                return Err(ProcessError::CollectionSizeMismatch {
+                    arity,
+                    found: self.inner.len(),
+                });
+            }
             _ => {}
         }
         Ok(())
