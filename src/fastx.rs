@@ -814,6 +814,9 @@ pub trait GenericReader: Send {
     ) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
+    fn set_threads(&mut self, _threads: usize) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 impl<R> GenericReader for crate::fastx::Reader<R>
