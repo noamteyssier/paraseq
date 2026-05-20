@@ -68,6 +68,20 @@ where
         });
         either::Either::Right(record_iter)
     }
+
+    fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
+        self.reader1
+            .lock()
+            .set_threads(num_threads)
+            .map_err(Into::into)?;
+
+        self.reader2
+            .lock()
+            .set_threads(num_threads)
+            .map_err(Into::into)?;
+
+        Ok(())
+    }
 }
 
 pub struct InterleavedPairedReader<R: GenericReader> {
@@ -114,5 +128,12 @@ where
             .tuples()
             .map(|(r1, r2)| std::result::Result::Ok((r1?, r2?)));
         either::Either::Right(tuple_iter)
+    }
+
+    fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
+        self.reader
+            .lock()
+            .set_threads(num_threads)
+            .map_err(Into::into)
     }
 }

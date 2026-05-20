@@ -70,6 +70,12 @@ where
         }
         either::Either::Right(SmallVecIt { its })
     }
+
+    fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
+        self.readers
+            .iter()
+            .try_for_each(|r| r.lock().set_threads(num_threads).map_err(Into::into))
+    }
 }
 
 struct SmallVecIt<I> {
@@ -157,6 +163,13 @@ where
             return either::Either::Left(err_iter);
         }
         either::Either::Right(ChunkedIt { it, arity: *arity })
+    }
+
+    fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
+        self.reader
+            .lock()
+            .set_threads(num_threads)
+            .map_err(Into::into)
     }
 }
 

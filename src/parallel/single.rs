@@ -18,12 +18,14 @@ pub(crate) trait MTGenericReader: Send + Sync {
     type Error: Into<ProcessError>;
     type RefRecord<'a>;
 
-    fn set_num_threads(&mut self, _num_threads: usize) {}
     fn new_record_set(&self) -> Self::RecordSet;
     fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>>;
+    fn set_num_threads(&mut self, _num_threads: usize) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 fn process_sequential_generic<S: MTGenericReader, T>(reader: S, processor: &mut T) -> Result<()>
@@ -59,7 +61,7 @@ where
         return process_sequential_generic(reader, processor);
     }
 
-    reader.set_num_threads(num_threads);
+    reader.set_num_threads(num_threads).map_err(Into::into)?;
 
     thread::scope(|scope| -> Result<()> {
         let reader = &reader;
@@ -249,6 +251,13 @@ where
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         R::iter(record_set).map(|r| Ok(r?))
     }
+
+    fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
+        self.reader
+            .lock()
+            .set_threads(num_threads)
+            .map_err(Into::into)
+    }
 }
 
 #[cfg(test)]
@@ -299,8 +308,7 @@ mod tests {
     const LIMIT: usize = 50;
 
     fn make_limited_reader(data: Vec<u8>, limit: usize) -> fastq::Reader<Cursor<Vec<u8>>> {
-        let mut reader =
-            fastq::Reader::with_batch_size(Cursor::new(data), BATCH_SIZE).unwrap();
+        let mut reader = fastq::Reader::with_batch_size(Cursor::new(data), BATCH_SIZE).unwrap();
         reader.set_record_limit(limit);
         reader
     }
@@ -338,7 +346,8 @@ mod tests {
 
     #[test]
     fn test_no_limit_processes_all_sequential() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
         reader.process_parallel(&mut processor, 1).unwrap();
@@ -348,7 +357,8 @@ mod tests {
 
     #[test]
     fn test_no_limit_processes_all_parallel() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
         reader.process_parallel(&mut processor, 4).unwrap();
