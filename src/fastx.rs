@@ -52,22 +52,20 @@ impl<R: io::Read> Collection<R> {
             return Err(ProcessError::CollectionSizeMismatch { arity: 1, found: 0 });
         }
         match self.collection_type {
-            CollectionType::Paired => {
-                if !self.inner.len().is_multiple_of(2) {
+            CollectionType::Paired
+                if !self.inner.len().is_multiple_of(2) => {
                     return Err(ProcessError::CollectionSizeMismatch {
                         arity: 2,
                         found: self.inner.len(),
                     });
                 }
-            }
-            CollectionType::Multi { arity } => {
-                if !self.inner.len().is_multiple_of(arity) {
+            CollectionType::Multi { arity }
+                if !self.inner.len().is_multiple_of(arity) => {
                     return Err(ProcessError::CollectionSizeMismatch {
                         arity,
                         found: self.inner.len(),
                     });
                 }
-            }
             _ => {}
         }
         Ok(())
@@ -104,9 +102,7 @@ impl<R: io::Read> Collection<R> {
     /// Will return `None` if the format is not unique and `Some(format)` if it is with the format.
     pub fn unique_format(&self) -> Option<Format> {
         let format = self.inner.first().map(|reader| reader.format());
-        if format.is_none() {
-            return None;
-        }
+        format?;
         let format = format.unwrap();
         if self.inner.iter().all(|reader| reader.format() == format) {
             Some(format)
