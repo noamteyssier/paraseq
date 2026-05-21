@@ -318,8 +318,8 @@ fn range_to_offset_limit(range: impl RangeBounds<usize>) -> (usize, Option<usize
     };
 
     let limit = match range.end_bound() {
-        Bound::Included(&n) => Some(n + 1 - start),
-        Bound::Excluded(&n) => Some(n - start),
+        Bound::Included(&n) => Some((n + 1).max(start) - start),
+        Bound::Excluded(&n) => Some(n.max(start) - start),
         Bound::Unbounded => None,
     };
 
