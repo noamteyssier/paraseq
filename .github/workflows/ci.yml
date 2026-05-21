@@ -50,6 +50,7 @@ jobs:
         test-parallel,
         test-paired-parallel,
         test-naive,
+        test-range-parallel,
         test-reloading,
         test-reloading-parallel,
         test-multi,
@@ -335,3 +336,16 @@ jobs:
         run: cargo run --release --example reloading_parallel -- data/sample.fasta 1
       - name: Test reloading parallel example with FASTA (2 threads)
         run: cargo run --release --example reloading_parallel -- data/sample.fasta 2
+
+  test-range-parallel:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test parallel range example with FASTQ
+        run: cargo run --release --example range_parallel -- data/sample.fastq --start 0
+      - name: Test parallel range example with FASTQ
+        run: cargo run --release --example range_parallel -- data/sample.fastq --start 10
+      - name: Test parallel range example with FASTQ
+        run: cargo run --release --example range_parallel -- data/sample.fastq --start 10 --end 30
+      - name: Test parallel range example with FASTQ
+        run: cargo run --release --example range_parallel -- data/sample.fastq --end 30
