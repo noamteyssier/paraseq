@@ -129,7 +129,8 @@ where
     }
 
     fn n_records(record_set: &Self::RecordSet) -> usize {
-        R::iter(record_set).len()
+        // Return the number of pairs, not individual records
+        R::iter(record_set).len() / 2
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {

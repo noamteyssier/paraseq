@@ -169,8 +169,9 @@ where
         either::Either::Right(ChunkedIt { it, arity: *arity })
     }
 
-    fn n_records((record_set, _arity): &Self::RecordSet) -> usize {
-        R::iter(record_set).len()
+    fn n_records((record_set, arity): &Self::RecordSet) -> usize {
+        // Return the number of record-groups, not individual records
+        R::iter(record_set).len() / arity
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
