@@ -1,12 +1,13 @@
 use std::io;
+use std::ops::RangeBounds;
 use std::{borrow::Cow, thread};
 
 use log::warn;
 
 use crate::parallel::multi::{InterleavedMultiReader, MultiReader};
 use crate::parallel::paired::{InterleavedPairedReader, PairedReader};
-use crate::parallel::reader::SingleReader;
-use crate::parallel::single::process_parallel_generic;
+use crate::parallel::reader::{range_to_offset_limit, SingleReader};
+use crate::parallel::single::{process_parallel_generic, process_parallel_generic_range};
 use crate::ProcessError;
 use crate::{fasta, fastq, Error, Record};
 
@@ -392,6 +393,35 @@ impl<R: io::Read + Send> Collection<R> {
         )
     }
 
+    pub fn process_parallel_range<T, B>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+        range: B,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
+        B: RangeBounds<usize>,
+    {
+        self.warn_if_mismatch(CollectionType::Single);
+        let (start, limit) = range_to_offset_limit(range);
+        self.handle_single_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            |reader, proc, threads| {
+                process_parallel_generic_range(
+                    SingleReader::new(reader),
+                    proc,
+                    threads,
+                    start,
+                    limit,
+                )
+            },
+        )
+    }
+
     pub fn process_parallel_paired<T>(
         self,
         processor: &mut T,
@@ -415,6 +445,38 @@ impl<R: io::Read + Send> Collection<R> {
         )
     }
 
+    pub fn process_parallel_paired_range<T, B>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+        range: B,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+        B: RangeBounds<usize>,
+    {
+        self.warn_if_mismatch(CollectionType::Paired);
+        let (start, limit) = range_to_offset_limit(range);
+        self.handle_grouped_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            2,
+            |mut readers, proc, threads| {
+                let r1 = readers.remove(0);
+                let r2 = readers.remove(0);
+                process_parallel_generic_range(
+                    PairedReader::new(r1, r2),
+                    proc,
+                    threads,
+                    start,
+                    limit,
+                )
+            },
+        )
+    }
+
     pub fn process_parallel_interleaved<T>(
         self,
         processor: &mut T,
@@ -431,6 +493,35 @@ impl<R: io::Read + Send> Collection<R> {
             threads_per_reader,
             |reader, proc, threads| {
                 process_parallel_generic(InterleavedPairedReader::new(reader), proc, threads)
+            },
+        )
+    }
+
+    pub fn process_parallel_interleaved_range<T, B>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+        range: B,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+        B: RangeBounds<usize>,
+    {
+        self.warn_if_mismatch(CollectionType::Interleaved);
+        let (start, limit) = range_to_offset_limit(range);
+        self.handle_single_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            |reader, proc, threads| {
+                process_parallel_generic_range(
+                    InterleavedPairedReader::new(reader),
+                    proc,
+                    threads,
+                    start,
+                    limit,
+                )
             },
         )
     }
@@ -457,6 +548,37 @@ impl<R: io::Read + Send> Collection<R> {
         )
     }
 
+    pub fn process_parallel_multi_range<T, B>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+        range: B,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+        B: RangeBounds<usize>,
+        Self: Sized,
+    {
+        let arity = self.get_arity_for_multi();
+        let (start, limit) = range_to_offset_limit(range);
+        self.handle_grouped_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            arity,
+            |readers, proc, threads| {
+                process_parallel_generic_range(
+                    MultiReader::new(readers),
+                    proc,
+                    threads,
+                    start,
+                    limit,
+                )
+            },
+        )
+    }
+
     pub fn process_parallel_multi_interleaved<T>(
         self,
         processor: &mut T,
@@ -473,6 +595,35 @@ impl<R: io::Read + Send> Collection<R> {
             threads_per_reader,
             move |reader, proc, threads| {
                 process_parallel_generic(InterleavedMultiReader::new(reader, arity), proc, threads)
+            },
+        )
+    }
+
+    pub fn process_parallel_multi_interleaved_range<T, B>(
+        self,
+        processor: &mut T,
+        total_threads: usize,
+        threads_per_reader: Option<usize>,
+        range: B,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+        B: RangeBounds<usize>,
+    {
+        let arity = self.get_arity_for_interleaved_multi();
+        let (start, limit) = range_to_offset_limit(range);
+        self.handle_single_readers(
+            processor,
+            total_threads,
+            threads_per_reader,
+            move |reader, proc, threads| {
+                process_parallel_generic_range(
+                    InterleavedMultiReader::new(reader, arity),
+                    proc,
+                    threads,
+                    start,
+                    limit,
+                )
             },
         )
     }
