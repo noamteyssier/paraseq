@@ -5,6 +5,8 @@ use crate::fastx::GenericReader;
 use crate::parallel::processor::GenericProcessor;
 use crate::parallel::{error::Result, ProcessError};
 use crate::Record;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 use super::{
@@ -23,33 +25,83 @@ pub(crate) trait MTGenericReader: Send + Sync {
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>>;
+    fn n_records(record_set: &Self::RecordSet) -> usize;
     fn set_num_threads(&mut self, _num_threads: usize) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 }
 
-fn process_sequential_generic<S: MTGenericReader, T>(reader: S, processor: &mut T) -> Result<()>
+pub(crate) fn process_parallel_generic<S: MTGenericReader, T>(
+    reader: S,
+    processor: &mut T,
+    num_threads: usize,
+) -> Result<()>
+where
+    T: for<'a> GenericProcessor<S::RefRecord<'a>>,
+{
+    process_parallel_generic_range(reader, processor, num_threads, 0, None)
+}
+
+fn process_sequential_generic_range<S: MTGenericReader, T>(
+    reader: S,
+    processor: &mut T,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<()>
 where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
     let mut record_set = reader.new_record_set();
+    let mut records_seen = 0; // Total records encountered
+    let mut records_processed = 0; // Records actually processed
 
     while reader.fill(&mut record_set).map_err(Into::into)? {
-        let records = S::iter(&record_set).map(|r| r.map_err(Into::into));
+        let batch_size = S::n_records(&record_set);
 
-        // One ? for record parsing errors, and one ? for errors from worker_processor.
+        // Skip entire batch if still before offset
+        if records_seen + batch_size <= offset {
+            records_seen += batch_size;
+            continue;
+        }
+
+        // Check if we've hit the limit
+        if let Some(lim) = limit {
+            if records_processed >= lim {
+                break;
+            }
+        }
+
+        // Calculate slice of this batch to process
+        let skip_in_batch = offset.saturating_sub(records_seen);
+        let remaining_quota = limit.map(|lim| lim - records_processed);
+        let take_count = match remaining_quota {
+            Some(quota) => (batch_size - skip_in_batch).min(quota),
+            None => batch_size - skip_in_batch,
+        };
+
+        records_seen += batch_size;
+
+        // Process only the relevant slice
+        let records = S::iter(&record_set)
+            .skip(skip_in_batch)
+            .take(take_count)
+            .map(|r| r.map_err(Into::into));
+
         records.process_results(|records| processor.process_record_batch(records))??;
 
+        records_processed += take_count;
         processor.on_batch_complete()?;
     }
     processor.on_thread_complete()?;
     Ok(())
 }
 
-pub(crate) fn process_parallel_generic<S: MTGenericReader, T>(
+pub(crate) fn process_parallel_generic_range<S: MTGenericReader, T>(
     mut reader: S,
     processor: &mut T,
     mut num_threads: usize,
+    offset: usize,
+    limit: Option<usize>,
 ) -> Result<()>
 where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
@@ -58,37 +110,75 @@ where
         num_threads = num_cpus::get();
     }
     if num_threads == 1 {
-        return process_sequential_generic(reader, processor);
+        return process_sequential_generic_range(reader, processor, offset, limit);
     }
 
     reader.set_num_threads(num_threads).map_err(Into::into)?;
 
+    let records_seen = Arc::new(AtomicUsize::default());
+    let records_processed = Arc::new(AtomicUsize::default());
+
     thread::scope(|scope| -> Result<()> {
         let reader = &reader;
 
-        // Spawn worker threads
         let mut handles = Vec::new();
         for thread_id in 0..num_threads {
             let mut worker_processor = processor.clone();
             let mut record_set = reader.new_record_set();
+            let records_seen = records_seen.clone();
+            let records_processed = records_processed.clone();
 
             let handle = scope.spawn(move || {
                 worker_processor.set_thread_id(thread_id);
 
                 loop {
-                    let s1 = reader.fill(&mut record_set);
+                    // Check limit before grabbing batch
+                    if let Some(lim) = limit {
+                        if records_processed.load(Ordering::Relaxed) >= lim {
+                            break;
+                        }
+                    }
 
-                    if !s1.map_err(Into::into)? {
+                    // Fill the batch
+                    if !reader.fill(&mut record_set).map_err(Into::into)? {
+                        break; // EOF
+                    }
+
+                    let batch_size = S::n_records(&record_set);
+
+                    // Atomically claim our position in the stream
+                    let batch_start = records_seen.fetch_add(batch_size, Ordering::SeqCst);
+                    let batch_end = batch_start + batch_size;
+
+                    // Determine overlap with target range [offset, offset+limit)
+                    let range_end = limit.map(|lim| offset + lim).unwrap_or(usize::MAX);
+
+                    if batch_end <= offset {
+                        // Entire batch before offset - skip it
+                        continue;
+                    }
+
+                    if batch_start >= range_end {
+                        // Entire batch after limit - done
                         break;
                     }
 
-                    let records = S::iter(&record_set).map(|r| r.map_err(Into::into));
+                    // Calculate slice of this batch within range
+                    let skip_in_batch = offset.saturating_sub(batch_start);
+                    let take_count =
+                        (batch_size - skip_in_batch).min(range_end - batch_start - skip_in_batch);
 
-                    // One ? for record parsing errors, and one ? for errors from worker_processor.
+                    // Process the slice
+                    let records = S::iter(&record_set)
+                        .skip(skip_in_batch)
+                        .take(take_count)
+                        .map(|r| r.map_err(Into::into));
+
                     records.process_results(|records| {
                         worker_processor.process_record_batch(records)
                     })??;
 
+                    records_processed.fetch_add(take_count, Ordering::Relaxed);
                     worker_processor.on_batch_complete()?;
                 }
                 worker_processor.on_thread_complete()?;
@@ -98,7 +188,7 @@ where
             handles.push(handle);
         }
 
-        // Wait for worker threads
+        // Wait for workers
         for handle in handles {
             match handle.join() {
                 Ok(Ok(())) => (),
@@ -117,6 +207,15 @@ pub trait ParallelReader {
     type Rf<'a>: Record;
 
     fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
+    where
+        T: for<'a> ParallelProcessor<Self::Rf<'a>>;
+
+    fn process_parallel_range<T>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+        range: impl std::ops::RangeBounds<usize>,
+    ) -> Result<()>
     where
         T: for<'a> ParallelProcessor<Self::Rf<'a>>;
 
@@ -165,6 +264,38 @@ where
         T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
     {
         process_parallel_generic(SingleReader::new(self), processor, num_threads)
+    }
+
+    fn process_parallel_range<T>(
+        self,
+        processor: &mut T,
+        num_threads: usize,
+        range: impl std::ops::RangeBounds<usize>,
+    ) -> Result<()>
+    where
+        T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
+    {
+        use std::ops::Bound;
+
+        let start = match range.start_bound() {
+            Bound::Included(&n) => n,
+            Bound::Excluded(&n) => n + 1,
+            Bound::Unbounded => 0,
+        };
+
+        let limit = match range.end_bound() {
+            Bound::Included(&n) => Some(n + 1 - start),
+            Bound::Excluded(&n) => Some(n - start),
+            Bound::Unbounded => None,
+        };
+
+        process_parallel_generic_range(
+            SingleReader::new(self),
+            processor,
+            num_threads,
+            start,
+            limit,
+        )
     }
 
     fn process_parallel_interleaved<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
@@ -250,6 +381,10 @@ where
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         R::iter(record_set).map(|r| Ok(r?))
+    }
+
+    fn n_records(record_set: &Self::RecordSet) -> usize {
+        R::iter(record_set).len()
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
@@ -375,5 +510,95 @@ mod tests {
         reader.process_parallel(&mut processor, 4).unwrap();
 
         assert_eq!(processor.count(), N_RECORDS);
+    }
+
+    #[test]
+    fn test_range_basic_sequential() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 1, 10..20).unwrap();
+
+        assert_eq!(processor.count(), 10);
+    }
+
+    #[test]
+    fn test_range_basic_parallel() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 4, 10..20).unwrap();
+
+        assert_eq!(processor.count(), 10);
+    }
+
+    #[test]
+    fn test_range_from_start() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 4, 0..50).unwrap();
+
+        assert_eq!(processor.count(), 50);
+    }
+
+    #[test]
+    fn test_range_to_end() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 4, 450..).unwrap();
+
+        assert_eq!(processor.count(), 50);
+    }
+
+    #[test]
+    fn test_range_beyond_eof() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 4, 400..1000).unwrap();
+
+        assert_eq!(processor.count(), 100);
+    }
+
+    #[test]
+    fn test_range_empty() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 4, 100..100).unwrap();
+
+        assert_eq!(processor.count(), 0);
+    }
+
+    #[test]
+    fn test_range_non_batch_aligned() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 4, 17..83).unwrap();
+
+        assert_eq!(processor.count(), 66);
+    }
+
+    #[test]
+    fn test_range_single_batch() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 4, 15..22).unwrap();
+
+        assert_eq!(processor.count(), 7);
+    }
+
+    #[test]
+    fn test_range_inclusive() {
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = CountingProcessor::default();
+
+        reader.process_parallel_range(&mut processor, 4, 10..=19).unwrap();
+
+        assert_eq!(processor.count(), 10);
     }
 }
