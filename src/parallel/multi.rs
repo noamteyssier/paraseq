@@ -72,7 +72,11 @@ where
     }
 
     fn n_records(record_set: &Self::RecordSet) -> usize {
-        record_set.first().map(R::iter).map(|it| it.len()).unwrap_or(0)
+        record_set
+            .first()
+            .map(R::iter)
+            .map(|it| it.len())
+            .unwrap_or(0)
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {

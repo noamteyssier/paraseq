@@ -1,19 +1,10 @@
 use itertools::Itertools;
-use parking_lot::Mutex;
 
-use crate::fastx::GenericReader;
 use crate::parallel::processor::GenericProcessor;
 use crate::parallel::{error::Result, ProcessError};
-use crate::Record;
-use std::ops::RangeBounds;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-
-use super::{
-    multi::InterleavedMultiReader, multi::MultiReader, paired::InterleavedPairedReader,
-    paired::PairedReader, MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
-};
 
 /// A Sync version of GenericReader, i.e. for types with internal mutexes that can be shared between threads.
 pub(crate) trait MTGenericReader: Send + Sync {
@@ -30,25 +21,6 @@ pub(crate) trait MTGenericReader: Send + Sync {
     fn set_num_threads(&mut self, _num_threads: usize) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
-}
-
-/// Helper to convert RangeBounds to (start, limit)
-fn range_to_offset_limit(range: impl RangeBounds<usize>) -> (usize, Option<usize>) {
-    use std::ops::Bound;
-
-    let start = match range.start_bound() {
-        Bound::Included(&n) => n,
-        Bound::Excluded(&n) => n + 1,
-        Bound::Unbounded => 0,
-    };
-
-    let limit = match range.end_bound() {
-        Bound::Included(&n) => Some(n + 1 - start),
-        Bound::Excluded(&n) => Some(n - start),
-        Bound::Unbounded => None,
-    };
-
-    (start, limit)
 }
 
 pub(crate) fn process_parallel_generic<S: MTGenericReader, T>(
@@ -223,306 +195,6 @@ where
     Ok(())
 }
 
-pub trait ParallelReader {
-    type Rf<'a>: Record;
-
-    fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
-    where
-        T: for<'a> ParallelProcessor<Self::Rf<'a>>;
-
-    fn process_parallel_range<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> ParallelProcessor<Self::Rf<'a>>;
-
-    fn process_parallel_paired<T>(
-        self,
-        r2: Self,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: for<'a> PairedParallelProcessor<Self::Rf<'a>>;
-
-    fn process_parallel_paired_range<T>(
-        self,
-        r2: Self,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> PairedParallelProcessor<Self::Rf<'a>>;
-
-    fn process_parallel_interleaved<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
-    where
-        T: for<'a> PairedParallelProcessor<Self::Rf<'a>>;
-
-    fn process_parallel_interleaved_range<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> PairedParallelProcessor<Self::Rf<'a>>;
-
-    fn process_parallel_multi<T>(
-        self,
-        rest: Vec<Self>,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: for<'a> MultiParallelProcessor<Self::Rf<'a>>,
-        Self: Sized;
-
-    fn process_parallel_multi_range<T>(
-        self,
-        rest: Vec<Self>,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> MultiParallelProcessor<Self::Rf<'a>>,
-        Self: Sized;
-
-    fn process_parallel_multi_interleaved<T>(
-        self,
-        arity: usize,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: for<'a> MultiParallelProcessor<Self::Rf<'a>>;
-
-    fn process_parallel_multi_interleaved_range<T>(
-        self,
-        arity: usize,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> MultiParallelProcessor<Self::Rf<'a>>;
-}
-
-impl<S: GenericReader> ParallelReader for S
-where
-    for<'a> <S as GenericReader>::RefRecord<'a>: Record,
-    ProcessError: From<S::Error>,
-{
-    type Rf<'a> = S::RefRecord<'a>;
-
-    fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
-    where
-        T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
-    {
-        process_parallel_generic(SingleReader::new(self), processor, num_threads)
-    }
-
-    fn process_parallel_range<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
-    {
-        let (start, limit) = range_to_offset_limit(range);
-        process_parallel_generic_range(
-            SingleReader::new(self),
-            processor,
-            num_threads,
-            start,
-            limit,
-        )
-    }
-
-    fn process_parallel_interleaved<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
-    where
-        T: for<'a> PairedParallelProcessor<Self::Rf<'a>>,
-    {
-        process_parallel_generic(InterleavedPairedReader::new(self), processor, num_threads)
-    }
-
-    fn process_parallel_interleaved_range<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> PairedParallelProcessor<Self::Rf<'a>>,
-    {
-        let (start, limit) = range_to_offset_limit(range);
-        process_parallel_generic_range(
-            InterleavedPairedReader::new(self),
-            processor,
-            num_threads,
-            start,
-            limit,
-        )
-    }
-
-    fn process_parallel_paired<T>(
-        self,
-        r2: Self,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: for<'a> PairedParallelProcessor<Self::Rf<'a>>,
-    {
-        process_parallel_generic(PairedReader::new(self, r2), processor, num_threads)
-    }
-
-    fn process_parallel_paired_range<T>(
-        self,
-        r2: Self,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> PairedParallelProcessor<Self::Rf<'a>>,
-    {
-        let (start, limit) = range_to_offset_limit(range);
-        process_parallel_generic_range(
-            PairedReader::new(self, r2),
-            processor,
-            num_threads,
-            start,
-            limit,
-        )
-    }
-
-    fn process_parallel_multi<T>(
-        self,
-        mut rest: Vec<Self>,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: for<'a> MultiParallelProcessor<Self::Rf<'a>>,
-        Self: Sized,
-    {
-        rest.insert(0, self);
-        process_parallel_generic(MultiReader::new(rest), processor, num_threads)
-    }
-
-    fn process_parallel_multi_range<T>(
-        self,
-        mut rest: Vec<Self>,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> MultiParallelProcessor<Self::Rf<'a>>,
-        Self: Sized,
-    {
-        rest.insert(0, self);
-        let (start, limit) = range_to_offset_limit(range);
-        process_parallel_generic_range(
-            MultiReader::new(rest),
-            processor,
-            num_threads,
-            start,
-            limit,
-        )
-    }
-
-    fn process_parallel_multi_interleaved<T>(
-        self,
-        arity: usize,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> Result<()>
-    where
-        T: for<'a> MultiParallelProcessor<Self::Rf<'a>>,
-    {
-        process_parallel_generic(
-            InterleavedMultiReader::new(self, arity),
-            processor,
-            num_threads,
-        )
-    }
-
-    fn process_parallel_multi_interleaved_range<T>(
-        self,
-        arity: usize,
-        processor: &mut T,
-        num_threads: usize,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> Result<()>
-    where
-        T: for<'a> MultiParallelProcessor<Self::Rf<'a>>,
-    {
-        let (start, limit) = range_to_offset_limit(range);
-        process_parallel_generic_range(
-            InterleavedMultiReader::new(self, arity),
-            processor,
-            num_threads,
-            start,
-            limit,
-        )
-    }
-}
-
-pub(crate) struct SingleReader<R: GenericReader> {
-    reader: Mutex<R>,
-}
-
-impl<R: GenericReader> SingleReader<R> {
-    pub fn new(reader1: R) -> Self {
-        SingleReader {
-            reader: Mutex::new(reader1),
-        }
-    }
-}
-
-impl<R: GenericReader> MTGenericReader for SingleReader<R>
-where
-    ProcessError: From<R::Error>,
-{
-    type RecordSet = R::RecordSet;
-    type Error = ProcessError;
-    type RefRecord<'a> = R::RefRecord<'a>;
-
-    fn new_record_set(&self) -> Self::RecordSet {
-        self.reader.lock().new_record_set()
-    }
-
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        let mut r1 = self.reader.lock();
-        Ok(R::fill(&mut r1, record_set)?)
-    }
-
-    fn iter(
-        record_set: &Self::RecordSet,
-    ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
-        R::iter(record_set).map(|r| Ok(r?))
-    }
-
-    fn n_records(record_set: &Self::RecordSet) -> usize {
-        R::iter(record_set).len()
-    }
-
-    fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
-        self.reader
-            .lock()
-            .set_threads(num_threads)
-            .map_err(Into::into)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -530,8 +202,10 @@ mod tests {
     use std::sync::Arc;
 
     use crate::fastq;
-    use crate::parallel::single::ParallelReader;
-    use crate::parallel::{ParallelProcessor, ProcessError};
+    use crate::parallel::{
+        MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor, ParallelReader,
+        ProcessError,
+    };
     use crate::Record;
 
     fn make_fastq(n: usize) -> Vec<u8> {
@@ -642,90 +316,117 @@ mod tests {
 
     #[test]
     fn test_range_basic_sequential() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 1, 10..20).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 1, 10..20)
+            .unwrap();
 
         assert_eq!(processor.count(), 10);
     }
 
     #[test]
     fn test_range_basic_parallel() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 4, 10..20).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 4, 10..20)
+            .unwrap();
 
         assert_eq!(processor.count(), 10);
     }
 
     #[test]
     fn test_range_from_start() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 4, 0..50).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 4, 0..50)
+            .unwrap();
 
         assert_eq!(processor.count(), 50);
     }
 
     #[test]
     fn test_range_to_end() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 4, 450..).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 4, 450..)
+            .unwrap();
 
         assert_eq!(processor.count(), 50);
     }
 
     #[test]
     fn test_range_beyond_eof() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 4, 400..1000).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 4, 400..1000)
+            .unwrap();
 
         assert_eq!(processor.count(), 100);
     }
 
     #[test]
     fn test_range_empty() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 4, 100..100).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 4, 100..100)
+            .unwrap();
 
         assert_eq!(processor.count(), 0);
     }
 
     #[test]
     fn test_range_non_batch_aligned() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 4, 17..83).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 4, 17..83)
+            .unwrap();
 
         assert_eq!(processor.count(), 66);
     }
 
     #[test]
     fn test_range_single_batch() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 4, 15..22).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 4, 15..22)
+            .unwrap();
 
         assert_eq!(processor.count(), 7);
     }
 
     #[test]
     fn test_range_inclusive() {
-        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = CountingProcessor::default();
 
-        reader.process_parallel_range(&mut processor, 4, 10..=19).unwrap();
+        reader
+            .process_parallel_range(&mut processor, 4, 10..=19)
+            .unwrap();
 
         assert_eq!(processor.count(), 10);
     }
@@ -743,7 +444,7 @@ mod tests {
         }
     }
 
-    impl<Rf: Record> super::PairedParallelProcessor<Rf> for PairedCountingProcessor {
+    impl<Rf: Record> PairedParallelProcessor<Rf> for PairedCountingProcessor {
         fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), ProcessError> {
             self.local_count += 1;
             Ok(())
@@ -759,22 +460,28 @@ mod tests {
 
     #[test]
     fn test_range_paired_basic() {
-        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
-        let r2 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r1 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r2 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = PairedCountingProcessor::default();
 
-        r1.process_parallel_paired_range(r2, &mut processor, 4, 10..30).unwrap();
+        r1.process_parallel_paired_range(r2, &mut processor, 4, 10..30)
+            .unwrap();
 
         assert_eq!(processor.count(), 20);
     }
 
     #[test]
     fn test_range_paired_sequential() {
-        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
-        let r2 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r1 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r2 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = PairedCountingProcessor::default();
 
-        r1.process_parallel_paired_range(r2, &mut processor, 1, 5..15).unwrap();
+        r1.process_parallel_paired_range(r2, &mut processor, 1, 5..15)
+            .unwrap();
 
         assert_eq!(processor.count(), 10);
     }
@@ -785,7 +492,9 @@ mod tests {
         let reader = fastq::Reader::with_batch_size(Cursor::new(data), BATCH_SIZE).unwrap();
         let mut processor = PairedCountingProcessor::default();
 
-        reader.process_parallel_interleaved_range(&mut processor, 4, 10..30).unwrap();
+        reader
+            .process_parallel_interleaved_range(&mut processor, 4, 10..30)
+            .unwrap();
 
         assert_eq!(processor.count(), 20); // 20 pairs (40 file records)
     }
@@ -796,7 +505,9 @@ mod tests {
         let reader = fastq::Reader::with_batch_size(Cursor::new(data), BATCH_SIZE).unwrap();
         let mut processor = PairedCountingProcessor::default();
 
-        reader.process_parallel_interleaved_range(&mut processor, 4, 0..20).unwrap();
+        reader
+            .process_parallel_interleaved_range(&mut processor, 4, 0..20)
+            .unwrap();
 
         assert_eq!(processor.count(), 20); // 20 pairs (40 file records)
     }
@@ -814,7 +525,7 @@ mod tests {
         }
     }
 
-    impl<Rf: Record> super::MultiParallelProcessor<Rf> for MultiCountingProcessor {
+    impl<Rf: Record> MultiParallelProcessor<Rf> for MultiCountingProcessor {
         fn process_multi_record(&mut self, _records: &[Rf]) -> Result<(), ProcessError> {
             self.local_count += 1;
             Ok(())
@@ -830,12 +541,16 @@ mod tests {
 
     #[test]
     fn test_range_multi_basic() {
-        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
-        let r2 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
-        let r3 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r1 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r2 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r3 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut processor = MultiCountingProcessor::default();
 
-        r1.process_parallel_multi_range(vec![r2, r3], &mut processor, 4, 10..30).unwrap();
+        r1.process_parallel_multi_range(vec![r2, r3], &mut processor, 4, 10..30)
+            .unwrap();
 
         assert_eq!(processor.count(), 20);
     }
@@ -847,7 +562,9 @@ mod tests {
         let reader = fastq::Reader::with_batch_size(Cursor::new(data), BATCH_SIZE).unwrap();
         let mut processor = MultiCountingProcessor::default();
 
-        reader.process_parallel_multi_interleaved_range(5, &mut processor, 4, 10..30).unwrap();
+        reader
+            .process_parallel_multi_interleaved_range(5, &mut processor, 4, 10..30)
+            .unwrap();
 
         assert_eq!(processor.count(), 20); // 20 record-groups
     }
@@ -859,7 +576,9 @@ mod tests {
         let reader = fastq::Reader::with_batch_size(Cursor::new(data), BATCH_SIZE).unwrap();
         let mut processor = MultiCountingProcessor::default();
 
-        reader.process_parallel_multi_interleaved_range(2, &mut processor, 4, 0..20).unwrap();
+        reader
+            .process_parallel_multi_interleaved_range(2, &mut processor, 4, 0..20)
+            .unwrap();
 
         assert_eq!(processor.count(), 20); // 20 record-groups
     }
@@ -871,36 +590,51 @@ mod tests {
         // even though they read different numbers of file records
 
         // Single: 50 records from file
-        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r1 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut p1 = CountingProcessor::default();
         r1.process_parallel_range(&mut p1, 4, 0..50).unwrap();
         assert_eq!(p1.count(), 50, "single-ended should process 50 records");
 
         // Paired: 50 pairs (50 records from each file = 100 total file records)
-        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
-        let r2 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r1 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r2 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut p2 = PairedCountingProcessor::default();
-        r1.process_parallel_paired_range(r2, &mut p2, 4, 0..50).unwrap();
+        r1.process_parallel_paired_range(r2, &mut p2, 4, 0..50)
+            .unwrap();
         assert_eq!(p2.count(), 50, "paired should process 50 pairs");
 
         // Interleaved: 50 pairs (100 file records)
-        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r1 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut p3 = PairedCountingProcessor::default();
-        r1.process_parallel_interleaved_range(&mut p3, 4, 0..50).unwrap();
+        r1.process_parallel_interleaved_range(&mut p3, 4, 0..50)
+            .unwrap();
         assert_eq!(p3.count(), 50, "interleaved should process 50 pairs");
 
         // Multi (arity 2): 50 record-groups (50 records from each of 2 files = 100 total)
-        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
-        let r2 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r1 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r2 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut p4 = MultiCountingProcessor::default();
-        r1.process_parallel_multi_range(vec![r2], &mut p4, 4, 0..50).unwrap();
+        r1.process_parallel_multi_range(vec![r2], &mut p4, 4, 0..50)
+            .unwrap();
         assert_eq!(p4.count(), 50, "multi should process 50 record-groups");
 
         // Multi-interleaved (arity 5): 50 record-groups (250 file records)
         // BATCH_SIZE=10 divides evenly by arity=5
-        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let r1 =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
         let mut p5 = MultiCountingProcessor::default();
-        r1.process_parallel_multi_interleaved_range(5, &mut p5, 4, 0..50).unwrap();
-        assert_eq!(p5.count(), 50, "multi-interleaved should process 50 record-groups");
+        r1.process_parallel_multi_interleaved_range(5, &mut p5, 4, 0..50)
+            .unwrap();
+        assert_eq!(
+            p5.count(),
+            50,
+            "multi-interleaved should process 50 record-groups"
+        );
     }
 }

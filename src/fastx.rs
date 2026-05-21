@@ -5,12 +5,10 @@ use log::warn;
 
 use crate::parallel::multi::{InterleavedMultiReader, MultiReader};
 use crate::parallel::paired::{InterleavedPairedReader, PairedReader};
+use crate::parallel::reader::SingleReader;
+use crate::parallel::single::process_parallel_generic;
 use crate::ProcessError;
-use crate::{
-    fasta, fastq,
-    parallel::single::{process_parallel_generic, SingleReader},
-    Error, Record,
-};
+use crate::{fasta, fastq, Error, Record};
 
 #[cfg(feature = "niffler")]
 use crate::BoxedReader;
