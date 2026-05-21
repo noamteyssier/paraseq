@@ -69,6 +69,10 @@ where
         either::Either::Right(record_iter)
     }
 
+    fn n_records(record_set: &Self::RecordSet) -> usize {
+        R::iter(&record_set.0).len()
+    }
+
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
         self.reader1.lock().set_threads(num_threads)?;
 
@@ -122,6 +126,11 @@ where
             .tuples()
             .map(|(r1, r2)| std::result::Result::Ok((r1?, r2?)));
         either::Either::Right(tuple_iter)
+    }
+
+    fn n_records(record_set: &Self::RecordSet) -> usize {
+        // Return the number of pairs, not individual records
+        R::iter(record_set).len() / 2
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {

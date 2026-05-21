@@ -71,6 +71,14 @@ where
         either::Either::Right(SmallVecIt { its })
     }
 
+    fn n_records(record_set: &Self::RecordSet) -> usize {
+        record_set
+            .first()
+            .map(R::iter)
+            .map(|it| it.len())
+            .unwrap_or(0)
+    }
+
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
         self.readers
             .iter()
@@ -163,6 +171,11 @@ where
             return either::Either::Left(err_iter);
         }
         either::Either::Right(ChunkedIt { it, arity: *arity })
+    }
+
+    fn n_records((record_set, arity): &Self::RecordSet) -> usize {
+        // Return the number of record-groups, not individual records
+        R::iter(record_set).len() / arity
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
