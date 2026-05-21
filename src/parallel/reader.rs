@@ -308,7 +308,7 @@ where
 }
 
 /// Helper to convert RangeBounds to (start, limit)
-fn range_to_offset_limit(range: impl RangeBounds<usize>) -> (usize, Option<usize>) {
+pub(crate) fn range_to_offset_limit(range: impl RangeBounds<usize>) -> (usize, Option<usize>) {
     use std::ops::Bound;
 
     let start = match range.start_bound() {
