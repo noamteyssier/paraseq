@@ -326,8 +326,8 @@ impl RecordSet {
     /// Update the internal average record size
     fn update_avg_record_size(&mut self, total_bytes: usize) {
         let total_records = self.positions.len();
-        if total_records > 0 {
-            self.avg_record_size = total_bytes / total_records;
+        if let Some(avg) = total_bytes.checked_div(total_records) {
+            self.avg_record_size = avg;
         }
     }
 
