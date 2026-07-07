@@ -210,3 +210,73 @@ impl GenericReader for Reader {
             .map_err(IntoProcessError::into_process_error)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use crate::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
+    use crate::Record;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct CountingProcessor {
+        local_count: usize,
+        global_count: Arc<AtomicUsize>,
+    }
+    impl CountingProcessor {
+        fn count(&self) -> usize {
+            self.global_count.load(Ordering::Relaxed)
+        }
+    }
+    impl<Rf: Record> ParallelProcessor<Rf> for CountingProcessor {
+        fn process_record(&mut self, _record: Rf) -> Result<()> {
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> Result<()> {
+            self.global_count
+                .fetch_add(self.local_count, Ordering::Relaxed);
+            self.local_count = 0;
+            Ok(())
+        }
+    }
+    impl<Rf: Record> PairedParallelProcessor<Rf> for CountingProcessor {
+        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<()> {
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> Result<()> {
+            self.global_count
+                .fetch_add(self.local_count, Ordering::Relaxed);
+            self.local_count = 0;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_read_single() {
+        for ext in ["sam", "bam", "cram"] {
+            let path = format!("./data/sample.{ext}");
+            dbg!(&path);
+            let reader = Reader::from_path(&path).unwrap();
+            let mut proc = CountingProcessor::default();
+            reader.process_parallel(&mut proc, 1).unwrap();
+            assert_eq!(proc.count(), 100);
+        }
+    }
+
+    #[test]
+    fn test_read_paired() {
+        for ext in ["sam", "bam", "cram"] {
+            let path = format!("./data/paired.{ext}");
+            dbg!(&path);
+            let reader = Reader::from_path(&path).unwrap();
+            let mut proc = CountingProcessor::default();
+            reader.process_parallel_interleaved(&mut proc, 1).unwrap();
+            assert_eq!(proc.count(), 100);
+        }
+    }
+}
