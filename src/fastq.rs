@@ -257,10 +257,12 @@ impl<R: io::Read> Reader<R> {
 pub struct RecordSet {
     /// Main buffer for records
     buffer: Vec<u8>,
-    /// Store newlines in buffer
-    newlines: Vec<usize>,
-    /// Track the last byte position we've searched for newlines
-    last_searched_pos: usize,
+    /// Number of newlines seen in the current incomplete record (0..=3)
+    pending_nl: u8,
+    /// Byte offsets (one past '\n') for the pending record's newlines
+    pending_nl_pos: [usize; 3],
+    /// Byte offset where the current record started
+    record_start: usize,
     /// Position tracking for complete records
     positions: Vec<Positions>,
     /// Maximum number of records to store
@@ -279,8 +281,9 @@ impl RecordSet {
     pub fn new(capacity: usize) -> Self {
         Self {
             buffer: Vec::with_capacity(256 * 1024), // 256KB default
-            newlines: Vec::new(),
-            last_searched_pos: 0,
+            pending_nl: 0,
+            pending_nl_pos: [0; 3],
+            record_start: 0,
             positions: Vec::with_capacity(capacity),
             capacity,
             avg_record_size: 1024, // 1KB default
@@ -289,9 +292,9 @@ impl RecordSet {
 
     pub fn clear(&mut self) {
         self.buffer.clear();
-        self.newlines.clear();
         self.positions.clear();
-        self.last_searched_pos = 0;
+        self.pending_nl = 0;
+        self.record_start = 0;
     }
 
     /// Returns the number of records currently in this set.
@@ -304,16 +307,6 @@ impl RecordSet {
         self.positions.truncate(n);
     }
 
-    /// Find all newlines currently in the buffer starting from the last searched position
-    /// and ending at the effective end of the buffer
-    fn find_newlines(&mut self, current_pos: usize) {
-        let search_buffer = &self.buffer[self.last_searched_pos..current_pos];
-        memchr::memchr_iter(b'\n', search_buffer).for_each(|i| {
-            self.newlines.push(i + self.last_searched_pos + 1);
-        });
-        self.last_searched_pos = current_pos;
-    }
-
     /// Update the internal average record size
     fn update_avg_record_size(&mut self, total_bytes: usize) {
         let total_records = self.positions.len();
@@ -322,47 +315,70 @@ impl RecordSet {
         }
     }
 
+    /// Scan bytes `search_from..search_to` in the buffer, building Positions inline.
+    /// Returns true if capacity was reached (caller should stop reading).
+    fn scan_for_records(&mut self, search_from: usize, search_to: usize) -> bool {
+        for nl in memchr::memchr_iter(b'\n', &self.buffer[search_from..search_to]) {
+            let abs = nl + search_from + 1; // one past the '\n'
+            if self.pending_nl < 3 {
+                self.pending_nl_pos[self.pending_nl as usize] = abs;
+                self.pending_nl += 1;
+            } else {
+                self.positions.push(Positions {
+                    start: self.record_start,
+                    seq_start: self.pending_nl_pos[0],
+                    sep_start: self.pending_nl_pos[1],
+                    qual_start: self.pending_nl_pos[2],
+                    qual_end: abs - 1,
+                    end: abs,
+                });
+                self.record_start = abs;
+                self.pending_nl = 0;
+                if self.positions.len() >= self.capacity {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Main function to fill the record set
     ///
     /// Returns true if records were added to the set, false if not
     pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
-        // Clear previous data
         self.clear();
 
-        // First, copy any overflow from previous read
+        // Copy any overflow from the previous read
         if !reader.overflow.is_empty() {
             self.buffer.extend_from_slice(&reader.overflow);
             reader.overflow.clear();
         }
-        self.find_newlines(self.buffer.len()); // Find newlines in overflow
 
-        // Determine the number of putative complete records in the buffer
-        let initial_complete_records = self.newlines.len() / 4;
-
-        // If we already have enough records from overflow, don't read more
-        if initial_complete_records >= self.capacity {
-            return self.process_records(reader);
+        // Scan overflow bytes; may already give us a full batch
+        let overflow_end = self.buffer.len();
+        if overflow_end > 0 && self.scan_for_records(0, overflow_end) {
+            return self.finalize(reader);
         }
 
-        // Calculate how many more records we need, being careful about overflows
-        let records_needed = self.capacity.saturating_sub(initial_complete_records);
+        if self.positions.len() >= self.capacity {
+            return self.finalize(reader);
+        }
+
+        let records_needed = self.capacity.saturating_sub(self.positions.len());
         let target_read_size = self
             .avg_record_size
             .saturating_mul(records_needed)
-            .saturating_add(self.avg_record_size * 2); // padding
+            .saturating_add(self.avg_record_size * 2);
 
-        // Start with current buffer size
         let mut current_pos = self.buffer.len();
         self.buffer.resize(current_pos + target_read_size, 0);
 
-        // Calculate the number of newlines we need to have in the buffer
-        let required_newlines = self.capacity * 4;
+        loop {
+            if reader.eof {
+                break;
+            }
 
-        // Read loop
-        while self.newlines.len() < required_newlines && !reader.eof {
             let remaining_space = self.buffer.len() - current_pos;
-
-            // In case we run out of space, resize the buffer (this rare for equivalently sized records)
             if remaining_space == 0 {
                 let additional = (target_read_size / 10).max(4096);
                 self.buffer.resize(self.buffer.len() + additional, 0);
@@ -374,58 +390,41 @@ impl RecordSet {
                     break;
                 }
                 Ok(n) => {
+                    let prev = current_pos;
                     current_pos += n;
-                    self.find_newlines(current_pos);
+                    if self.scan_for_records(prev, current_pos) {
+                        break;
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e.into()),
             }
         }
 
-        // Truncate to what we actually read
         self.buffer.truncate(current_pos);
-
-        // Process all complete records in the buffer
-        self.process_records(reader)
+        self.finalize(reader)
     }
 
-    // Split out record processing to separate function
-    fn process_records<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
-        // At EOF, check if we have exactly 3 newlines remaining (final record without trailing newline)
-        if reader.eof && self.newlines.len() % 4 == 3 {
-            // If we just have 3 lines (no trailing newline), add a synthetic newline to the buffer
+    fn finalize<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
+        // Handle a final record with no trailing newline at EOF
+        if reader.eof && self.pending_nl == 3 {
             self.buffer.push(b'\n');
-            self.find_newlines(self.buffer.len());
+            let abs = self.buffer.len();
+            self.positions.push(Positions {
+                start: self.record_start,
+                seq_start: self.pending_nl_pos[0],
+                sep_start: self.pending_nl_pos[1],
+                qual_start: self.pending_nl_pos[2],
+                qual_end: abs - 1,
+                end: abs,
+            });
+            self.record_start = abs;
+            self.pending_nl = 0;
         }
-        let available_complete = self.newlines.len() / 4;
-        let records_to_process = available_complete.min(self.capacity);
 
-        if records_to_process > 0 {
-            // Build position entries
-            let mut record_start = 0;
-            let mut last_end = 0;
-
-            // Process complete records with 4 newlines
-            self.newlines
-                .chunks_exact(4)
-                .take(records_to_process)
-                .for_each(|chunk| {
-                    let (seq_start, sep_start, qual_start, end) =
-                        (chunk[0], chunk[1], chunk[2], chunk[3]);
-
-                    self.positions.push(Positions {
-                        start: record_start,
-                        seq_start,
-                        sep_start,
-                        qual_start,
-                        qual_end: end - 1,
-                        end,
-                    });
-                    record_start = end;
-                    last_end = end;
-                });
+        if !self.positions.is_empty() {
+            let last_end = self.record_start;
             self.update_avg_record_size(last_end);
-            // Move remaining partial data to overflow
             reader.overflow.extend_from_slice(&self.buffer[last_end..]);
             self.buffer.truncate(last_end);
         } else if !self.buffer.is_empty() {
@@ -804,7 +803,7 @@ mod tests {
         record_set.clear();
         assert_eq!(record_set.iter().count(), 0);
         assert_eq!(record_set.buffer.len(), 0);
-        assert_eq!(record_set.newlines.len(), 0);
+        assert_eq!(record_set.pending_nl, 0);
     }
 
     #[test]
