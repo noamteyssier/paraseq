@@ -223,4 +223,15 @@ mod tests {
 
         assert_eq!(processor.count(), N_PAIRS);
     }
+
+    #[test]
+    fn test_paired_mismatched_sizes_errors() {
+        let r1 = fastq::Reader::new(Cursor::new(make_fastq(200)));
+        let r2 = fastq::Reader::new(Cursor::new(make_fastq(150)));
+        let mut processor = CountingPairProcessor::default();
+
+        let err = r1.process_parallel_paired(r2, &mut processor, 1).unwrap_err();
+
+        assert!(err.to_string().contains("Incompatible record set sizes"));
+    }
 }

@@ -338,4 +338,30 @@ mod tests {
 
         assert_eq!(processor.count(), N_GROUPS);
     }
+
+    #[test]
+    fn test_multi_mismatched_sizes_errors() {
+        let r1 = fastq::Reader::new(Cursor::new(make_fastq(200)));
+        let r2 = fastq::Reader::new(Cursor::new(make_fastq(150)));
+        let mut processor = CountingMultiProcessor::new(2);
+
+        let err = r1
+            .process_parallel_multi(vec![r2], &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("has fewer records"));
+    }
+
+    #[test]
+    fn test_multi_interleaved_arity_mismatch_errors() {
+        // Not a multiple of the requested arity (3).
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS * 3 + 1)));
+        let mut processor = CountingMultiProcessor::new(3);
+
+        let err = reader
+            .process_parallel_multi_interleaved(3, &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("must be divisible by"));
+    }
 }
