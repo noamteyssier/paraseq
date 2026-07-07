@@ -65,7 +65,7 @@ fn main() -> Result<()> {
         reader.process_parallel(&mut proc, args.threads, args.reader_threads)?;
     }
 
-    let total_reads = proc.total_reads.lock().clone();
+    let total_reads = *proc.total_reads.lock();
     println!("Total reads: {}", total_reads);
 
     Ok(())
