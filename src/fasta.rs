@@ -676,6 +676,19 @@ mod tests {
     }
 
     #[test]
+    fn test_update_batch_size_in_bp() {
+        let mut reader = Reader::new(Cursor::new(make_fasta(50)));
+        reader.update_batch_size_in_bp(100).unwrap();
+
+        let mut num_records = 0;
+        let mut rset = reader.new_record_set();
+        while rset.fill(&mut reader).unwrap() {
+            num_records += rset.iter().map(Result::unwrap).count();
+        }
+        assert_eq!(num_records, 50);
+    }
+
+    #[test]
     fn test_basic_record_parsing() {
         let record = create_test_record("test1", "ACTG");
         let mut reader = Reader::new(Cursor::new(record));
