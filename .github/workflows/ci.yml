@@ -10,7 +10,7 @@ env:
 
 jobs:
   ci:
-    needs: [build, test, url]
+    needs: [build, test, examples, url]
     name: CI
     runs-on: "ubuntu-latest"
     steps:
@@ -40,6 +40,49 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --verbose
+
+  examples:
+    name: Run Examples
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Build examples
+        run: cargo build --examples
+      - name: naive
+        run: cargo run --quiet --example naive -- data/sample.fastq
+      - name: multiline_fasta
+        run: cargo run --quiet --example multiline_fasta
+      - name: reloading
+        run: cargo run --quiet --example reloading -- data/sample.fastq --prefill 3
+      - name: parallel
+        run: cargo run --quiet --example parallel -- data/sample.fastq
+      - name: parallel_closure
+        run: cargo run --quiet --example parallel_closure -- data/sample.fastq
+      - name: paired_parallel
+        run: cargo run --quiet --example paired_parallel -- data/r1.fastq data/r2.fastq
+      - name: interleaved
+        run: cargo run --quiet --example interleaved -- data/interleaved.fastq
+      - name: range_parallel
+        run: cargo run --quiet --example range_parallel -- data/sample.fastq --start 10 --end 30
+      - name: reloading_parallel
+        run: cargo run --quiet --example reloading_parallel -- data/sample.fastq --prefill 3
+      - name: multi_parallel
+        run: cargo run --quiet --example multi_parallel -- data/r1.fastq data/r2.fastq data/r3.fastq
+      - name: multi_interleaved
+        run: cargo run --quiet --example multi_interleaved -- data/r123.fastq --arity 3
+      - name: collection (single)
+        run: cargo run --quiet --example collection -- data/sample.fastq
+      - name: collection (paired)
+        run: cargo run --quiet --example collection -- data/r1.fastq data/r2.fastq --paired
+      - name: fastx
+        run: cargo run --quiet --example fastx -- data/sample.fastq --format fasta > /dev/null
+      - name: read_write
+        run: cargo run --quiet --example read_write -- data/sample.fastq.gz --format fastq > /dev/null
+      - name: htslib
+        run: cargo run --quiet --example htslib -- data/sample.bam --format fastq > /dev/null
+      - name: htslib (paired)
+        run: cargo run --quiet --example htslib -- data/paired.bam --format fastq --paired > /dev/null
 
   url:
     name: Test URL
