@@ -604,6 +604,37 @@ mod tests {
         format!("@{id}\n{seq}\n+{sep}\n{qual}\n")
     }
 
+    fn make_fastq(n: usize) -> String {
+        (0..n)
+            .map(|i| create_test_record(&format!("seq{i}"), "ACTG", "", "IIII"))
+            .collect()
+    }
+
+    #[test]
+    fn test_reload() {
+        const N_RECORDS: usize = 50;
+        const PREFILL: usize = 7;
+
+        let mut reader = Reader::new(Cursor::new(make_fastq(N_RECORDS)));
+        let mut rset = reader.new_record_set_with_size(PREFILL);
+
+        assert!(rset.fill(&mut reader).unwrap());
+        let num_prefill = rset.iter().map(Result::unwrap).count();
+        assert_eq!(num_prefill, PREFILL);
+
+        reader.reload(&mut rset);
+
+        // Reload pushes the prefilled bytes back onto the reader, so a fresh
+        // full drain sees the entire file again (including the prefill).
+        let mut num_after_reload = 0;
+        let mut rset = reader.new_record_set();
+        while rset.fill(&mut reader).unwrap() {
+            num_after_reload += rset.iter().map(Result::unwrap).count();
+        }
+
+        assert_eq!(num_after_reload, N_RECORDS);
+    }
+
     #[test]
     fn test_basic_record_parsing() {
         let record = create_test_record("test1", "ACTG", "", "IIII");
