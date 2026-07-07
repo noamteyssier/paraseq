@@ -297,6 +297,24 @@ mod tests {
         assert_eq!(proc.count(), 100);
     }
 
+    #[test]
+    fn test_from_stdin() {
+        if crate::test_util::is_stdin_child() {
+            let reader = Reader::from_optional_path(None::<&std::path::Path>).unwrap();
+            let mut proc = CountingProcessor::default();
+            reader.process_parallel(&mut proc, 1).unwrap();
+            eprintln!("STDIN_COUNT={}", proc.count());
+            return;
+        }
+
+        let sam_bytes = std::fs::read("./data/sample.sam").unwrap();
+        let output =
+            crate::test_util::run_with_piped_stdin("htslib::tests::test_from_stdin", &sam_bytes);
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("STDIN_COUNT=100"), "stderr: {stderr}");
+    }
+
     fn write_temp_sam(name: &str, body: &str) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);

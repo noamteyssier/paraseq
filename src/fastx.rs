@@ -1243,7 +1243,9 @@ mod testing {
         )
         .unwrap();
         let mut proc = PairProcessor::default();
-        collection.process_parallel_multi(&mut proc, 1, None).unwrap();
+        collection
+            .process_parallel_multi(&mut proc, 1, None)
+            .unwrap();
         assert_eq!(proc.n_pairs(), 100);
     }
 
@@ -1323,6 +1325,28 @@ mod testing {
             reader.process_parallel(&mut proc, 1).unwrap();
             assert_eq!(proc.n_records(), 100);
         }
+    }
+
+    #[test]
+    fn test_from_stdin() {
+        if crate::test_util::is_stdin_child() {
+            let reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let mut proc = Processor::default();
+            reader.process_parallel(&mut proc, 1).unwrap();
+            eprintln!("STDIN_COUNT={}", proc.n_records());
+            return;
+        }
+
+        let stdin_data: String = (0..20)
+            .map(|i| format!("@seq{i}\nACGT\n+\nIIII\n"))
+            .collect();
+        let output = crate::test_util::run_with_piped_stdin(
+            "fastx::testing::test_from_stdin",
+            stdin_data.as_bytes(),
+        );
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("STDIN_COUNT=20"), "stderr: {stderr}");
     }
 
     #[test]

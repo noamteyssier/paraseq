@@ -648,6 +648,29 @@ mod tests {
         assert_eq!(num_records, 50);
     }
 
+    #[cfg(feature = "niffler")]
+    #[test]
+    fn test_from_stdin() {
+        if crate::test_util::is_stdin_child() {
+            let mut reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let mut num_records = 0;
+            let mut rset = reader.new_record_set();
+            while rset.fill(&mut reader).unwrap() {
+                num_records += rset.iter().map(Result::unwrap).count();
+            }
+            eprintln!("STDIN_COUNT={num_records}");
+            return;
+        }
+
+        let output = crate::test_util::run_with_piped_stdin(
+            "fastq::tests::test_from_stdin",
+            make_fastq(20).as_bytes(),
+        );
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("STDIN_COUNT=20"), "stderr: {stderr}");
+    }
+
     #[test]
     fn test_basic_record_parsing() {
         let record = create_test_record("test1", "ACTG", "", "IIII");

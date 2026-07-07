@@ -8,6 +8,9 @@ pub mod parallel;
 pub mod prelude;
 mod record;
 
+#[cfg(test)]
+pub(crate) mod test_util;
+
 #[cfg(feature = "htslib")]
 pub mod htslib;
 
