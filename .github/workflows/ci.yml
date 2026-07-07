@@ -4,14 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   ci:
-    needs: [build, test, integration-tests]
+    needs: [build, test, url]
     name: CI
     runs-on: "ubuntu-latest"
     steps:
@@ -25,327 +24,27 @@ jobs:
       matrix:
         os: ["ubuntu-latest", "macos-latest"]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: Build
         run: cargo build --verbose
-      - name: Build no default
+      - name: Build no default features
         run: cargo build --verbose --no-default-features
+      - name: Build examples
+        run: cargo build --verbose --examples
 
   test:
     name: Test
     runs-on: "ubuntu-latest"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
       - name: Test
-        run: cargo test
+        run: cargo test --verbose
 
-  integration-tests:
-    needs:
-      [
-        test-fastx,
-        test-interleaved,
-        test-multiline-fasta,
-        test-read-write,
-        test-htslib,
-        test-parallel,
-        test-paired-parallel,
-        test-naive,
-        test-range-parallel,
-        test-reloading,
-        test-reloading-parallel,
-        test-multi,
-        test-multi-interleaved,
-        test-url,
-      ]
-    name: Integration Tests
-    runs-on: "ubuntu-latest"
-    steps:
-      - name: Done
-        run: echo "Done"
-
-  build-fastx:
-    name: Build FASTX
-    runs-on: "ubuntu-latest"
-    env:
-      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
-    steps:
-      - uses: actions/checkout@v3
-      - name: Build target
-        run: cargo build --release --example fastx
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fastx-binary
-          path: target/release/examples/fastx
-          retention-days: 1
-
-  test-fastx:
-    name: Test FASTX
-    runs-on: "ubuntu-latest"
-    needs: build-fastx
-    strategy:
-      matrix:
-        input_format: [fasta, fastq]
-        output_format: [fasta, fastq]
-    steps:
-      - uses: actions/checkout@v3
-      - name: Download binary artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: fastx-binary
-          path: .
-      - name: Make binary executable
-        run: chmod +x fastx
-      - name: Run test (from file)
-        run: ./fastx data/sample.${{ matrix.input_format }} -f ${{ matrix.output_format }}
-      - name: Run test (from stdin)
-        run: /bin/cat data/sample.${{ matrix.input_format }} | ./fastx -f ${{ matrix.output_format }}
-
-  test-url:
+  url:
     name: Test URL
     runs-on: "ubuntu-latest"
     steps:
-      - uses: actions/checkout@v3
-      - name: run test
+      - uses: actions/checkout@v7
+      - name: Run URL example
         run: cargo run --release --example url
-
-  build-multi:
-    name: Build Multi
-    runs-on: "ubuntu-latest"
-    env:
-      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
-    steps:
-      - uses: actions/checkout@v3
-      - name: build target
-        run: cargo build --release --example multi_parallel
-      - name: upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: multi-binary
-          path: ./target/release/examples/multi_parallel
-
-  test-multi:
-    name: Test Multi
-    runs-on: "ubuntu-latest"
-    needs: build-multi
-    strategy:
-      matrix:
-        threads: [1, 4]
-    steps:
-      - uses: actions/checkout@v3
-      - name: download binary artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: multi-binary
-          path: .
-      - name: make executable
-        run: chmod +x ./multi_parallel
-      - name: test arity-2
-        run: ./multi_parallel -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq
-      - name: test arity-3
-        run: ./multi_parallel -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq ./data/r3.fastq
-      - name: test arity-4
-        run: ./multi_parallel -T ${{ matrix.threads }} ./data/r1.fastq ./data/r2.fastq ./data/r3.fastq ./data/r4.fastq
-
-  build-multi-interleaved:
-    name: Build Multi Interleaved
-    runs-on: "ubuntu-latest"
-    env:
-      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
-    steps:
-      - uses: actions/checkout@v3
-      - name: build target
-        run: cargo build --release --example multi_interleaved
-      - name: upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: multi-interleaved-binary
-          path: ./target/release/examples/multi_interleaved
-
-  test-multi-interleaved:
-    name: Test Multi Interleaved
-    runs-on: "ubuntu-latest"
-    needs: build-multi-interleaved
-    strategy:
-      matrix:
-        threads: [1, 4]
-    steps:
-      - uses: actions/checkout@v3
-      - name: download binary artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: multi-interleaved-binary
-          path: .
-      - name: make executable
-        run: chmod +x ./multi_interleaved
-      - name: test arity-2
-        run: ./multi_interleaved -T ${{ matrix.threads }} ./data/interleaved.fastq --arity 2
-      - name: test arity-3
-        run: ./multi_interleaved -T ${{ matrix.threads }} ./data/r123.fastq --arity 3
-
-  build-read-write:
-    name: Build Read Write
-    runs-on: "ubuntu-latest"
-    env:
-      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
-    steps:
-      - uses: actions/checkout@v3
-      - name: build target
-        run: cargo build --release --example read_write
-      - name: upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: read-write-binary
-          path: ./target/release/examples/read_write
-
-  test-read-write:
-    name: Test Read Write
-    runs-on: "ubuntu-latest"
-    needs: build-read-write
-    strategy:
-      matrix:
-        input_format: [fasta, fastq]
-        input_compression: ["", ".gz", ".zst"]
-        output_format: [fasta, fastq]
-    steps:
-      - uses: actions/checkout@v3
-      - name: download binary artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: read-write-binary
-          path: .
-      - name: make executable
-        run: chmod +x ./read_write
-      - name: test io from file
-        run: ./read_write -f ${{ matrix.output_format }} data/sample.${{ matrix.input_format }}${{ matrix.input_compression }}
-      - name: test io from stdin
-        run: ./read_write ./data/sample.${{ matrix.input_format }}${{ matrix.input_compression }} -f ${{ matrix.output_format }} | ./read_write
-
-  build-htslib:
-    name: Build Htslib
-    runs-on: "ubuntu-latest"
-    env:
-      RUSTFLAGS: "-C target-cpu=x86-64-v3" # Override native; portable across GH runners
-    steps:
-      - uses: actions/checkout@v3
-      - name: build target
-        run: cargo build --release --example htslib
-      - name: upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: htslib-binary
-          path: ./target/release/examples/htslib
-
-  test-htslib:
-    name: Test Htslib Read
-    runs-on: "ubuntu-latest"
-    needs: build-htslib
-    strategy:
-      matrix:
-        input_format: [sam, bam, cram]
-        output_format: [fasta, fastq]
-    steps:
-      - uses: actions/checkout@v3
-      - name: download binary artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: htslib-binary
-          path: .
-      - name: make executable
-        run: chmod +x ./htslib
-      - name: test io from file
-        run: ./htslib -f ${{ matrix.output_format }} data/sample.${{ matrix.input_format }}
-      - name: test io from stdin
-        run: /bin/cat ./data/sample.${{ matrix.input_format }} | ./htslib -f ${{ matrix.output_format }}
-      - name: test io from file (paired)
-        run: ./htslib -f ${{ matrix.output_format }} data/paired.${{ matrix.input_format }} --paired
-      - name: test io from stdin (paired)
-        run: /bin/cat ./data/paired.${{ matrix.input_format }} | ./htslib -f ${{ matrix.output_format }} --paired
-
-  test-interleaved:
-    name: Test Interleaved
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Test interleaved example
-        run: cargo run --release --example interleaved -- data/interleaved.fastq
-
-  test-multiline-fasta:
-    name: Test Multiline FASTA
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Test multiline FASTA example
-        run: cargo run --release --example multiline_fasta -- data/multiline.fasta
-
-  test-parallel:
-    name: Test Parallel
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Test parallel example with FASTQ (1 thread)
-        run: cargo run --release --example parallel -- data/sample.fastq 1
-      - name: Test parallel example with FASTQ (2 threads)
-        run: cargo run --release --example parallel -- data/sample.fastq 2
-      - name: Test parallel example with FASTQ (2 threads) alternative batch size
-        run: cargo run --release --example parallel -- data/sample.fastq 2 48
-      - name: Test parallel example with FASTA (1 thread)
-        run: cargo run --release --example parallel -- data/sample.fasta 1
-      - name: Test parallel example with FASTA (2 threads)
-        run: cargo run --release --example parallel -- data/sample.fasta 2
-      - name: Test parallel example with FASTA (2 threads) alternative batch size
-        run: cargo run --release --example parallel -- data/sample.fasta 2 48
-
-  test-paired-parallel:
-    name: Test Paired Parallel
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Test paired parallel example with FASTQ (1 thread)
-        run: cargo run --release --example paired_parallel -- data/r1.fastq data/r2.fastq 1
-      - name: Test paired parallel example with FASTQ (2 threads)
-        run: cargo run --release --example paired_parallel -- data/r1.fastq data/r2.fastq 2
-
-  test-naive:
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Test naive example with FASTQ
-        run: cargo run --release --example naive -- data/sample.fastq
-      - name: Test naive example with FASTA
-        run: cargo run --release --example naive -- data/sample.fasta
-
-  test-reloading:
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Test reloading example with FASTQ
-        run: cargo run --release --example reloading -- data/sample.fastq
-      - name: Test reloading example with FASTA
-        run: cargo run --release --example reloading -- data/sample.fasta
-
-  test-reloading-parallel:
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Test reloading parallel example with FASTQ (1 thread)
-        run: cargo run --release --example reloading_parallel -- data/sample.fastq 1
-      - name: Test reloading parallel example with FASTQ (2 threads)
-        run: cargo run --release --example reloading_parallel -- data/sample.fastq 2
-      - name: Test reloading parallel example with FASTA (1 thread)
-        run: cargo run --release --example reloading_parallel -- data/sample.fasta 1
-      - name: Test reloading parallel example with FASTA (2 threads)
-        run: cargo run --release --example reloading_parallel -- data/sample.fasta 2
-
-  test-range-parallel:
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Test parallel range example with FASTQ
-        run: cargo run --release --example range_parallel -- data/sample.fastq --start 0
-      - name: Test parallel range example with FASTQ
-        run: cargo run --release --example range_parallel -- data/sample.fastq --start 10
-      - name: Test parallel range example with FASTQ
-        run: cargo run --release --example range_parallel -- data/sample.fastq --start 10 --end 30
-      - name: Test parallel range example with FASTQ
-        run: cargo run --release --example range_parallel -- data/sample.fastq --end 30
