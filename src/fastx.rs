@@ -1059,4 +1059,119 @@ mod testing {
             }
         }
     }
+
+    #[test]
+    fn test_fastx_reload() {
+        let path = "./data/sample.fastq";
+        let mut reader = Reader::from_path(path).unwrap();
+        let mut rset = reader.new_record_set_with_size(7);
+
+        assert!(rset.fill(&mut reader).unwrap());
+        let num_prefill = rset.iter().map(Result::unwrap).count();
+        assert_eq!(num_prefill, 7);
+
+        reader.reload(&mut rset).unwrap();
+
+        let mut proc = Processor::default();
+        reader.process_parallel(&mut proc, 1).unwrap();
+        assert_eq!(proc.n_records(), 100);
+    }
+
+    #[derive(Clone, Default)]
+    struct WriteProcessor {
+        out_format: FormatKind,
+        local_buf: Vec<u8>,
+        global_buf: Arc<Mutex<Vec<u8>>>,
+    }
+    #[derive(Clone, Copy, Default)]
+    enum FormatKind {
+        #[default]
+        Fasta,
+        Fastq,
+    }
+    impl<Rf: crate::Record> ParallelProcessor<Rf> for WriteProcessor {
+        fn process_record(&mut self, record: Rf) -> crate::parallel::Result<()> {
+            match self.out_format {
+                FormatKind::Fasta => record.write_fasta(&mut self.local_buf)?,
+                FormatKind::Fastq => record.write_fastq(&mut self.local_buf)?,
+            }
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+            self.global_buf.lock().extend_from_slice(&self.local_buf);
+            self.local_buf.clear();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_read_write_roundtrip() {
+        let basename = "./data/sample";
+        for format_ext in FORMAT_EXTENSIONS {
+            for compression_ext in COMPRESSION_EXTENSIONS {
+                for out_format in [FormatKind::Fasta, FormatKind::Fastq] {
+                    let path = format!("{}{}{}", basename, format_ext, compression_ext);
+                    dbg!(&path, out_format as u8);
+
+                    let reader = Reader::from_path(&path).unwrap();
+                    let mut writer = WriteProcessor {
+                        out_format,
+                        ..Default::default()
+                    };
+                    reader.process_parallel(&mut writer, 1).unwrap();
+                    let written = writer.global_buf.lock().clone();
+
+                    let reparsed = Reader::new(std::io::Cursor::new(written)).unwrap();
+                    let mut proc = Processor::default();
+                    reparsed.process_parallel(&mut proc, 1).unwrap();
+                    assert_eq!(proc.n_records(), 100);
+                }
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct PairProcessor {
+        local_count: usize,
+        global_count: Arc<Mutex<usize>>,
+    }
+    impl PairProcessor {
+        fn n_pairs(&self) -> usize {
+            *self.global_count.lock()
+        }
+    }
+    impl<Rf: crate::Record> crate::prelude::PairedParallelProcessor<Rf> for PairProcessor {
+        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> crate::parallel::Result<()> {
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+            *self.global_count.lock() += self.local_count;
+            self.local_count = 0;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_collection_single() {
+        let collection =
+            Collection::from_paths(&["./data/sample.fastq"], CollectionType::Single).unwrap();
+        let mut proc = Processor::default();
+        collection.process_parallel(&mut proc, 1, None).unwrap();
+        assert_eq!(proc.n_records(), 100);
+    }
+
+    #[test]
+    fn test_collection_paired() {
+        let collection = Collection::from_paths(
+            &["./data/r1.fastq", "./data/r2.fastq"],
+            CollectionType::Paired,
+        )
+        .unwrap();
+        let mut proc = PairProcessor::default();
+        collection
+            .process_parallel_paired(&mut proc, 1, None)
+            .unwrap();
+        assert_eq!(proc.n_pairs(), 100);
+    }
 }
