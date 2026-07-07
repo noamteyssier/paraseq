@@ -1151,6 +1151,17 @@ mod testing {
             Ok(())
         }
     }
+    impl<Rf: crate::Record> crate::prelude::MultiParallelProcessor<Rf> for PairProcessor {
+        fn process_multi_record(&mut self, _records: &[Rf]) -> crate::parallel::Result<()> {
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+            *self.global_count.lock() += self.local_count;
+            self.local_count = 0;
+            Ok(())
+        }
+    }
 
     #[test]
     fn test_collection_single() {
@@ -1173,5 +1184,219 @@ mod testing {
             .process_parallel_paired(&mut proc, 1, None)
             .unwrap();
         assert_eq!(proc.n_pairs(), 100);
+    }
+
+    #[test]
+    fn test_collection_range() {
+        let collection =
+            Collection::from_paths(&["./data/sample.fastq"], CollectionType::Single).unwrap();
+        let mut proc = Processor::default();
+        collection
+            .process_parallel_range(&mut proc, 1, None, 10..50)
+            .unwrap();
+        assert_eq!(proc.n_records(), 40);
+    }
+
+    #[test]
+    fn test_collection_paired_range() {
+        let collection = Collection::from_paths(
+            &["./data/r1.fastq", "./data/r2.fastq"],
+            CollectionType::Paired,
+        )
+        .unwrap();
+        let mut proc = PairProcessor::default();
+        collection
+            .process_parallel_paired_range(&mut proc, 1, None, 10..50)
+            .unwrap();
+        assert_eq!(proc.n_pairs(), 40);
+    }
+
+    #[test]
+    fn test_collection_interleaved() {
+        let collection =
+            Collection::from_paths(&["./data/interleaved.fastq"], CollectionType::Interleaved)
+                .unwrap();
+        let mut proc = PairProcessor::default();
+        collection
+            .process_parallel_interleaved(&mut proc, 1, None)
+            .unwrap();
+        assert_eq!(proc.n_pairs(), 100);
+    }
+
+    #[test]
+    fn test_collection_interleaved_range() {
+        let collection =
+            Collection::from_paths(&["./data/interleaved.fastq"], CollectionType::Interleaved)
+                .unwrap();
+        let mut proc = PairProcessor::default();
+        collection
+            .process_parallel_interleaved_range(&mut proc, 1, None, 10..50)
+            .unwrap();
+        assert_eq!(proc.n_pairs(), 40);
+    }
+
+    #[test]
+    fn test_collection_multi() {
+        let collection = Collection::from_paths(
+            &["./data/r1.fastq", "./data/r2.fastq", "./data/r3.fastq"],
+            CollectionType::Multi { arity: 3 },
+        )
+        .unwrap();
+        let mut proc = PairProcessor::default();
+        collection.process_parallel_multi(&mut proc, 1, None).unwrap();
+        assert_eq!(proc.n_pairs(), 100);
+    }
+
+    #[test]
+    fn test_collection_multi_range() {
+        let collection = Collection::from_paths(
+            &["./data/r1.fastq", "./data/r2.fastq", "./data/r3.fastq"],
+            CollectionType::Multi { arity: 3 },
+        )
+        .unwrap();
+        let mut proc = PairProcessor::default();
+        collection
+            .process_parallel_multi_range(&mut proc, 1, None, 10..50)
+            .unwrap();
+        assert_eq!(proc.n_pairs(), 40);
+    }
+
+    #[test]
+    fn test_collection_multi_interleaved() {
+        let collection = Collection::from_paths(
+            &["./data/r123.fastq"],
+            CollectionType::InterleavedMulti { arity: 3 },
+        )
+        .unwrap();
+        let mut proc = PairProcessor::default();
+        collection
+            .process_parallel_multi_interleaved(&mut proc, 1, None)
+            .unwrap();
+        assert_eq!(proc.n_pairs(), 100);
+    }
+
+    #[test]
+    fn test_collection_multi_interleaved_range() {
+        let collection = Collection::from_paths(
+            &["./data/r123.fastq"],
+            CollectionType::InterleavedMulti { arity: 3 },
+        )
+        .unwrap();
+        let mut proc = PairProcessor::default();
+        collection
+            .process_parallel_multi_interleaved_range(&mut proc, 1, None, 10..50)
+            .unwrap();
+        assert_eq!(proc.n_pairs(), 40);
+    }
+
+    #[test]
+    fn test_format() {
+        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        assert_eq!(fasta_reader.format(), Format::Fasta);
+
+        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        assert_eq!(fastq_reader.format(), Format::Fastq);
+    }
+
+    #[test]
+    fn test_into_fasta_reader_and_into_fastq_reader() {
+        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        assert!(fasta_reader.into_fasta_reader().is_ok());
+
+        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        assert!(fasta_reader.into_fastq_reader().is_err());
+
+        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        assert!(fastq_reader.into_fastq_reader().is_ok());
+
+        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        assert!(fastq_reader.into_fasta_reader().is_err());
+    }
+
+    #[test]
+    fn test_update_batch_size_in_bp() {
+        for path in ["./data/sample.fasta", "./data/sample.fastq"] {
+            let mut reader = Reader::from_path(path).unwrap();
+            reader.update_batch_size_in_bp(1000).unwrap();
+
+            let mut proc = Processor::default();
+            reader.process_parallel(&mut proc, 1).unwrap();
+            assert_eq!(proc.n_records(), 100);
+        }
+    }
+
+    #[test]
+    fn test_ref_record_seq_raw() {
+        let mut reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let mut rset = reader.new_record_set();
+        assert!(rset.fill(&mut reader).unwrap());
+        for record in rset.iter() {
+            let record = record.unwrap();
+            assert!(!record.seq_raw().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_collection_empty_errors() {
+        let err = Collection::from_paths(&[] as &[&str], CollectionType::Single)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("Collection size mismatch"));
+    }
+
+    #[test]
+    fn test_collection_paired_arity_mismatch_errors() {
+        let err = Collection::from_paths(
+            &["./data/r1.fastq", "./data/r2.fastq", "./data/r3.fastq"],
+            CollectionType::Paired,
+        )
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("Collection size mismatch"));
+    }
+
+    #[test]
+    fn test_collection_multi_arity_mismatch_errors() {
+        let err = Collection::from_paths(
+            &[
+                "./data/r1.fastq",
+                "./data/r2.fastq",
+                "./data/r3.fastq",
+                "./data/r4.fastq",
+            ],
+            CollectionType::Multi { arity: 3 },
+        )
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("Collection size mismatch"));
+    }
+
+    #[test]
+    fn test_collection_unique_format() {
+        let same_format = Collection::from_paths(
+            &["./data/r1.fastq", "./data/r2.fastq"],
+            CollectionType::Paired,
+        )
+        .unwrap();
+        assert_eq!(same_format.unique_format(), Some(Format::Fastq));
+
+        let mixed_format = Collection::from_paths(
+            &["./data/sample.fasta", "./data/sample.fastq"],
+            CollectionType::Paired,
+        )
+        .unwrap();
+        assert_eq!(mixed_format.unique_format(), None);
+    }
+
+    #[test]
+    fn test_collection_accessors() {
+        let mut collection =
+            Collection::from_paths(&["./data/sample.fastq"], CollectionType::Single).unwrap();
+        assert_eq!(collection.collection_type(), CollectionType::Single);
+        assert_eq!(collection.inner().len(), 1);
+
+        collection.set_record_limit(10);
+        collection.inner_mut().clear();
+        assert!(collection.inner().is_empty());
     }
 }
