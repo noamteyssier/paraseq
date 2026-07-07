@@ -1,5 +1,20 @@
-use anyhow::{bail, Result};
+//! Naive sequential (single-threaded) record counting, using the
+//! format-specific `fasta`/`fastq` readers side by side with the
+//! auto-detecting `fastx` reader.
+//!
+//! ```sh
+//! cargo run --release --example naive -- data/sample.fastq
+//! ```
+
+use anyhow::Result;
+use clap::Parser;
 use paraseq::{fasta, fastq, fastx};
+
+#[derive(Parser)]
+struct Cli {
+    /// Input file path
+    input: String,
+}
 
 fn naive_fastq(path: &str) -> Result<()> {
     let mut reader = fastq::Reader::from_path(path)?;
@@ -50,21 +65,18 @@ fn naive_fastx(path: &str) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let Some(path) = std::env::args().nth(1) else {
-        bail!("Must provide a file path to a FASTA or FASTQ file (compression optional)")
-    };
+    let args = Cli::parse();
 
-    // Specific format test
-    if path.contains(".fastq") | path.contains(".fq") {
-        naive_fastq(&path)?;
-    } else if path.contains(".fasta") | path.contains(".fa") {
-        naive_fasta(&path)?;
+    if args.input.contains(".fastq") || args.input.contains(".fq") {
+        naive_fastq(&args.input)?;
+    } else if args.input.contains(".fasta") || args.input.contains(".fa") {
+        naive_fasta(&args.input)?;
     } else {
-        eprintln!("Unknown file format");
+        eprintln!("Unknown file format for {}", args.input);
     }
 
-    // Arbitrary format test
-    naive_fastx(&path)?;
+    // The auto-detecting reader works regardless of extension.
+    naive_fastx(&args.input)?;
 
     Ok(())
 }

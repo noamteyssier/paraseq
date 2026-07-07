@@ -1,82 +1,35 @@
-use std::fs::File;
-use std::sync::Arc;
+//! Parallel processing of an interleaved paired-end FASTA/FASTQ file.
+//!
+//! ```sh
+//! cargo run --release --example interleaved -- data/interleaved.fastq
+//! ```
 
-use paraseq::{fasta, fastq, prelude::*, ProcessError};
-use parking_lot::Mutex;
+#[path = "common/mod.rs"]
+#[allow(dead_code)]
+mod common;
 
-#[derive(Default, Clone)]
-pub struct SeqSum {
-    /// Thread local sum of bytes in the sequence
-    pub byte_sum: u64,
-    /// Thread local number of record pairs
-    pub num_pairs: u64,
+use anyhow::Result;
+use clap::Parser;
+use common::SeqSum;
+use paraseq::{fastx, prelude::*};
 
-    /// Global sum of bytes in the sequence
-    pub global_byte_sum: Arc<Mutex<u64>>,
-    /// Global number of record pairs
-    pub global_num_pairs: Arc<Mutex<u64>>,
-}
-impl SeqSum {
-    #[must_use]
-    pub fn get_num_pairs(&self) -> u64 {
-        *self.global_num_pairs.lock()
-    }
-    #[must_use]
-    pub fn get_byte_sum(&self) -> u64 {
-        *self.global_byte_sum.lock()
-    }
-}
-impl<Rf: Record> PairedParallelProcessor<Rf> for SeqSum {
-    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> Result<(), ProcessError> {
-        for _ in 0..100 {
-            // Simulate some work
-            record1
-                .seq()
-                .iter()
-                .for_each(|b| self.byte_sum += u64::from(*b));
-            record2
-                .seq()
-                .iter()
-                .for_each(|b| self.byte_sum += u64::from(*b));
-        }
-        self.num_pairs += 1;
-        Ok(())
-    }
-    fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
-        *self.global_byte_sum.lock() += self.byte_sum;
-        *self.global_num_pairs.lock() += self.num_pairs;
-        self.byte_sum = 0;
-        self.num_pairs = 0;
-        Ok(())
-    }
+#[derive(Parser)]
+struct Cli {
+    /// Input file path (reads stdin if omitted)
+    input: Option<String>,
+
+    /// Number of threads to use (0 = all available cores)
+    #[clap(short = 'T', long, default_value_t = 0)]
+    threads: usize,
 }
 
-fn main() -> Result<(), ProcessError> {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or("./data/interleaved.fastq".to_string());
-
-    let num_threads = std::env::args()
-        .nth(2)
-        .unwrap_or("1".to_string())
-        .parse::<usize>()
-        .unwrap_or(1);
-
-    let file = File::open(&path)?;
+fn main() -> Result<()> {
+    let args = Cli::parse();
+    let reader = fastx::Reader::from_optional_path(args.input)?;
     let mut processor = SeqSum::default();
 
-    if path.ends_with(".fastq") {
-        let reader = fastq::Reader::new(file);
-        reader.process_parallel_interleaved(&mut processor, num_threads)?;
-    } else if path.ends_with(".fasta") {
-        let reader = fasta::Reader::new(file);
-        reader.process_parallel_interleaved(&mut processor, num_threads)?;
-    } else {
-        panic!("Unknown file format {path}");
-    }
-
-    println!("num_pairs: {}", processor.get_num_pairs());
-    println!("byte_sum: {}", processor.get_byte_sum());
+    reader.process_parallel_interleaved(&mut processor, args.threads)?;
+    processor.report();
 
     Ok(())
 }
