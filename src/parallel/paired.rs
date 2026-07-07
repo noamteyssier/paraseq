@@ -140,3 +140,104 @@ where
             .map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use crate::fastq;
+    use crate::parallel::{PairedParallelProcessor, ParallelReader, ProcessError};
+    use crate::Record;
+
+    fn make_fastq(n: usize) -> Vec<u8> {
+        (0..n)
+            .flat_map(|i| format!("@seq{i}\nACGT\n+\nIIII\n").into_bytes())
+            .collect()
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingPairProcessor {
+        local_count: usize,
+        global_count: Arc<AtomicUsize>,
+    }
+    impl CountingPairProcessor {
+        fn count(&self) -> usize {
+            self.global_count.load(Ordering::Relaxed)
+        }
+    }
+    impl<Rf: Record> PairedParallelProcessor<Rf> for CountingPairProcessor {
+        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), ProcessError> {
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+            self.global_count
+                .fetch_add(self.local_count, Ordering::Relaxed);
+            self.local_count = 0;
+            Ok(())
+        }
+    }
+
+    const N_PAIRS: usize = 200;
+
+    #[test]
+    fn test_paired_sequential() {
+        let r1 = fastq::Reader::new(Cursor::new(make_fastq(N_PAIRS)));
+        let r2 = fastq::Reader::new(Cursor::new(make_fastq(N_PAIRS)));
+        let mut processor = CountingPairProcessor::default();
+
+        r1.process_parallel_paired(r2, &mut processor, 1).unwrap();
+
+        assert_eq!(processor.count(), N_PAIRS);
+    }
+
+    #[test]
+    fn test_paired_parallel() {
+        let r1 = fastq::Reader::new(Cursor::new(make_fastq(N_PAIRS)));
+        let r2 = fastq::Reader::new(Cursor::new(make_fastq(N_PAIRS)));
+        let mut processor = CountingPairProcessor::default();
+
+        r1.process_parallel_paired(r2, &mut processor, 4).unwrap();
+
+        assert_eq!(processor.count(), N_PAIRS);
+    }
+
+    #[test]
+    fn test_interleaved_sequential() {
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N_PAIRS * 2)));
+        let mut processor = CountingPairProcessor::default();
+
+        reader
+            .process_parallel_interleaved(&mut processor, 1)
+            .unwrap();
+
+        assert_eq!(processor.count(), N_PAIRS);
+    }
+
+    #[test]
+    fn test_interleaved_parallel() {
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N_PAIRS * 2)));
+        let mut processor = CountingPairProcessor::default();
+
+        reader
+            .process_parallel_interleaved(&mut processor, 4)
+            .unwrap();
+
+        assert_eq!(processor.count(), N_PAIRS);
+    }
+
+    #[test]
+    fn test_paired_mismatched_sizes_errors() {
+        let r1 = fastq::Reader::new(Cursor::new(make_fastq(200)));
+        let r2 = fastq::Reader::new(Cursor::new(make_fastq(150)));
+        let mut processor = CountingPairProcessor::default();
+
+        let err = r1
+            .process_parallel_paired(r2, &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Incompatible record set sizes"));
+    }
+}

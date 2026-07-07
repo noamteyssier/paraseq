@@ -227,3 +227,82 @@ where
         self(&mut multi_records)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use smallvec::SmallVec;
+
+    use crate::fastq;
+    use crate::parallel::ParallelReader;
+    use crate::MAX_ARITY;
+
+    fn make_fastq(n: usize) -> Vec<u8> {
+        (0..n)
+            .flat_map(|i| format!("@seq{i}\nACGT\n+\nIIII\n").into_bytes())
+            .collect()
+    }
+
+    // These closures rely entirely on the trait defaults (on_batch_complete,
+    // on_thread_complete, set_thread_id) rather than overriding them, unlike
+    // every struct-based processor elsewhere in the test suite.
+    #[test]
+    fn test_closure_parallel_processor_defaults() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_ref = Arc::clone(&count);
+        let mut processor = move |batch: &mut dyn Iterator<Item = fastq::RefRecord>| {
+            for _ in batch {
+                count_ref.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        };
+
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(20)));
+        reader.process_parallel(&mut processor, 1).unwrap();
+
+        assert_eq!(count.load(Ordering::Relaxed), 20);
+    }
+
+    #[test]
+    fn test_closure_paired_parallel_processor_defaults() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_ref = Arc::clone(&count);
+        let mut processor =
+            move |batch: &mut dyn Iterator<Item = (fastq::RefRecord, fastq::RefRecord)>| {
+                for _ in batch {
+                    count_ref.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(())
+            };
+
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(20)));
+        reader
+            .process_parallel_interleaved(&mut processor, 1)
+            .unwrap();
+
+        assert_eq!(count.load(Ordering::Relaxed), 10);
+    }
+
+    #[test]
+    fn test_closure_multi_parallel_processor_defaults() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_ref = Arc::clone(&count);
+        let mut processor =
+            move |batch: &mut dyn Iterator<Item = SmallVec<[fastq::RefRecord; MAX_ARITY]>>| {
+                for _ in batch {
+                    count_ref.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(())
+            };
+
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(20)));
+        reader
+            .process_parallel_multi_interleaved(2, &mut processor, 1)
+            .unwrap();
+
+        assert_eq!(count.load(Ordering::Relaxed), 10);
+    }
+}

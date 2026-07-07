@@ -326,8 +326,8 @@ impl RecordSet {
     /// Update the internal average record size
     fn update_avg_record_size(&mut self, total_bytes: usize) {
         let total_records = self.positions.len();
-        if total_records > 0 {
-            self.avg_record_size = total_bytes / total_records;
+        if let Some(avg) = total_bytes.checked_div(total_records) {
+            self.avg_record_size = avg;
         }
     }
 
@@ -644,6 +644,73 @@ mod tests {
     // Helper function to create a valid FASTA record
     fn create_test_record(id: &str, seq: &str) -> String {
         format!(">{id}\n{seq}\n")
+    }
+
+    fn make_fasta(n: usize) -> String {
+        (0..n)
+            .map(|i| create_test_record(&format!("seq{i}"), "ACTG"))
+            .collect()
+    }
+
+    #[test]
+    fn test_reload() {
+        const N_RECORDS: usize = 50;
+        const PREFILL: usize = 7;
+
+        let mut reader = Reader::new(Cursor::new(make_fasta(N_RECORDS)));
+        let mut rset = reader.new_record_set_with_size(PREFILL);
+
+        assert!(rset.fill(&mut reader).unwrap());
+        let num_prefill = rset.iter().map(Result::unwrap).count();
+        assert_eq!(num_prefill, PREFILL);
+
+        reader.reload(&mut rset);
+
+        // Reload pushes the prefilled bytes back onto the reader, so a fresh
+        // full drain sees the entire file again (including the prefill).
+        let mut num_after_reload = 0;
+        let mut rset = reader.new_record_set();
+        while rset.fill(&mut reader).unwrap() {
+            num_after_reload += rset.iter().map(Result::unwrap).count();
+        }
+
+        assert_eq!(num_after_reload, N_RECORDS);
+    }
+
+    #[test]
+    fn test_update_batch_size_in_bp() {
+        let mut reader = Reader::new(Cursor::new(make_fasta(50)));
+        reader.update_batch_size_in_bp(100).unwrap();
+
+        let mut num_records = 0;
+        let mut rset = reader.new_record_set();
+        while rset.fill(&mut reader).unwrap() {
+            num_records += rset.iter().map(Result::unwrap).count();
+        }
+        assert_eq!(num_records, 50);
+    }
+
+    #[cfg(feature = "niffler")]
+    #[test]
+    fn test_from_stdin() {
+        if crate::test_util::is_stdin_child() {
+            let mut reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let mut num_records = 0;
+            let mut rset = reader.new_record_set();
+            while rset.fill(&mut reader).unwrap() {
+                num_records += rset.iter().map(Result::unwrap).count();
+            }
+            eprintln!("STDIN_COUNT={num_records}");
+            return;
+        }
+
+        let output = crate::test_util::run_with_piped_stdin(
+            "fasta::tests::test_from_stdin",
+            make_fasta(20).as_bytes(),
+        );
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("STDIN_COUNT=20"), "stderr: {stderr}");
     }
 
     #[test]
