@@ -185,7 +185,8 @@ mod tests {
         let mut buf = Vec::new();
         record.write_fastq(&mut buf).unwrap();
 
-        let expected_qual: Vec<u8> = std::iter::repeat_n(DEFAULT_QUALITY_SCORE, seq.len()).collect();
+        let expected_qual: Vec<u8> =
+            std::iter::repeat_n(DEFAULT_QUALITY_SCORE, seq.len()).collect();
         let mut expected = Vec::new();
         expected.extend_from_slice(b"@id1\n");
         expected.extend_from_slice(&seq);

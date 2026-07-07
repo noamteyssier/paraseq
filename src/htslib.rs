@@ -337,7 +337,10 @@ mod tests {
     fn test_check_read_pair_unpaired_record() {
         // r1 is not flagged as paired (flag=4: unmapped only).
         let path1 = write_temp_sam("unpaired_r1", "readA\t4\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n");
-        let path2 = write_temp_sam("unpaired_r2", "readA\t69\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n");
+        let path2 = write_temp_sam(
+            "unpaired_r2",
+            "readA\t69\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n",
+        );
         let r1 = Reader::from_path(&path1).unwrap();
         let r2 = Reader::from_path(&path2).unwrap();
         let mut proc = CountingProcessor::default();

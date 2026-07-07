@@ -647,7 +647,9 @@ mod tests {
     }
 
     fn make_fasta(n: usize) -> String {
-        (0..n).map(|i| create_test_record(&format!("seq{i}"), "ACTG")).collect()
+        (0..n)
+            .map(|i| create_test_record(&format!("seq{i}"), "ACTG"))
+            .collect()
     }
 
     #[test]

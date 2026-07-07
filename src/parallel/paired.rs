@@ -209,7 +209,9 @@ mod tests {
         let reader = fastq::Reader::new(Cursor::new(make_fastq(N_PAIRS * 2)));
         let mut processor = CountingPairProcessor::default();
 
-        reader.process_parallel_interleaved(&mut processor, 1).unwrap();
+        reader
+            .process_parallel_interleaved(&mut processor, 1)
+            .unwrap();
 
         assert_eq!(processor.count(), N_PAIRS);
     }
@@ -219,7 +221,9 @@ mod tests {
         let reader = fastq::Reader::new(Cursor::new(make_fastq(N_PAIRS * 2)));
         let mut processor = CountingPairProcessor::default();
 
-        reader.process_parallel_interleaved(&mut processor, 4).unwrap();
+        reader
+            .process_parallel_interleaved(&mut processor, 4)
+            .unwrap();
 
         assert_eq!(processor.count(), N_PAIRS);
     }
@@ -230,7 +234,9 @@ mod tests {
         let r2 = fastq::Reader::new(Cursor::new(make_fastq(150)));
         let mut processor = CountingPairProcessor::default();
 
-        let err = r1.process_parallel_paired(r2, &mut processor, 1).unwrap_err();
+        let err = r1
+            .process_parallel_paired(r2, &mut processor, 1)
+            .unwrap_err();
 
         assert!(err.to_string().contains("Incompatible record set sizes"));
     }

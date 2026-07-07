@@ -288,7 +288,9 @@ mod tests {
         let first = rdrs.remove(0);
         let mut processor = CountingMultiProcessor::new(2);
 
-        first.process_parallel_multi(rdrs, &mut processor, 1).unwrap();
+        first
+            .process_parallel_multi(rdrs, &mut processor, 1)
+            .unwrap();
 
         assert_eq!(processor.count(), N_GROUPS);
     }
@@ -299,7 +301,9 @@ mod tests {
         let first = rdrs.remove(0);
         let mut processor = CountingMultiProcessor::new(3);
 
-        first.process_parallel_multi(rdrs, &mut processor, 4).unwrap();
+        first
+            .process_parallel_multi(rdrs, &mut processor, 4)
+            .unwrap();
 
         assert_eq!(processor.count(), N_GROUPS);
     }
@@ -310,7 +314,9 @@ mod tests {
         let first = rdrs.remove(0);
         let mut processor = CountingMultiProcessor::new(4);
 
-        first.process_parallel_multi(rdrs, &mut processor, 1).unwrap();
+        first
+            .process_parallel_multi(rdrs, &mut processor, 1)
+            .unwrap();
 
         assert_eq!(processor.count(), N_GROUPS);
     }

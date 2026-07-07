@@ -279,7 +279,9 @@ mod tests {
             };
 
         let reader = fastq::Reader::new(Cursor::new(make_fastq(20)));
-        reader.process_parallel_interleaved(&mut processor, 1).unwrap();
+        reader
+            .process_parallel_interleaved(&mut processor, 1)
+            .unwrap();
 
         assert_eq!(count.load(Ordering::Relaxed), 10);
     }
@@ -288,14 +290,13 @@ mod tests {
     fn test_closure_multi_parallel_processor_defaults() {
         let count = Arc::new(AtomicUsize::new(0));
         let count_ref = Arc::clone(&count);
-        let mut processor = move |batch: &mut dyn Iterator<
-            Item = SmallVec<[fastq::RefRecord; MAX_ARITY]>,
-        >| {
-            for _ in batch {
-                count_ref.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(())
-        };
+        let mut processor =
+            move |batch: &mut dyn Iterator<Item = SmallVec<[fastq::RefRecord; MAX_ARITY]>>| {
+                for _ in batch {
+                    count_ref.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(())
+            };
 
         let reader = fastq::Reader::new(Cursor::new(make_fastq(20)));
         reader
