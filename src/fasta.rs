@@ -371,7 +371,7 @@ impl RecordSet {
 
         // Start with current buffer size
         let mut current_pos = self.buffer.len();
-        self.buffer.resize(current_pos + target_read_size, 0);
+        let mut target_len = current_pos + target_read_size;
 
         // Calculate the number of record starts we need to have in the buffer
         // We need capacity + 1 starts to have capacity complete records
@@ -379,15 +379,14 @@ impl RecordSet {
 
         // Read loop - continue until we have enough complete records or reach EOF
         while self.record_starts.len() < required_record_starts && !reader.eof {
-            let remaining_space = self.buffer.len() - current_pos;
-
-            // In case we run out of space, resize the buffer
-            if remaining_space == 0 {
+            // In case we run out of space, extend the target without zero-initializing it
+            if current_pos >= target_len {
                 let additional = (target_read_size / 10).max(4096);
-                self.buffer.resize(self.buffer.len() + additional, 0);
+                target_len += additional;
             }
 
-            match reader.reader.read(&mut self.buffer[current_pos..]) {
+            match crate::buffer::read_into_uninit(&mut self.buffer, &mut reader.reader, target_len)
+            {
                 Ok(0) => {
                     reader.set_eof();
                     break;
@@ -400,9 +399,6 @@ impl RecordSet {
                 Err(e) => return Err(e.into()),
             }
         }
-
-        // Truncate to what we actually read
-        self.buffer.truncate(current_pos);
 
         // Process all complete records in the buffer
         self.process_records(reader)
