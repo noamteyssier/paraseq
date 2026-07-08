@@ -371,20 +371,20 @@ impl RecordSet {
             .saturating_add(self.avg_record_size * 2);
 
         let mut current_pos = self.buffer.len();
-        self.buffer.resize(current_pos + target_read_size, 0);
+        let mut target_len = current_pos + target_read_size;
 
         loop {
             if reader.eof {
                 break;
             }
 
-            let remaining_space = self.buffer.len() - current_pos;
-            if remaining_space == 0 {
+            if current_pos >= target_len {
                 let additional = (target_read_size / 10).max(4096);
-                self.buffer.resize(self.buffer.len() + additional, 0);
+                target_len += additional;
             }
 
-            match reader.reader.read(&mut self.buffer[current_pos..]) {
+            match crate::buffer::read_into_uninit(&mut self.buffer, &mut reader.reader, target_len)
+            {
                 Ok(0) => {
                     reader.set_eof();
                     break;
@@ -401,7 +401,6 @@ impl RecordSet {
             }
         }
 
-        self.buffer.truncate(current_pos);
         self.finalize(reader)
     }
 

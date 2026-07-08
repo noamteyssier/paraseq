@@ -371,7 +371,7 @@ impl RecordSet {
 
         // Start with current buffer size
         let mut current_pos = self.buffer.len();
-        self.buffer.resize(current_pos + target_read_size, 0);
+        let mut target_len = current_pos + target_read_size;
 
         // Calculate the number of record starts we need to have in the buffer
         // We need capacity + 1 starts to have capacity complete records
@@ -379,15 +379,14 @@ impl RecordSet {
 
         // Read loop - continue until we have enough complete records or reach EOF
         while self.record_starts.len() < required_record_starts && !reader.eof {
-            let remaining_space = self.buffer.len() - current_pos;
-
-            // In case we run out of space, resize the buffer
-            if remaining_space == 0 {
+            // In case we run out of space, extend the target without zero-initializing it
+            if current_pos >= target_len {
                 let additional = (target_read_size / 10).max(4096);
-                self.buffer.resize(self.buffer.len() + additional, 0);
+                target_len += additional;
             }
 
-            match reader.reader.read(&mut self.buffer[current_pos..]) {
+            match crate::buffer::read_into_uninit(&mut self.buffer, &mut reader.reader, target_len)
+            {
                 Ok(0) => {
                     reader.set_eof();
                     break;
@@ -400,9 +399,6 @@ impl RecordSet {
                 Err(e) => return Err(e.into()),
             }
         }
-
-        // Truncate to what we actually read
-        self.buffer.truncate(current_pos);
 
         // Process all complete records in the buffer
         self.process_records(reader)
@@ -564,7 +560,15 @@ impl<'a> RefRecord<'a> {
     }
 
     fn seq_raw(&self) -> &[u8] {
-        &self.buffer[self.positions.seq_start..self.positions.end]
+        // `end` marks the start of the next record (or EOF), so the region
+        // includes the trailing newline that terminates the last sequence
+        // line. That newline is a delimiter, not sequence data, so strip it
+        // -- unless the last record in the file has none (no trailing '\n').
+        let region = &self.buffer[self.positions.seq_start..self.positions.end];
+        match region.last() {
+            Some(b'\n') => &region[..region.len() - 1],
+            _ => region,
+        }
     }
 
     /// Performs the actual buffer access
@@ -839,6 +843,49 @@ mod tests {
 
         assert_eq!(parsed_record.id_str(), "test_multiline");
         assert_eq!(parsed_record.seq_str(), "ACTGTGCAGGCC");
+    }
+
+    #[test]
+    fn test_seq_raw_excludes_trailing_newline() {
+        // `seq_raw()` must not include the newline that terminates the
+        // sequence line -- it's a delimiter, not sequence data.
+        let records = [
+            create_test_record("a", "ACTG"),
+            create_test_record("b", "TGCA"),
+        ]
+        .join("");
+        let mut reader = Reader::new(Cursor::new(records));
+        let mut record_set = RecordSet::new(2);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+        assert_eq!(parsed[0].seq_raw(), b"ACTG");
+        assert_eq!(parsed[1].seq_raw(), b"TGCA");
+    }
+
+    #[test]
+    fn test_seq_raw_last_record_without_trailing_newline() {
+        // The final record in a file with no trailing newline has no
+        // delimiter to strip.
+        let record = ">last\nACTG";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed.seq_raw(), b"ACTG");
+    }
+
+    #[test]
+    fn test_seq_raw_multiline_keeps_embedded_newlines() {
+        let record = ">multi\nACTG\nTGCA\nGGCC\n";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        // Embedded newlines are preserved; only the final delimiter is stripped.
+        assert_eq!(parsed.seq_raw(), b"ACTG\nTGCA\nGGCC");
     }
 
     #[test]
