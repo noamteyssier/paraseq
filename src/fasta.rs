@@ -572,11 +572,23 @@ impl<'a> RefRecord<'a> {
     }
 
     /// Performs the actual buffer access
+    ///
+    /// `right` normally points one byte past the newline that terminates
+    /// this field, so that trailing byte is stripped. If the field instead
+    /// runs straight to EOF with no newline (e.g. a header with no id and
+    /// no trailing newline), `right` points at the exact end of the field
+    /// and there is nothing to strip.
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
+        let end = if right > left && self.buffer[right - 1] == b'\n' {
+            right - 1
+        } else {
+            right
+        };
         unsafe {
-            // SAFETY: We've checked that left and right are within bounds
-            self.buffer.get_unchecked(left..right - 1)
+            // SAFETY: `left <= end <= right <= buffer.len()`, guaranteed by
+            // `validate_record` and the check above.
+            self.buffer.get_unchecked(left..end)
         }
     }
 }
@@ -874,6 +886,35 @@ mod tests {
         assert!(record_set.fill(&mut reader).unwrap());
         let parsed = record_set.iter().next().unwrap().unwrap();
         assert_eq!(parsed.seq_raw(), b"ACTG");
+    }
+
+    #[test]
+    fn test_id_header_without_trailing_newline() {
+        // A header with content but no trailing newline before EOF: `right`
+        // (seq_start) lands past the last id byte rather than past a
+        // newline, so `access_buffer` must not strip a real id byte here.
+        let record = ">last";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed.id(), b"last");
+    }
+
+    #[test]
+    fn test_id_empty_header_without_trailing_newline() {
+        // Degenerate case found by fuzzing: a bare `>` with no id and no
+        // trailing newline. Here `left == right == seq_start`, which used to
+        // underflow in `access_buffer`'s unconditional `right - 1`.
+        let record = ">";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed.id(), b"");
+        assert_eq!(parsed.seq_raw(), b"");
     }
 
     #[test]
