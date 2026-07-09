@@ -1,0 +1,40 @@
+[package]
+name = "paraseq-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.paraseq]
+path = ".."
+
+# Prevent this from interfering with the parent package
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fasta"
+path = "fuzz_targets/fasta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fastq"
+path = "fuzz_targets/fastq.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fastx"
+path = "fuzz_targets/fastx.rs"
+test = false
+doc = false
+bench = false
