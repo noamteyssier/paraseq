@@ -117,3 +117,29 @@ impl From<anyhow::Error> for ProcessError {
         ProcessError::Process(err.into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_pair_display() {
+        assert_eq!(RecordPair::R1.to_string(), "R1");
+        assert_eq!(RecordPair::R2.to_string(), "R2");
+    }
+
+    #[test]
+    fn test_into_process_error() {
+        let io_err = std::io::Error::other("boom");
+        let err = io_err.into_process_error();
+        assert!(err.to_string().contains("boom"));
+    }
+
+    #[cfg(feature = "anyhow")]
+    #[test]
+    fn test_from_anyhow_error() {
+        let anyhow_err = anyhow::anyhow!("anyhow boom");
+        let err: ProcessError = anyhow_err.into();
+        assert!(err.to_string().contains("anyhow boom"));
+    }
+}

@@ -210,3 +210,183 @@ impl GenericReader for Reader {
             .map_err(IntoProcessError::into_process_error)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use crate::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
+    use crate::Record;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct CountingProcessor {
+        local_count: usize,
+        global_count: Arc<AtomicUsize>,
+    }
+    impl CountingProcessor {
+        fn count(&self) -> usize {
+            self.global_count.load(Ordering::Relaxed)
+        }
+    }
+    impl<Rf: Record> ParallelProcessor<Rf> for CountingProcessor {
+        fn process_record(&mut self, _record: Rf) -> Result<()> {
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> Result<()> {
+            self.global_count
+                .fetch_add(self.local_count, Ordering::Relaxed);
+            self.local_count = 0;
+            Ok(())
+        }
+    }
+    impl<Rf: Record> PairedParallelProcessor<Rf> for CountingProcessor {
+        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<()> {
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> Result<()> {
+            self.global_count
+                .fetch_add(self.local_count, Ordering::Relaxed);
+            self.local_count = 0;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_read_single() {
+        for ext in ["sam", "bam", "cram"] {
+            let path = format!("./data/sample.{ext}");
+            dbg!(&path);
+            let reader = Reader::from_path(&path).unwrap();
+            let mut proc = CountingProcessor::default();
+            reader.process_parallel(&mut proc, 1).unwrap();
+            assert_eq!(proc.count(), 100);
+        }
+    }
+
+    #[test]
+    fn test_read_paired() {
+        for ext in ["sam", "bam", "cram"] {
+            let path = format!("./data/paired.{ext}");
+            dbg!(&path);
+            let reader = Reader::from_path(&path).unwrap();
+            let mut proc = CountingProcessor::default();
+            reader.process_parallel_interleaved(&mut proc, 1).unwrap();
+            assert_eq!(proc.count(), 100);
+        }
+    }
+
+    #[test]
+    fn test_from_reader() {
+        let inner = bam::Reader::from_path("./data/sample.sam").unwrap();
+        let reader = Reader::from_reader(inner);
+        let mut proc = CountingProcessor::default();
+        reader.process_parallel(&mut proc, 1).unwrap();
+        assert_eq!(proc.count(), 100);
+    }
+
+    #[test]
+    fn test_from_optional_path_some() {
+        let reader = Reader::from_optional_path(Some("./data/sample.sam")).unwrap();
+        let mut proc = CountingProcessor::default();
+        reader.process_parallel(&mut proc, 1).unwrap();
+        assert_eq!(proc.count(), 100);
+    }
+
+    #[test]
+    fn test_from_stdin() {
+        if crate::test_util::is_stdin_child() {
+            let reader = Reader::from_optional_path(None::<&std::path::Path>).unwrap();
+            let mut proc = CountingProcessor::default();
+            reader.process_parallel(&mut proc, 1).unwrap();
+            eprintln!("STDIN_COUNT={}", proc.count());
+            return;
+        }
+
+        let sam_bytes = std::fs::read("./data/sample.sam").unwrap();
+        let output =
+            crate::test_util::run_with_piped_stdin("htslib::tests::test_from_stdin", &sam_bytes);
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("STDIN_COUNT=100"), "stderr: {stderr}");
+    }
+
+    fn write_temp_sam(name: &str, body: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+        let header = "@HD\tVN:1.6\tSO:unsorted\n";
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "paraseq_htslib_test_{name}_{}_{unique}.sam",
+            std::process::id()
+        ));
+        std::fs::write(&path, format!("{header}{body}")).unwrap();
+        path
+    }
+
+    // `check_read_pair` is only exercised by the two-reader `process_parallel_paired`
+    // path (`PairedReader::iter`) -- the single-reader interleaved path does not
+    // validate pairing at all, so these use one crafted record per file.
+
+    #[test]
+    fn test_check_read_pair_unpaired_record() {
+        // r1 is not flagged as paired (flag=4: unmapped only).
+        let path1 = write_temp_sam("unpaired_r1", "readA\t4\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n");
+        let path2 = write_temp_sam(
+            "unpaired_r2",
+            "readA\t69\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n",
+        );
+        let r1 = Reader::from_path(&path1).unwrap();
+        let r2 = Reader::from_path(&path2).unwrap();
+        let mut proc = CountingProcessor::default();
+        let err = r1.process_parallel_paired(r2, &mut proc, 1).unwrap_err();
+        std::fs::remove_file(&path1).ok();
+        std::fs::remove_file(&path2).ok();
+        assert!(err.to_string().contains("Unpaired record"));
+    }
+
+    #[test]
+    fn test_check_read_pair_different_qnames() {
+        // Both paired and correctly first/second-in-template, but distinct QNAMEs.
+        let path1 = write_temp_sam(
+            "diff_qname_r1",
+            "read1\t77\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n",
+        );
+        let path2 = write_temp_sam(
+            "diff_qname_r2",
+            "read2\t141\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n",
+        );
+        let r1 = Reader::from_path(&path1).unwrap();
+        let r2 = Reader::from_path(&path2).unwrap();
+        let mut proc = CountingProcessor::default();
+        let err = r1.process_parallel_paired(r2, &mut proc, 1).unwrap_err();
+        std::fs::remove_file(&path1).ok();
+        std::fs::remove_file(&path2).ok();
+        assert!(err.to_string().contains("different QNames"));
+    }
+
+    #[test]
+    fn test_check_read_pair_same_template_position() {
+        // Same QNAME, but both flagged as first-in-template (flag bit 64).
+        let path1 = write_temp_sam(
+            "same_template_r1",
+            "readX\t77\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n",
+        );
+        let path2 = write_temp_sam(
+            "same_template_r2",
+            "readX\t77\t*\t0\t0\t*\t*\t0\t0\tACGT\tIIII\n",
+        );
+        let r1 = Reader::from_path(&path1).unwrap();
+        let r2 = Reader::from_path(&path2).unwrap();
+        let mut proc = CountingProcessor::default();
+        let err = r1.process_parallel_paired(r2, &mut proc, 1).unwrap_err();
+        std::fs::remove_file(&path1).ok();
+        std::fs::remove_file(&path2).ok();
+        assert!(err.to_string().contains("same template position"));
+    }
+}

@@ -104,3 +104,96 @@ pub trait Record {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeRecord {
+        id: Vec<u8>,
+        seq: Vec<u8>,
+        qual: Option<Vec<u8>>,
+    }
+    impl Record for FakeRecord {
+        fn id(&self) -> &[u8] {
+            &self.id
+        }
+        fn seq(&self) -> Cow<'_, [u8]> {
+            Cow::Borrowed(&self.seq)
+        }
+        fn seq_raw(&self) -> &[u8] {
+            &self.seq
+        }
+        fn qual(&self) -> Option<&[u8]> {
+            self.qual.as_deref()
+        }
+    }
+
+    #[test]
+    fn test_seq_str_raw() {
+        let record = FakeRecord {
+            id: b"id1".to_vec(),
+            seq: b"ACGT".to_vec(),
+            qual: None,
+        };
+        assert_eq!(record.seq_str_raw(), "ACGT");
+    }
+
+    #[test]
+    fn test_qual_str_absent() {
+        let record = FakeRecord {
+            id: b"id1".to_vec(),
+            seq: b"ACGT".to_vec(),
+            qual: None,
+        };
+        assert_eq!(record.qual_str(), "");
+    }
+
+    #[test]
+    fn test_write_fastq_with_qual() {
+        let record = FakeRecord {
+            id: b"id1".to_vec(),
+            seq: b"ACGT".to_vec(),
+            qual: Some(b"IIII".to_vec()),
+        };
+        let mut buf = Vec::new();
+        record.write_fastq(&mut buf).unwrap();
+        assert_eq!(buf, b"@id1\nACGT\n+\nIIII\n");
+    }
+
+    #[test]
+    fn test_write_fastq_default_qual_short() {
+        let record = FakeRecord {
+            id: b"id1".to_vec(),
+            seq: b"ACGT".to_vec(),
+            qual: None,
+        };
+        let mut buf = Vec::new();
+        record.write_fastq(&mut buf).unwrap();
+        assert_eq!(buf, b"@id1\nACGT\n+\n????\n");
+    }
+
+    #[test]
+    fn test_write_fastq_default_qual_long() {
+        // Longer than NUM_QUALITY_SCORES so the chunked-write branch is exercised.
+        let seq = vec![b'A'; NUM_QUALITY_SCORES * 2 + 10];
+        let record = FakeRecord {
+            id: b"id1".to_vec(),
+            seq: seq.clone(),
+            qual: None,
+        };
+        let mut buf = Vec::new();
+        record.write_fastq(&mut buf).unwrap();
+
+        let expected_qual: Vec<u8> =
+            std::iter::repeat_n(DEFAULT_QUALITY_SCORE, seq.len()).collect();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"@id1\n");
+        expected.extend_from_slice(&seq);
+        expected.extend_from_slice(b"\n+\n");
+        expected.extend_from_slice(&expected_qual);
+        expected.extend_from_slice(b"\n");
+
+        assert_eq!(buf, expected);
+    }
+}

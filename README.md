@@ -44,7 +44,7 @@ The benefit of using `paraseq` is that it makes it easy to distribute paired-end
 
 ### Code Examples
 
-Check out the [`examples`](https://github.com/noamteyssier/paraseq/tree/main/examples) directory for code examples or the [API documentation](https://docs.rs/paraseq) for more information.
+Check out the [`examples`](https://github.com/noamteyssier/paraseq/tree/main/examples) directory for code examples (see [`examples/README.md`](https://github.com/noamteyssier/paraseq/blob/main/examples/README.md) for an index of what each one demonstrates) or the [API documentation](https://docs.rs/paraseq) for more information.
 
 Feel free to also explore [seqpls](https://github.com/noamteyssier/seqpls) a parallel paired-end FASTA/FASTQ sequence grepper to see how `paraseq` can be used in a non-toy example.
 

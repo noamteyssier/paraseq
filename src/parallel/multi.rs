@@ -226,3 +226,148 @@ impl<Item, E: Into<ProcessError>, I: ExactSizeIterator<Item = std::result::Resul
     ExactSizeIterator for ChunkedIt<I>
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use crate::fastq;
+    use crate::parallel::{MultiParallelProcessor, ParallelReader, ProcessError};
+    use crate::Record;
+
+    fn make_fastq(n: usize) -> Vec<u8> {
+        (0..n)
+            .flat_map(|i| format!("@seq{i}\nACGT\n+\nIIII\n").into_bytes())
+            .collect()
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingMultiProcessor {
+        expected_arity: usize,
+        local_count: usize,
+        global_count: Arc<AtomicUsize>,
+    }
+    impl CountingMultiProcessor {
+        fn new(expected_arity: usize) -> Self {
+            Self {
+                expected_arity,
+                ..Default::default()
+            }
+        }
+        fn count(&self) -> usize {
+            self.global_count.load(Ordering::Relaxed)
+        }
+    }
+    impl<Rf: Record> MultiParallelProcessor<Rf> for CountingMultiProcessor {
+        fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), ProcessError> {
+            assert_eq!(records.len(), self.expected_arity);
+            self.local_count += 1;
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+            self.global_count
+                .fetch_add(self.local_count, Ordering::Relaxed);
+            self.local_count = 0;
+            Ok(())
+        }
+    }
+
+    const N_GROUPS: usize = 100;
+
+    fn readers(arity: usize) -> Vec<fastq::Reader<Cursor<Vec<u8>>>> {
+        (0..arity)
+            .map(|_| fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS))))
+            .collect()
+    }
+
+    #[test]
+    fn test_multi_arity_2() {
+        let mut rdrs = readers(2);
+        let first = rdrs.remove(0);
+        let mut processor = CountingMultiProcessor::new(2);
+
+        first
+            .process_parallel_multi(rdrs, &mut processor, 1)
+            .unwrap();
+
+        assert_eq!(processor.count(), N_GROUPS);
+    }
+
+    #[test]
+    fn test_multi_arity_3_parallel() {
+        let mut rdrs = readers(3);
+        let first = rdrs.remove(0);
+        let mut processor = CountingMultiProcessor::new(3);
+
+        first
+            .process_parallel_multi(rdrs, &mut processor, 4)
+            .unwrap();
+
+        assert_eq!(processor.count(), N_GROUPS);
+    }
+
+    #[test]
+    fn test_multi_arity_4() {
+        let mut rdrs = readers(4);
+        let first = rdrs.remove(0);
+        let mut processor = CountingMultiProcessor::new(4);
+
+        first
+            .process_parallel_multi(rdrs, &mut processor, 1)
+            .unwrap();
+
+        assert_eq!(processor.count(), N_GROUPS);
+    }
+
+    #[test]
+    fn test_multi_interleaved_arity_2() {
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS * 2)));
+        let mut processor = CountingMultiProcessor::new(2);
+
+        reader
+            .process_parallel_multi_interleaved(2, &mut processor, 1)
+            .unwrap();
+
+        assert_eq!(processor.count(), N_GROUPS);
+    }
+
+    #[test]
+    fn test_multi_interleaved_arity_3_parallel() {
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS * 3)));
+        let mut processor = CountingMultiProcessor::new(3);
+
+        reader
+            .process_parallel_multi_interleaved(3, &mut processor, 4)
+            .unwrap();
+
+        assert_eq!(processor.count(), N_GROUPS);
+    }
+
+    #[test]
+    fn test_multi_mismatched_sizes_errors() {
+        let r1 = fastq::Reader::new(Cursor::new(make_fastq(200)));
+        let r2 = fastq::Reader::new(Cursor::new(make_fastq(150)));
+        let mut processor = CountingMultiProcessor::new(2);
+
+        let err = r1
+            .process_parallel_multi(vec![r2], &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("has fewer records"));
+    }
+
+    #[test]
+    fn test_multi_interleaved_arity_mismatch_errors() {
+        // Not a multiple of the requested arity (3).
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS * 3 + 1)));
+        let mut processor = CountingMultiProcessor::new(3);
+
+        let err = reader
+            .process_parallel_multi_interleaved(3, &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("must be divisible by"));
+    }
+}

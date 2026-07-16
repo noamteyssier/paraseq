@@ -326,8 +326,8 @@ impl RecordSet {
     /// Update the internal average record size
     fn update_avg_record_size(&mut self, total_bytes: usize) {
         let total_records = self.positions.len();
-        if total_records > 0 {
-            self.avg_record_size = total_bytes / total_records;
+        if let Some(avg) = total_bytes.checked_div(total_records) {
+            self.avg_record_size = avg;
         }
     }
 
@@ -371,7 +371,7 @@ impl RecordSet {
 
         // Start with current buffer size
         let mut current_pos = self.buffer.len();
-        self.buffer.resize(current_pos + target_read_size, 0);
+        let mut target_len = current_pos + target_read_size;
 
         // Calculate the number of record starts we need to have in the buffer
         // We need capacity + 1 starts to have capacity complete records
@@ -379,15 +379,14 @@ impl RecordSet {
 
         // Read loop - continue until we have enough complete records or reach EOF
         while self.record_starts.len() < required_record_starts && !reader.eof {
-            let remaining_space = self.buffer.len() - current_pos;
-
-            // In case we run out of space, resize the buffer
-            if remaining_space == 0 {
+            // In case we run out of space, extend the target without zero-initializing it
+            if current_pos >= target_len {
                 let additional = (target_read_size / 10).max(4096);
-                self.buffer.resize(self.buffer.len() + additional, 0);
+                target_len += additional;
             }
 
-            match reader.reader.read(&mut self.buffer[current_pos..]) {
+            match crate::buffer::read_into_uninit(&mut self.buffer, &mut reader.reader, target_len)
+            {
                 Ok(0) => {
                     reader.set_eof();
                     break;
@@ -400,9 +399,6 @@ impl RecordSet {
                 Err(e) => return Err(e.into()),
             }
         }
-
-        // Truncate to what we actually read
-        self.buffer.truncate(current_pos);
 
         // Process all complete records in the buffer
         self.process_records(reader)
@@ -564,15 +560,35 @@ impl<'a> RefRecord<'a> {
     }
 
     fn seq_raw(&self) -> &[u8] {
-        &self.buffer[self.positions.seq_start..self.positions.end]
+        // `end` marks the start of the next record (or EOF), so the region
+        // includes the trailing newline that terminates the last sequence
+        // line. That newline is a delimiter, not sequence data, so strip it
+        // -- unless the last record in the file has none (no trailing '\n').
+        let region = &self.buffer[self.positions.seq_start..self.positions.end];
+        match region.last() {
+            Some(b'\n') => &region[..region.len() - 1],
+            _ => region,
+        }
     }
 
     /// Performs the actual buffer access
+    ///
+    /// `right` normally points one byte past the newline that terminates
+    /// this field, so that trailing byte is stripped. If the field instead
+    /// runs straight to EOF with no newline (e.g. a header with no id and
+    /// no trailing newline), `right` points at the exact end of the field
+    /// and there is nothing to strip.
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
+        let end = if right > left && self.buffer[right - 1] == b'\n' {
+            right - 1
+        } else {
+            right
+        };
         unsafe {
-            // SAFETY: We've checked that left and right are within bounds
-            self.buffer.get_unchecked(left..right - 1)
+            // SAFETY: `left <= end <= right <= buffer.len()`, guaranteed by
+            // `validate_record` and the check above.
+            self.buffer.get_unchecked(left..end)
         }
     }
 }
@@ -644,6 +660,73 @@ mod tests {
     // Helper function to create a valid FASTA record
     fn create_test_record(id: &str, seq: &str) -> String {
         format!(">{id}\n{seq}\n")
+    }
+
+    fn make_fasta(n: usize) -> String {
+        (0..n)
+            .map(|i| create_test_record(&format!("seq{i}"), "ACTG"))
+            .collect()
+    }
+
+    #[test]
+    fn test_reload() {
+        const N_RECORDS: usize = 50;
+        const PREFILL: usize = 7;
+
+        let mut reader = Reader::new(Cursor::new(make_fasta(N_RECORDS)));
+        let mut rset = reader.new_record_set_with_size(PREFILL);
+
+        assert!(rset.fill(&mut reader).unwrap());
+        let num_prefill = rset.iter().map(Result::unwrap).count();
+        assert_eq!(num_prefill, PREFILL);
+
+        reader.reload(&mut rset);
+
+        // Reload pushes the prefilled bytes back onto the reader, so a fresh
+        // full drain sees the entire file again (including the prefill).
+        let mut num_after_reload = 0;
+        let mut rset = reader.new_record_set();
+        while rset.fill(&mut reader).unwrap() {
+            num_after_reload += rset.iter().map(Result::unwrap).count();
+        }
+
+        assert_eq!(num_after_reload, N_RECORDS);
+    }
+
+    #[test]
+    fn test_update_batch_size_in_bp() {
+        let mut reader = Reader::new(Cursor::new(make_fasta(50)));
+        reader.update_batch_size_in_bp(100).unwrap();
+
+        let mut num_records = 0;
+        let mut rset = reader.new_record_set();
+        while rset.fill(&mut reader).unwrap() {
+            num_records += rset.iter().map(Result::unwrap).count();
+        }
+        assert_eq!(num_records, 50);
+    }
+
+    #[cfg(feature = "niffler")]
+    #[test]
+    fn test_from_stdin() {
+        if crate::test_util::is_stdin_child() {
+            let mut reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let mut num_records = 0;
+            let mut rset = reader.new_record_set();
+            while rset.fill(&mut reader).unwrap() {
+                num_records += rset.iter().map(Result::unwrap).count();
+            }
+            eprintln!("STDIN_COUNT={num_records}");
+            return;
+        }
+
+        let output = crate::test_util::run_with_piped_stdin(
+            "fasta::tests::test_from_stdin",
+            make_fasta(20).as_bytes(),
+        );
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("STDIN_COUNT=20"), "stderr: {stderr}");
     }
 
     #[test]
@@ -772,6 +855,78 @@ mod tests {
 
         assert_eq!(parsed_record.id_str(), "test_multiline");
         assert_eq!(parsed_record.seq_str(), "ACTGTGCAGGCC");
+    }
+
+    #[test]
+    fn test_seq_raw_excludes_trailing_newline() {
+        // `seq_raw()` must not include the newline that terminates the
+        // sequence line -- it's a delimiter, not sequence data.
+        let records = [
+            create_test_record("a", "ACTG"),
+            create_test_record("b", "TGCA"),
+        ]
+        .join("");
+        let mut reader = Reader::new(Cursor::new(records));
+        let mut record_set = RecordSet::new(2);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+        assert_eq!(parsed[0].seq_raw(), b"ACTG");
+        assert_eq!(parsed[1].seq_raw(), b"TGCA");
+    }
+
+    #[test]
+    fn test_seq_raw_last_record_without_trailing_newline() {
+        // The final record in a file with no trailing newline has no
+        // delimiter to strip.
+        let record = ">last\nACTG";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed.seq_raw(), b"ACTG");
+    }
+
+    #[test]
+    fn test_id_header_without_trailing_newline() {
+        // A header with content but no trailing newline before EOF: `right`
+        // (seq_start) lands past the last id byte rather than past a
+        // newline, so `access_buffer` must not strip a real id byte here.
+        let record = ">last";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed.id(), b"last");
+    }
+
+    #[test]
+    fn test_id_empty_header_without_trailing_newline() {
+        // Degenerate case found by fuzzing: a bare `>` with no id and no
+        // trailing newline. Here `left == right == seq_start`, which used to
+        // underflow in `access_buffer`'s unconditional `right - 1`.
+        let record = ">";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed.id(), b"");
+        assert_eq!(parsed.seq_raw(), b"");
+    }
+
+    #[test]
+    fn test_seq_raw_multiline_keeps_embedded_newlines() {
+        let record = ">multi\nACTG\nTGCA\nGGCC\n";
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        // Embedded newlines are preserved; only the final delimiter is stripped.
+        assert_eq!(parsed.seq_raw(), b"ACTG\nTGCA\nGGCC");
     }
 
     #[test]
