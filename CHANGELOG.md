@@ -22,3 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Added `fmt` and `clippy` checks to CI ([#67](https://github.com/noamteyssier/paraseq/pull/67))
 - Refactored CI to run examples in a single runner with a shared compilation step ([#67](https://github.com/noamteyssier/paraseq/pull/67))
 - Examples simplified with a common API and added documentation ([#67](https://github.com/noamteyssier/paraseq/pull/67))
+
+## (start - 0.4.13)
+
+No changelog - see github releases or git history before this version
