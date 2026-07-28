@@ -21,6 +21,9 @@ pub struct Reader<R: io::Read> {
     batch_size: Option<usize>,
     /// Maximum number of records to process before stopping
     record_limit: Option<usize>,
+    /// Running count of records already yielded by this reader, used to
+    /// assign each parsed record its stable, global index in the file.
+    total_records: u64,
 }
 
 #[cfg(feature = "niffler")]
@@ -89,6 +92,7 @@ impl<R: io::Read> Reader<R> {
             eof: false,
             batch_size: None,
             record_limit: None,
+            total_records: 0,
         }
     }
     pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
@@ -162,6 +166,12 @@ impl<R: io::Read> Reader<R> {
     ///
     /// This is an expensive operation and should be used sparingly.
     pub fn reload(&mut self, rset: &mut RecordSet) {
+        // These records are being unread, so un-count them; they'll be
+        // reassigned the same indices when they're re-parsed.
+        self.total_records = self
+            .total_records
+            .saturating_sub(rset.positions.len() as u64);
+
         // A complete slice of the record sets buffer
         let buffer_slice = &rset.buffer;
 
@@ -270,6 +280,8 @@ pub struct RecordSet {
     capacity: usize,
     /// Average number of bytes per record
     avg_record_size: usize,
+    /// Global index of the first record in this set within the original file
+    base_index: u64,
 }
 
 impl Default for RecordSet {
@@ -288,6 +300,7 @@ impl RecordSet {
             positions: Vec::with_capacity(capacity),
             capacity,
             avg_record_size: 1024, // 1KB default
+            base_index: 0,
         }
     }
 
@@ -338,6 +351,7 @@ impl RecordSet {
     ) -> std::result::Result<bool, Error> {
         // Clear previous data
         self.clear();
+        self.base_index = reader.total_records;
 
         // First, copy any overflow from previous read
         if !reader.overflow.is_empty() {
@@ -466,14 +480,17 @@ impl RecordSet {
             self.buffer.clear();
         }
 
+        reader.total_records += self.positions.len() as u64;
         Ok(!self.positions.is_empty())
     }
 
     // Iterator over complete records
     pub fn iter(&self) -> impl Iterator<Item = Result<RefRecord<'_>, Error>> {
+        let base_index = self.base_index;
         self.positions
             .iter()
-            .map(move |&pos| RefRecord::new(&self.buffer, pos))
+            .enumerate()
+            .map(move |(i, &pos)| RefRecord::new(&self.buffer, pos, base_index + i as u64))
     }
 }
 
@@ -488,11 +505,16 @@ struct Positions {
 pub struct RefRecord<'a> {
     buffer: &'a [u8],
     positions: Positions,
+    index: u64,
 }
 
 impl<'a> RefRecord<'a> {
-    fn new(buffer: &'a [u8], positions: Positions) -> Result<Self, Error> {
-        let ref_record = Self { buffer, positions };
+    fn new(buffer: &'a [u8], positions: Positions, index: u64) -> Result<Self, Error> {
+        let ref_record = Self {
+            buffer,
+            positions,
+            index,
+        };
         ref_record.validate_record()?;
         Ok(ref_record)
     }
@@ -526,6 +548,13 @@ impl<'a> RefRecord<'a> {
             self.positions.start + 1, // Skip '>'
             self.positions.seq_start,
         )
+    }
+
+    /// Returns the record's 0-based index within the original file.
+    #[inline]
+    #[must_use]
+    pub fn index(&self) -> u64 {
+        self.index
     }
 
     /// Access the sequence bytes (handling multiline sequences)
@@ -609,6 +638,10 @@ impl Record for RefRecord<'_> {
     fn qual(&self) -> Option<&[u8]> {
         None
     }
+
+    fn index(&self) -> u64 {
+        self.index()
+    }
 }
 
 impl<R> GenericReader for crate::fasta::Reader<R>
@@ -645,10 +678,14 @@ where
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, crate::Error>> {
+        let base_index = record_set.base_index;
         record_set
             .positions
             .iter()
-            .map(move |&pos| Self::RefRecord::new(&record_set.buffer, pos))
+            .enumerate()
+            .map(move |(i, &pos)| {
+                Self::RefRecord::new(&record_set.buffer, pos, base_index + i as u64)
+            })
     }
 }
 
@@ -691,6 +728,51 @@ mod tests {
         }
 
         assert_eq!(num_after_reload, N_RECORDS);
+    }
+
+    #[test]
+    fn test_index_stable_across_batches() {
+        const N_RECORDS: usize = 47;
+        const BATCH_SIZE: usize = 10;
+
+        let mut reader = Reader::new(Cursor::new(make_fasta(N_RECORDS)));
+        let mut indices = Vec::new();
+        let mut rset = reader.new_record_set_with_size(BATCH_SIZE);
+        while rset.fill(&mut reader).unwrap() {
+            for record in rset.iter() {
+                indices.push(record.unwrap().index());
+            }
+        }
+
+        let expected: Vec<u64> = (0..N_RECORDS as u64).collect();
+        assert_eq!(indices, expected);
+    }
+
+    #[test]
+    fn test_index_unaffected_by_reload() {
+        const N_RECORDS: usize = 50;
+        const PREFILL: usize = 7;
+
+        let mut reader = Reader::new(Cursor::new(make_fasta(N_RECORDS)));
+        let mut rset = reader.new_record_set_with_size(PREFILL);
+
+        assert!(rset.fill(&mut reader).unwrap());
+        let prefill_indices: Vec<u64> = rset.iter().map(|r| r.unwrap().index()).collect();
+        assert_eq!(prefill_indices, (0..PREFILL as u64).collect::<Vec<_>>());
+
+        reader.reload(&mut rset);
+
+        // After reloading, re-parsing from scratch must reassign the exact
+        // same indices to the same records rather than continuing to count
+        // up from where the undone batch left off.
+        let mut indices = Vec::new();
+        let mut rset = reader.new_record_set();
+        while rset.fill(&mut reader).unwrap() {
+            for record in rset.iter() {
+                indices.push(record.unwrap().index());
+            }
+        }
+        assert_eq!(indices, (0..N_RECORDS as u64).collect::<Vec<_>>());
     }
 
     #[test]

@@ -937,6 +937,12 @@ impl Record for RefRecord<'_> {
             Self::Fastq(x) => x.qual(),
         }
     }
+    fn index(&self) -> u64 {
+        match self {
+            Self::Fasta(x) => x.index(),
+            Self::Fastq(x) => x.index(),
+        }
+    }
 }
 
 /// An internal trait implemented both by fasta and fastq types,
