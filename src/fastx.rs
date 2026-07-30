@@ -760,6 +760,38 @@ impl Reader<BoxedReader> {
     }
 }
 
+#[cfg(feature = "s3")]
+impl Reader<BoxedReader> {
+    /// Create a reader over an S3 object using the default credential chain.
+    ///
+    /// The object is fetched with concurrent ranged requests rather than a
+    /// single sequential `GET`, and transparently decompressed.
+    pub fn from_s3(s3_url: &str) -> Result<Self, Error> {
+        let s3_reader = crate::s3::S3Reader::open(s3_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(s3_reader))?;
+        Self::new(reader)
+    }
+
+    /// Create a reader over an S3 object with a custom batch size.
+    pub fn from_s3_with_batch_size(s3_url: &str, batch_size: usize) -> Result<Self, Error> {
+        let s3_reader = crate::s3::S3Reader::open(s3_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(s3_reader))?;
+        Self::new_with_batch_size(reader, batch_size)
+    }
+
+    /// Create a reader over an S3 object from a configured builder.
+    ///
+    /// Use this to set region, endpoint, concurrency, or part size.
+    pub fn from_s3_builder(
+        builder: &crate::s3::S3ReaderBuilder,
+        s3_url: &str,
+    ) -> Result<Self, Error> {
+        let s3_reader = builder.build(s3_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(s3_reader))?;
+        Self::new(reader)
+    }
+}
+
 impl<R: io::Read> Reader<R> {
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let mut buffer = [0; 1];

@@ -24,6 +24,9 @@ pub mod ssh;
 #[cfg(feature = "gcs")]
 pub mod gcs;
 
+#[cfg(feature = "s3")]
+pub mod s3;
+
 pub use error::Error;
 pub use parallel::{ProcessError, Result};
 pub use record::Record;
