@@ -15,6 +15,7 @@ anyhow = { version = "1.0.95", optional = true }
 aws-config = { version = "1.10.1", optional = true, default-features = false, features = ["rt-tokio", "credentials-process", "sso", "behavior-version-latest"] }
 aws-sdk-s3 = { version = "1.140.0", optional = true, default-features = false, features = ["rt-tokio", "http-1x", "behavior-version-latest"] }
 aws-smithy-http-client = { version = "1.2.0", optional = true, default-features = false, features = ["rustls-ring"] }
+aws-creds = { version = "0.39.1", optional = true, default-features = false, features = ["rustls-tls"] }
 bytes = { version = "1.12.1", optional = true }
 crossbeam-channel = "0.5.14"
 either = "1.15.0"
@@ -30,6 +31,8 @@ rust-htslib = { version = "0.49.0", default-features = false, optional = true }
 smallvec = "1.15.1"
 thiserror = "2.0.11"
 tokio = { version = "1.53.1", optional = true, features = ["rt-multi-thread", "sync"] }
+rusty-s3 = { version = "0.10.1", optional = true, default-features = false, features = ["rustcrypto"] }
+ureq = { version = "3.3.0", optional = true }
 which = { version = "8.0.0", optional = true }
 
 [features]
@@ -41,6 +44,8 @@ url = ["dep:reqwest", "dep:niffler"]
 ssh = ["dep:which"]
 gcs = ["dep:which"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-smithy-http-client", "dep:bytes", "dep:tokio", "dep:niffler"]
+# Sans-IO signing (rusty-s3) + blocking HTTP (ureq): no async runtime, ~3x faster to build.
+s3-lite = ["dep:rusty-s3", "dep:ureq", "dep:aws-creds", "dep:bytes", "dep:niffler"]
 
 [dev-dependencies]
 clap = { version = "4.5.40", features = ["derive"] }
@@ -53,4 +58,4 @@ paraseq = { path = ".", features = ["url", "htslib", "ssh", "gcs"] }
 # Needs the `s3` feature, which is not on by default for dev builds.
 [[example]]
 name = "s3"
-required-features = ["s3"]
+required-features = ["s3", "s3-lite"]
