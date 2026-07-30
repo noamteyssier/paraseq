@@ -813,6 +813,26 @@ impl Reader<BoxedReader> {
     }
 }
 
+#[cfg(feature = "s3-lite")]
+impl Reader<BoxedReader> {
+    /// Create a reader over an S3 object using the blocking `s3-lite` backend.
+    pub fn from_s3_lite(s3_url: &str) -> Result<Self, Error> {
+        let s3_reader = crate::s3::LiteS3Reader::open(s3_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(s3_reader))?;
+        Self::new(reader)
+    }
+
+    /// Create a reader over an S3 object from a configured `s3-lite` builder.
+    pub fn from_s3_lite_builder(
+        builder: &crate::s3::LiteS3ReaderBuilder,
+        s3_url: &str,
+    ) -> Result<Self, Error> {
+        let s3_reader = builder.build(s3_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(s3_reader))?;
+        Self::new(reader)
+    }
+}
+
 impl<R: io::Read> Reader<R> {
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let mut buffer = [0; 1];

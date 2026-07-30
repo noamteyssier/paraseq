@@ -1,10 +1,11 @@
 //! Generic concurrent ranged-object reader.
 //!
 //! A single sequential `GET` against an object store is capped by the
-//! throughput of one connection (typically ~80-100 MB/s against S3), which
-//! becomes the bottleneck long before the parser does. This module turns one
-//! logical stream into a sliding window of concurrent ranged requests that are
-//! reassembled in order, so the object store can be driven at many times the
+//! throughput of one connection, which becomes the bottleneck long before the
+//! parser does. Measured in-region on EC2, one connection sustained ~45 MiB/s
+//! against ~76 MiB/s for an 8-way window on the same object. This module turns
+//! one logical stream into a sliding window of concurrent ranged requests that
+//! are reassembled in order, so the store can be driven past the
 //! single-connection rate while still presenting a plain [`io::Read`].
 //!
 //! The store-specific part is confined to the [`RangeFetcher`] trait: resolve
@@ -18,23 +19,11 @@ use std::io::{self, BufRead, Read};
 use std::sync::{Arc, OnceLock};
 
 use bytes::{Buf, Bytes};
+
+use super::common::{ObjectMeta, RangeConfig};
 use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
-
-/// Default size of an individual ranged request.
-///
-/// Below ~8 MiB per-request latency starts to dominate; above ~32 MiB a single
-/// slow part stalls in-order delivery for longer than it saves.
-pub const DEFAULT_PART_SIZE: usize = 8 * 1024 * 1024;
-
-/// Default number of ranged requests in flight for a single reader.
-pub const DEFAULT_CONCURRENCY: usize = 8;
-
-/// Default number of completed-but-unread parts held between the fetch tasks
-/// and the reader. This is the backpressure knob: a slow consumer stalls the
-/// window instead of buffering the whole object.
-pub const DEFAULT_QUEUE_DEPTH: usize = 2;
 
 /// Runtime shared by every reader in the process.
 ///
@@ -92,20 +81,6 @@ fn global_permits() -> Arc<Semaphore> {
         .clone()
 }
 
-/// Identity and size of the object being read, resolved once up front.
-#[derive(Debug, Clone)]
-pub struct ObjectMeta {
-    /// Total size of the object in bytes.
-    pub content_length: u64,
-    /// An opaque token pinning the version being read (an ETag for S3, a
-    /// generation for GCS).
-    ///
-    /// Backends should pass this back on every ranged request so that an
-    /// object overwritten mid-read fails loudly rather than silently splicing
-    /// two different files together.
-    pub version_token: Option<String>,
-}
-
 /// A backend capable of serving byte ranges of a single object.
 pub trait RangeFetcher: Send + Sync + 'static {
     /// Resolves the object's size and version token.
@@ -124,35 +99,6 @@ pub trait RangeFetcher: Send + Sync + 'static {
         start: u64,
         len: usize,
     ) -> impl Future<Output = io::Result<Bytes>> + Send;
-}
-
-/// Tuning for the fetch window.
-#[derive(Debug, Clone, Copy)]
-pub struct RangeConfig {
-    /// Size of an individual ranged request.
-    pub part_size: usize,
-    /// Number of requests in flight for this reader.
-    pub concurrency: usize,
-    /// Completed parts buffered ahead of the reader.
-    pub queue_depth: usize,
-}
-
-impl Default for RangeConfig {
-    fn default() -> Self {
-        Self {
-            part_size: DEFAULT_PART_SIZE,
-            concurrency: DEFAULT_CONCURRENCY,
-            queue_depth: DEFAULT_QUEUE_DEPTH,
-        }
-    }
-}
-
-impl RangeConfig {
-    /// Peak bytes this configuration may hold in memory for one reader.
-    pub fn max_buffered_bytes(&self) -> usize {
-        self.part_size
-            .saturating_mul(self.concurrency + self.queue_depth)
-    }
 }
 
 /// Presents a sequence of byte chunks produced by an async task as a blocking
@@ -258,8 +204,7 @@ async fn drive<F: RangeFetcher>(
     tx: mpsc::Sender<io::Result<Bytes>>,
 ) {
     let total = meta.content_length;
-    let part_size = config.part_size.max(1) as u64;
-    let n_parts = total.div_ceil(part_size);
+    let n_parts = config.part_count(total);
     let concurrency = config.concurrency.max(1);
 
     let permits = global_permits();
@@ -272,8 +217,7 @@ async fn drive<F: RangeFetcher>(
 
     loop {
         while in_flight.len() < concurrency && next_part < n_parts {
-            let start = next_part * part_size;
-            let len = part_size.min(total - start) as usize;
+            let (start, len) = config.part_bounds(next_part, total);
 
             let fetcher = fetcher.clone();
             let meta = meta.clone();

@@ -1,32 +1,51 @@
 //! Reading FASTX from S3 with concurrent ranged requests.
 //!
 //! A single sequential `GET` is capped by one connection's throughput, which
-//! becomes the bottleneck long before the parser does. This module fetches an
-//! object as a sliding window of concurrent byte ranges, reassembled in order,
-//! and presents the result as a plain [`std::io::Read`].
+//! becomes the bottleneck long before the parser does. Both backends here
+//! fetch an object as a sliding window of concurrent byte ranges, reassembled
+//! in order, presented as a plain [`std::io::Read`].
 //!
-//! [`range`] holds the store-agnostic machinery; the S3 specifics live behind
-//! [`S3Reader`] and its builder.
+//! Two backends, selected by feature:
+//!
+//! - `s3` — `aws-sdk-s3` over tokio. Full credential chain including SSO.
+//! - `s3-lite` — `rusty-s3` signing over blocking `ureq`, no async runtime.
+//!   Roughly a third of the build time; no SSO.
 
+mod common;
+
+pub use common::{
+    ObjectMeta, RangeConfig, S3Error, S3Url, DEFAULT_CONCURRENCY, DEFAULT_PART_SIZE,
+    DEFAULT_QUEUE_DEPTH,
+};
+
+#[cfg(feature = "s3")]
 pub mod range;
+#[cfg(feature = "s3")]
 mod reader;
 
+#[cfg(feature = "s3")]
 pub use range::{
-    set_global_request_limit, set_runtime_threads, ChunkReader, ObjectMeta, RangeConfig,
-    RangeFetcher, RangedObjectReader, DEFAULT_CONCURRENCY, DEFAULT_PART_SIZE, DEFAULT_QUEUE_DEPTH,
+    set_global_request_limit, set_runtime_threads, ChunkReader, RangeFetcher, RangedObjectReader,
 };
-pub use reader::{S3Error, S3Fetcher, S3Reader, S3ReaderBuilder, S3StreamReader, S3Url};
+#[cfg(feature = "s3")]
+pub use reader::{S3Fetcher, S3Reader, S3ReaderBuilder, S3StreamReader};
+
+#[cfg(feature = "s3-lite")]
+pub mod lite;
+#[cfg(feature = "s3-lite")]
+pub use lite::{
+    BlockingRangeFetcher, LiteS3Fetcher, LiteS3Reader, LiteS3ReaderBuilder, ThreadedRangedReader,
+};
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::io::{self, BufRead, BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::thread;
 
-    use bytes::Bytes;
     use parking_lot::Mutex;
 
     use super::*;
@@ -34,149 +53,7 @@ mod tests {
     use crate::prelude::*;
     use crate::ProcessError;
 
-    // ---- generic ranged reader ----
-
-    /// In-memory backend that records how many ranges were requested.
-    struct VecFetcher {
-        data: Arc<Vec<u8>>,
-        requests: Arc<AtomicUsize>,
-    }
-
-    impl RangeFetcher for VecFetcher {
-        async fn open(&self) -> io::Result<ObjectMeta> {
-            Ok(ObjectMeta {
-                content_length: self.data.len() as u64,
-                version_token: Some("etag".to_string()),
-            })
-        }
-
-        async fn fetch(&self, _meta: ObjectMeta, start: u64, len: usize) -> io::Result<Bytes> {
-            self.requests.fetch_add(1, Ordering::Relaxed);
-            let start = start as usize;
-            Ok(Bytes::copy_from_slice(&self.data[start..start + len]))
-        }
-    }
-
-    fn read_all(data: Vec<u8>, config: RangeConfig) -> (Vec<u8>, usize) {
-        let requests = Arc::new(AtomicUsize::new(0));
-        let fetcher = VecFetcher {
-            data: Arc::new(data),
-            requests: requests.clone(),
-        };
-        let mut reader = RangedObjectReader::new(fetcher, config).unwrap();
-        let mut out = Vec::new();
-        reader.read_to_end(&mut out).unwrap();
-        (out, requests.load(Ordering::Relaxed))
-    }
-
-    #[test]
-    fn test_reassembles_in_order() {
-        let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
-        let config = RangeConfig {
-            part_size: 1024,
-            concurrency: 8,
-            queue_depth: 2,
-        };
-        let (out, requests) = read_all(data.clone(), config);
-        assert_eq!(out, data);
-        assert_eq!(requests, data.len().div_ceil(1024));
-    }
-
-    #[test]
-    fn test_part_size_larger_than_object() {
-        let data: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
-        let (out, requests) = read_all(data.clone(), RangeConfig::default());
-        assert_eq!(out, data);
-        assert_eq!(requests, 1);
-    }
-
-    #[test]
-    fn test_exact_part_multiple() {
-        let data = vec![7u8; 4096];
-        let config = RangeConfig {
-            part_size: 1024,
-            concurrency: 4,
-            queue_depth: 1,
-        };
-        let (out, requests) = read_all(data.clone(), config);
-        assert_eq!(out, data);
-        assert_eq!(requests, 4);
-    }
-
-    #[test]
-    fn test_empty_object() {
-        let (out, requests) = read_all(Vec::new(), RangeConfig::default());
-        assert!(out.is_empty());
-        assert_eq!(requests, 0);
-    }
-
-    #[test]
-    fn test_single_concurrency() {
-        let data: Vec<u8> = (0..50_000u32).map(|i| (i % 97) as u8).collect();
-        let config = RangeConfig {
-            part_size: 512,
-            concurrency: 1,
-            queue_depth: 1,
-        };
-        let (out, _) = read_all(data.clone(), config);
-        assert_eq!(out, data);
-    }
-
-    /// A backend that fails partway through, to check the error surfaces
-    /// through `Read` rather than being swallowed as a short read.
-    struct FailingFetcher {
-        fail_at: u64,
-    }
-
-    impl RangeFetcher for FailingFetcher {
-        async fn open(&self) -> io::Result<ObjectMeta> {
-            Ok(ObjectMeta {
-                content_length: 10_000,
-                version_token: None,
-            })
-        }
-
-        async fn fetch(&self, _meta: ObjectMeta, start: u64, len: usize) -> io::Result<Bytes> {
-            if start >= self.fail_at {
-                return Err(io::Error::other("synthetic fetch failure"));
-            }
-            Ok(Bytes::from(vec![0u8; len]))
-        }
-    }
-
-    #[test]
-    fn test_fetch_error_propagates() {
-        let config = RangeConfig {
-            part_size: 1000,
-            concurrency: 2,
-            queue_depth: 1,
-        };
-        let mut reader = RangedObjectReader::new(FailingFetcher { fail_at: 5000 }, config).unwrap();
-        let mut out = Vec::new();
-        let err = reader.read_to_end(&mut out).unwrap_err();
-        assert!(err.to_string().contains("synthetic fetch failure"));
-    }
-
-    #[test]
-    fn test_early_drop_does_not_block() {
-        let data = vec![1u8; 10 * 1024 * 1024];
-        let config = RangeConfig {
-            part_size: 64 * 1024,
-            concurrency: 8,
-            queue_depth: 2,
-        };
-        let fetcher = VecFetcher {
-            data: Arc::new(data),
-            requests: Arc::new(AtomicUsize::new(0)),
-        };
-        let mut reader = RangedObjectReader::new(fetcher, config).unwrap();
-        let mut buf = [0u8; 128];
-        reader.read_exact(&mut buf).unwrap();
-        // Dropping with parts still in flight must return promptly.
-        drop(reader);
-    }
-
-    // ---- S3 backend ----
+    // ---- backend-agnostic ----
 
     #[test]
     fn test_s3_url_parsing() {
@@ -213,6 +90,8 @@ mod tests {
         let url = S3Url::parse("s3://bucket/sample 1/read+2.fastq").unwrap();
         assert_eq!(url.key, "sample 1/read+2.fastq");
     }
+
+    // ---- local S3-protocol server, shared by both backends ----
 
     /// A minimal S3-compatible server backed by in-memory objects.
     struct TestServer {
@@ -491,233 +370,549 @@ mod tests {
         out
     }
 
-    fn builder_for(server: &TestServer) -> S3ReaderBuilder {
-        S3Reader::builder()
-            .endpoint_url(server.endpoint())
-            .force_path_style(true)
-            .anonymous(true)
-            .region("us-east-1")
-    }
+    /// Tests for the `s3` backend (aws-sdk-s3 over tokio).
+    #[cfg(feature = "s3")]
+    mod sdk {
+        use std::io;
 
-    #[test]
-    fn test_ranged_read_matches_source_bytes() {
-        let data = make_fastq(5_000, 150);
-        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
-        let server = spawn_server(objects);
+        use bytes::Bytes;
 
-        let part_size = 64 * 1024;
-        let mut reader = builder_for(&server)
-            .part_size(part_size)
-            .concurrency(8)
-            .build("s3://bucket/reads.fastq")
-            .expect("build reader");
+        use super::*;
 
-        assert_eq!(reader.content_length(), data.len() as u64);
+        // ---- generic ranged reader ----
 
-        let mut out = Vec::new();
-        reader.read_to_end(&mut out).expect("read");
-        assert_eq!(out, data, "reassembled bytes must match the source exactly");
+        /// In-memory backend that records how many ranges were requested.
+        struct VecFetcher {
+            data: Arc<Vec<u8>>,
+            requests: Arc<AtomicUsize>,
+        }
 
-        let expected_parts = data.len().div_ceil(part_size);
-        assert_eq!(
-            server.range_gets.load(Ordering::Relaxed),
-            expected_parts,
-            "each part should be fetched exactly once"
-        );
+        impl RangeFetcher for VecFetcher {
+            async fn open(&self) -> io::Result<ObjectMeta> {
+                Ok(ObjectMeta {
+                    content_length: self.data.len() as u64,
+                    version_token: Some("etag".to_string()),
+                })
+            }
 
-        // Every part must be pinned to the version resolved at open, so an object
-        // overwritten mid-read fails instead of silently splicing two files.
-        assert_eq!(
-            server.if_match_gets.load(Ordering::Relaxed),
-            expected_parts,
-            "every ranged GET should carry an If-Match version pin"
-        );
-    }
+            async fn fetch(&self, _meta: ObjectMeta, start: u64, len: usize) -> io::Result<Bytes> {
+                self.requests.fetch_add(1, Ordering::Relaxed);
+                let start = start as usize;
+                Ok(Bytes::copy_from_slice(&self.data[start..start + len]))
+            }
+        }
 
-    #[test]
-    fn test_parses_fastq_end_to_end() {
-        let n_records = 5_000;
-        let read_len = 150;
-        let data = make_fastq(n_records, read_len);
-        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
-        let server = spawn_server(objects);
+        fn read_all(data: Vec<u8>, config: RangeConfig) -> (Vec<u8>, usize) {
+            let requests = Arc::new(AtomicUsize::new(0));
+            let fetcher = VecFetcher {
+                data: Arc::new(data),
+                requests: requests.clone(),
+            };
+            let mut reader = RangedObjectReader::new(fetcher, config).unwrap();
+            let mut out = Vec::new();
+            reader.read_to_end(&mut out).unwrap();
+            (out, requests.load(Ordering::Relaxed))
+        }
 
-        let builder = builder_for(&server).part_size(32 * 1024).concurrency(4);
-        let reader = Reader::from_s3_builder(&builder, "s3://bucket/reads.fastq").expect("open");
+        #[test]
+        fn test_reassembles_in_order() {
+            let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+            let config = RangeConfig {
+                part_size: 1024,
+                concurrency: 8,
+                queue_depth: 2,
+            };
+            let (out, requests) = read_all(data.clone(), config);
+            assert_eq!(out, data);
+            assert_eq!(requests, data.len().div_ceil(1024));
+        }
 
-        let mut counter = Counter::default();
-        reader.process_parallel(&mut counter, 4).expect("process");
+        #[test]
+        fn test_part_size_larger_than_object() {
+            let data: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
+            let (out, requests) = read_all(data.clone(), RangeConfig::default());
+            assert_eq!(out, data);
+            assert_eq!(requests, 1);
+        }
 
-        assert_eq!(*counter.total_records.lock(), n_records);
-        assert_eq!(*counter.total_bases.lock(), n_records * read_len);
-    }
+        #[test]
+        fn test_exact_part_multiple() {
+            let data = vec![7u8; 4096];
+            let config = RangeConfig {
+                part_size: 1024,
+                concurrency: 4,
+                queue_depth: 1,
+            };
+            let (out, requests) = read_all(data.clone(), config);
+            assert_eq!(out, data);
+            assert_eq!(requests, 4);
+        }
 
-    #[test]
-    fn test_concurrency_does_not_change_result() {
-        let data = make_fastq(2_000, 100);
-        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
-        let server = spawn_server(objects);
+        #[test]
+        fn test_empty_object() {
+            let (out, requests) = read_all(Vec::new(), RangeConfig::default());
+            assert!(out.is_empty());
+            assert_eq!(requests, 0);
+        }
 
-        // Part boundaries must not affect the parse, regardless of window size.
-        for (concurrency, part_size) in [(1, 1024), (2, 4096), (8, 997), (16, 65_536)] {
+        #[test]
+        fn test_single_concurrency() {
+            let data: Vec<u8> = (0..50_000u32).map(|i| (i % 97) as u8).collect();
+            let config = RangeConfig {
+                part_size: 512,
+                concurrency: 1,
+                queue_depth: 1,
+            };
+            let (out, _) = read_all(data.clone(), config);
+            assert_eq!(out, data);
+        }
+
+        /// A backend that fails partway through, to check the error surfaces
+        /// through `Read` rather than being swallowed as a short read.
+        struct FailingFetcher {
+            fail_at: u64,
+        }
+
+        impl RangeFetcher for FailingFetcher {
+            async fn open(&self) -> io::Result<ObjectMeta> {
+                Ok(ObjectMeta {
+                    content_length: 10_000,
+                    version_token: None,
+                })
+            }
+
+            async fn fetch(&self, _meta: ObjectMeta, start: u64, len: usize) -> io::Result<Bytes> {
+                if start >= self.fail_at {
+                    return Err(io::Error::other("synthetic fetch failure"));
+                }
+                Ok(Bytes::from(vec![0u8; len]))
+            }
+        }
+
+        #[test]
+        fn test_fetch_error_propagates() {
+            let config = RangeConfig {
+                part_size: 1000,
+                concurrency: 2,
+                queue_depth: 1,
+            };
+            let mut reader =
+                RangedObjectReader::new(FailingFetcher { fail_at: 5000 }, config).unwrap();
+            let mut out = Vec::new();
+            let err = reader.read_to_end(&mut out).unwrap_err();
+            assert!(err.to_string().contains("synthetic fetch failure"));
+        }
+
+        #[test]
+        fn test_early_drop_does_not_block() {
+            let data = vec![1u8; 10 * 1024 * 1024];
+            let config = RangeConfig {
+                part_size: 64 * 1024,
+                concurrency: 8,
+                queue_depth: 2,
+            };
+            let fetcher = VecFetcher {
+                data: Arc::new(data),
+                requests: Arc::new(AtomicUsize::new(0)),
+            };
+            let mut reader = RangedObjectReader::new(fetcher, config).unwrap();
+            let mut buf = [0u8; 128];
+            reader.read_exact(&mut buf).unwrap();
+            // Dropping with parts still in flight must return promptly.
+            drop(reader);
+        }
+
+        // ---- S3 backend ----
+
+        fn builder_for(server: &TestServer) -> S3ReaderBuilder {
+            S3Reader::builder()
+                .endpoint_url(server.endpoint())
+                .force_path_style(true)
+                .anonymous(true)
+                .region("us-east-1")
+        }
+
+        #[test]
+        fn test_ranged_read_matches_source_bytes() {
+            let data = make_fastq(5_000, 150);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
+            let server = spawn_server(objects);
+
+            let part_size = 64 * 1024;
             let mut reader = builder_for(&server)
                 .part_size(part_size)
-                .concurrency(concurrency)
+                .concurrency(8)
                 .build("s3://bucket/reads.fastq")
                 .expect("build reader");
 
+            assert_eq!(reader.content_length(), data.len() as u64);
+
             let mut out = Vec::new();
             reader.read_to_end(&mut out).expect("read");
+            assert_eq!(out, data, "reassembled bytes must match the source exactly");
+
+            let expected_parts = data.len().div_ceil(part_size);
             assert_eq!(
-                out, data,
-                "mismatch at concurrency={concurrency} part_size={part_size}"
+                server.range_gets.load(Ordering::Relaxed),
+                expected_parts,
+                "each part should be fetched exactly once"
+            );
+
+            // Every part must be pinned to the version resolved at open, so an object
+            // overwritten mid-read fails instead of silently splicing two files.
+            assert_eq!(
+                server.if_match_gets.load(Ordering::Relaxed),
+                expected_parts,
+                "every ranged GET should carry an If-Match version pin"
             );
         }
-    }
 
-    #[test]
-    fn test_missing_object_errors_on_open() {
-        let server = spawn_server(HashMap::new());
-        let err = builder_for(&server)
-            .build("s3://bucket/absent.fastq")
-            .expect_err("missing object must fail");
-        // The failure must surface at open, not as a silent empty stream.
-        assert!(err.to_string().contains("HeadObject"), "got: {err}");
-    }
+        #[test]
+        fn test_parses_fastq_end_to_end() {
+            let n_records = 5_000;
+            let read_len = 150;
+            let data = make_fastq(n_records, read_len);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
+            let server = spawn_server(objects);
 
-    #[test]
-    fn test_early_drop_is_prompt() {
-        let data = make_fastq(50_000, 150);
-        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
-        let server = spawn_server(objects);
+            let builder = builder_for(&server).part_size(32 * 1024).concurrency(4);
+            let reader =
+                Reader::from_s3_builder(&builder, "s3://bucket/reads.fastq").expect("open");
 
-        let mut reader = builder_for(&server)
-            .part_size(16 * 1024)
-            .concurrency(8)
-            .build("s3://bucket/reads.fastq")
-            .expect("build reader");
+            let mut counter = Counter::default();
+            reader.process_parallel(&mut counter, 4).expect("process");
 
-        let mut buf = [0u8; 64];
-        reader.read_exact(&mut buf).expect("read");
+            assert_eq!(*counter.total_records.lock(), n_records);
+            assert_eq!(*counter.total_bases.lock(), n_records * read_len);
+        }
 
-        let start = std::time::Instant::now();
-        drop(reader);
-        assert!(
-            start.elapsed().as_secs() < 5,
-            "dropping with parts in flight must not block"
-        );
-    }
+        #[test]
+        fn test_concurrency_does_not_change_result() {
+            let data = make_fastq(2_000, 100);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
+            let server = spawn_server(objects);
 
-    /// Throughput of the SDK request path over loopback, with no TLS and no disk.
-    ///
-    /// Used to check that lowering the AWS crates' `opt-level` in the release
-    /// profile does not cost runtime performance. Ignored by default because it
-    /// allocates a large in-memory object.
-    #[test]
-    #[ignore]
-    fn bench_loopback_throughput() {
-        let size = 256 * 1024 * 1024;
-        let data = vec![b'A'; size];
-        let objects = HashMap::from([("bucket/big.bin".to_string(), data)]);
-        let server = spawn_server(objects);
+            // Part boundaries must not affect the parse, regardless of window size.
+            for (concurrency, part_size) in [(1, 1024), (2, 4096), (8, 997), (16, 65_536)] {
+                let mut reader = builder_for(&server)
+                    .part_size(part_size)
+                    .concurrency(concurrency)
+                    .build("s3://bucket/reads.fastq")
+                    .expect("build reader");
 
-        let mut best = f64::MAX;
-        for _ in 0..3 {
+                let mut out = Vec::new();
+                reader.read_to_end(&mut out).expect("read");
+                assert_eq!(
+                    out, data,
+                    "mismatch at concurrency={concurrency} part_size={part_size}"
+                );
+            }
+        }
+
+        #[test]
+        fn test_missing_object_errors_on_open() {
+            let server = spawn_server(HashMap::new());
+            let err = builder_for(&server)
+                .build("s3://bucket/absent.fastq")
+                .expect_err("missing object must fail");
+            // The failure must surface at open, not as a silent empty stream.
+            assert!(err.to_string().contains("HeadObject"), "got: {err}");
+        }
+
+        #[test]
+        fn test_early_drop_is_prompt() {
+            let data = make_fastq(50_000, 150);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
+            let server = spawn_server(objects);
+
             let mut reader = builder_for(&server)
-                .part_size(8 * 1024 * 1024)
+                .part_size(16 * 1024)
                 .concurrency(8)
-                .build("s3://bucket/big.bin")
+                .build("s3://bucket/reads.fastq")
                 .expect("build reader");
 
+            let mut buf = [0u8; 64];
+            reader.read_exact(&mut buf).expect("read");
+
             let start = std::time::Instant::now();
-            let mut buf = vec![0u8; 1024 * 1024];
-            let mut total = 0usize;
-            loop {
-                let n = reader.read(&mut buf).expect("read");
-                if n == 0 {
-                    break;
-                }
-                total += n;
-            }
-            assert_eq!(total, size);
-            best = best.min(start.elapsed().as_secs_f64());
+            drop(reader);
+            assert!(
+                start.elapsed().as_secs() < 5,
+                "dropping with parts in flight must not block"
+            );
         }
-        println!(
-            "loopback throughput: {:.0} MiB/s (best of 3)",
-            size as f64 / best / (1024.0 * 1024.0)
-        );
+
+        /// Throughput of the SDK request path over loopback, with no TLS and no disk.
+        ///
+        /// Used to check that lowering the AWS crates' `opt-level` in the release
+        /// profile does not cost runtime performance. Ignored by default because it
+        /// allocates a large in-memory object.
+        #[test]
+        #[ignore]
+        fn bench_loopback_throughput() {
+            let size = 256 * 1024 * 1024;
+            let data = vec![b'A'; size];
+            let objects = HashMap::from([("bucket/big.bin".to_string(), data)]);
+            let server = spawn_server(objects);
+
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let mut reader = builder_for(&server)
+                    .part_size(8 * 1024 * 1024)
+                    .concurrency(8)
+                    .build("s3://bucket/big.bin")
+                    .expect("build reader");
+
+                let start = std::time::Instant::now();
+                let mut buf = vec![0u8; 1024 * 1024];
+                let mut total = 0usize;
+                loop {
+                    let n = reader.read(&mut buf).expect("read");
+                    if n == 0 {
+                        break;
+                    }
+                    total += n;
+                }
+                assert_eq!(total, size);
+                best = best.min(start.elapsed().as_secs_f64());
+            }
+            println!(
+                "loopback throughput: {:.0} MiB/s (best of 3)",
+                size as f64 / best / (1024.0 * 1024.0)
+            );
+        }
+
+        #[test]
+        fn test_streaming_read_matches_source_bytes() {
+            let data = make_fastq(5_000, 150);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
+            let server = spawn_server(objects);
+
+            let mut reader = builder_for(&server)
+                .build_streaming("s3://bucket/reads.fastq")
+                .expect("build streaming reader");
+
+            assert_eq!(reader.content_length(), data.len() as u64);
+
+            let mut out = Vec::new();
+            reader.read_to_end(&mut out).expect("read");
+            assert_eq!(out, data);
+
+            // One unranged GET, so the ranged-request counter must stay at zero.
+            assert_eq!(server.range_gets.load(Ordering::Relaxed), 0);
+        }
+
+        #[test]
+        fn test_streaming_parses_fastq_end_to_end() {
+            let n_records = 5_000;
+            let read_len = 150;
+            let data = make_fastq(n_records, read_len);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
+            let server = spawn_server(objects);
+
+            let builder = builder_for(&server);
+            let reader = Reader::from_s3_builder_streaming(&builder, "s3://bucket/reads.fastq")
+                .expect("open");
+
+            let mut counter = Counter::default();
+            reader.process_parallel(&mut counter, 4).expect("process");
+
+            assert_eq!(*counter.total_records.lock(), n_records);
+            assert_eq!(*counter.total_bases.lock(), n_records * read_len);
+        }
+
+        #[test]
+        fn test_streaming_and_ranged_agree() {
+            let data = make_fastq(3_000, 120);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
+            let server = spawn_server(objects);
+
+            let mut streamed = Vec::new();
+            builder_for(&server)
+                .build_streaming("s3://bucket/reads.fastq")
+                .expect("stream")
+                .read_to_end(&mut streamed)
+                .expect("read");
+
+            let mut ranged = Vec::new();
+            builder_for(&server)
+                .part_size(4096)
+                .concurrency(4)
+                .build("s3://bucket/reads.fastq")
+                .expect("ranged")
+                .read_to_end(&mut ranged)
+                .expect("read");
+
+            assert_eq!(streamed, ranged, "both paths must yield identical bytes");
+        }
+
+        #[test]
+        fn test_streaming_missing_object_errors_on_open() {
+            let server = spawn_server(HashMap::new());
+            let err = builder_for(&server)
+                .build_streaming("s3://bucket/absent.fastq")
+                .expect_err("missing object must fail");
+            assert!(err.to_string().contains("GetObject"), "got: {err}");
+        }
     }
 
-    #[test]
-    fn test_streaming_read_matches_source_bytes() {
-        let data = make_fastq(5_000, 150);
-        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
-        let server = spawn_server(objects);
+    /// Tests for the `s3-lite` backend (rusty-s3 signing over blocking ureq).
+    #[cfg(feature = "s3-lite")]
+    mod lite {
+        use super::*;
 
-        let mut reader = builder_for(&server)
-            .build_streaming("s3://bucket/reads.fastq")
-            .expect("build streaming reader");
+        fn lite_builder_for(server: &TestServer) -> LiteS3ReaderBuilder {
+            LiteS3Reader::builder()
+                .endpoint_url(server.endpoint())
+                .force_path_style(true)
+                .anonymous(true)
+                .region("us-east-1")
+        }
 
-        assert_eq!(reader.content_length(), data.len() as u64);
+        #[test]
+        fn test_lite_ranged_read_matches_source_bytes() {
+            let data = make_fastq(5_000, 150);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
+            let server = spawn_server(objects);
 
-        let mut out = Vec::new();
-        reader.read_to_end(&mut out).expect("read");
-        assert_eq!(out, data);
+            let part_size = 64 * 1024;
+            let mut reader = lite_builder_for(&server)
+                .part_size(part_size)
+                .concurrency(8)
+                .build("s3://bucket/reads.fastq")
+                .expect("build reader");
 
-        // One unranged GET, so the ranged-request counter must stay at zero.
-        assert_eq!(server.range_gets.load(Ordering::Relaxed), 0);
-    }
+            assert_eq!(reader.content_length(), data.len() as u64);
 
-    #[test]
-    fn test_streaming_parses_fastq_end_to_end() {
-        let n_records = 5_000;
-        let read_len = 150;
-        let data = make_fastq(n_records, read_len);
-        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
-        let server = spawn_server(objects);
+            let mut out = Vec::new();
+            reader.read_to_end(&mut out).expect("read");
+            assert_eq!(out, data, "reassembled bytes must match the source exactly");
 
-        let builder = builder_for(&server);
-        let reader =
-            Reader::from_s3_builder_streaming(&builder, "s3://bucket/reads.fastq").expect("open");
+            let expected_parts = data.len().div_ceil(part_size);
+            assert_eq!(
+                server.range_gets.load(Ordering::Relaxed),
+                expected_parts,
+                "each part should be fetched exactly once"
+            );
 
-        let mut counter = Counter::default();
-        reader.process_parallel(&mut counter, 4).expect("process");
+            // The blocking backend must pin versions just like the SDK one.
+            assert_eq!(
+                server.if_match_gets.load(Ordering::Relaxed),
+                expected_parts,
+                "every ranged GET should carry an If-Match version pin"
+            );
+        }
 
-        assert_eq!(*counter.total_records.lock(), n_records);
-        assert_eq!(*counter.total_bases.lock(), n_records * read_len);
-    }
+        #[test]
+        fn test_lite_parses_fastq_end_to_end() {
+            let n_records = 5_000;
+            let read_len = 150;
+            let data = make_fastq(n_records, read_len);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
+            let server = spawn_server(objects);
 
-    #[test]
-    fn test_streaming_and_ranged_agree() {
-        let data = make_fastq(3_000, 120);
-        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
-        let server = spawn_server(objects);
+            let builder = lite_builder_for(&server)
+                .part_size(32 * 1024)
+                .concurrency(4);
+            let reader =
+                Reader::from_s3_lite_builder(&builder, "s3://bucket/reads.fastq").expect("open");
 
-        let mut streamed = Vec::new();
-        builder_for(&server)
-            .build_streaming("s3://bucket/reads.fastq")
-            .expect("stream")
-            .read_to_end(&mut streamed)
-            .expect("read");
+            let mut counter = Counter::default();
+            reader.process_parallel(&mut counter, 4).expect("process");
 
-        let mut ranged = Vec::new();
-        builder_for(&server)
-            .part_size(4096)
-            .concurrency(4)
-            .build("s3://bucket/reads.fastq")
-            .expect("ranged")
-            .read_to_end(&mut ranged)
-            .expect("read");
+            assert_eq!(*counter.total_records.lock(), n_records);
+            assert_eq!(*counter.total_bases.lock(), n_records * read_len);
+        }
 
-        assert_eq!(streamed, ranged, "both paths must yield identical bytes");
-    }
+        #[test]
+        fn test_lite_concurrency_does_not_change_result() {
+            let data = make_fastq(2_000, 100);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
+            let server = spawn_server(objects);
 
-    #[test]
-    fn test_streaming_missing_object_errors_on_open() {
-        let server = spawn_server(HashMap::new());
-        let err = builder_for(&server)
-            .build_streaming("s3://bucket/absent.fastq")
-            .expect_err("missing object must fail");
-        assert!(err.to_string().contains("GetObject"), "got: {err}");
+            for (concurrency, part_size) in [(1, 1024), (2, 4096), (8, 997), (16, 65_536)] {
+                let mut reader = lite_builder_for(&server)
+                    .part_size(part_size)
+                    .concurrency(concurrency)
+                    .build("s3://bucket/reads.fastq")
+                    .expect("build reader");
+
+                let mut out = Vec::new();
+                reader.read_to_end(&mut out).expect("read");
+                assert_eq!(
+                    out, data,
+                    "mismatch at concurrency={concurrency} part_size={part_size}"
+                );
+            }
+        }
+
+        #[test]
+        fn test_lite_missing_object_errors_on_open() {
+            let server = spawn_server(HashMap::new());
+            let err = lite_builder_for(&server)
+                .build("s3://bucket/absent.fastq")
+                .expect_err("missing object must fail");
+            assert!(err.to_string().contains("HeadObject"), "got: {err}");
+        }
+
+        #[test]
+        fn test_lite_early_drop_is_prompt() {
+            let data = make_fastq(50_000, 150);
+            let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
+            let server = spawn_server(objects);
+
+            let mut reader = lite_builder_for(&server)
+                .part_size(16 * 1024)
+                .concurrency(8)
+                .build("s3://bucket/reads.fastq")
+                .expect("build reader");
+
+            let mut buf = [0u8; 64];
+            reader.read_exact(&mut buf).expect("read");
+
+            let start = std::time::Instant::now();
+            drop(reader);
+            assert!(
+                start.elapsed().as_secs() < 5,
+                "dropping with parts in flight must not block"
+            );
+        }
+
+        /// Throughput of the blocking request path over loopback, for comparison with
+        /// the SDK backend's equivalent benchmark.
+        #[test]
+        #[ignore]
+        fn bench_lite_loopback_throughput() {
+            let size = 256 * 1024 * 1024;
+            let data = vec![b'A'; size];
+            let objects = HashMap::from([("bucket/big.bin".to_string(), data)]);
+            let server = spawn_server(objects);
+
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let mut reader = lite_builder_for(&server)
+                    .part_size(8 * 1024 * 1024)
+                    .concurrency(8)
+                    .build("s3://bucket/big.bin")
+                    .expect("build reader");
+
+                let start = std::time::Instant::now();
+                let mut buf = vec![0u8; 1024 * 1024];
+                let mut total = 0usize;
+                loop {
+                    let n = reader.read(&mut buf).expect("read");
+                    if n == 0 {
+                        break;
+                    }
+                    total += n;
+                }
+                assert_eq!(total, size);
+                best = best.min(start.elapsed().as_secs_f64());
+            }
+            println!(
+                "lite loopback throughput: {:.0} MiB/s (best of 3)",
+                size as f64 / best / (1024.0 * 1024.0)
+            );
+        }
     }
 }
