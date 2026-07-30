@@ -12,8 +12,11 @@ use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::{config::Builder as S3ConfigBuilder, types::RequestPayer, Client};
 use bytes::Bytes;
 use thiserror::Error;
+use tokio::sync::mpsc;
 
-use super::range::{shared_runtime, ObjectMeta, RangeConfig, RangeFetcher, RangedObjectReader};
+use super::range::{
+    shared_runtime, ChunkReader, ObjectMeta, RangeConfig, RangeFetcher, RangedObjectReader,
+};
 
 #[derive(Error, Debug)]
 pub enum S3Error {
@@ -166,6 +169,50 @@ impl RangeFetcher for S3Fetcher {
     }
 }
 
+/// An [`io::Read`] over a single unranged `GetObject`.
+///
+/// This is the direct analogue of `aws s3 cp - ` or `s5cmd cat`: one request,
+/// one connection, chunks handed to the consumer as they arrive. It exists as
+/// the honest baseline for [`RangedObjectReader`] — when the consumer is slower
+/// than one connection (a single-threaded gzip decoder usually is), the
+/// concurrent window has nothing to win, and this path is both simpler and
+/// cheaper in connections.
+pub struct S3StreamReader {
+    inner: ChunkReader,
+    content_length: u64,
+}
+
+impl S3StreamReader {
+    /// Total size of the object in bytes.
+    pub fn content_length(&self) -> u64 {
+        self.content_length
+    }
+}
+
+impl std::fmt::Debug for S3StreamReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3StreamReader")
+            .field("content_length", &self.content_length)
+            .finish()
+    }
+}
+
+impl io::Read for S3StreamReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        io::Read::read(&mut self.inner, buf)
+    }
+}
+
+impl io::BufRead for S3StreamReader {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        io::BufRead::fill_buf(&mut self.inner)
+    }
+
+    fn consume(&mut self, amt: usize) {
+        io::BufRead::consume(&mut self.inner, amt)
+    }
+}
+
 /// Builder for an S3-backed reader.
 ///
 /// ```no_run
@@ -291,12 +338,59 @@ impl S3ReaderBuilder {
         Ok(client)
     }
 
-    /// Open `url` for reading.
+    /// Open `url` for reading with concurrent ranged requests.
     pub fn build(&self, url: &str) -> Result<RangedObjectReader, S3Error> {
         let parsed = S3Url::parse(url)?;
         let client = self.build_client()?;
         let fetcher = S3Fetcher::new(client, parsed, self.request_payer);
         RangedObjectReader::new(fetcher, self.config).map_err(S3Error::Io)
+    }
+
+    /// Open `url` for reading as a single streaming `GetObject`.
+    ///
+    /// Blocks until the response headers arrive, so auth and not-found errors
+    /// surface here rather than on first read. Only `queue_depth` applies;
+    /// `part_size` and `concurrency` are unused on this path.
+    pub fn build_streaming(&self, url: &str) -> Result<S3StreamReader, S3Error> {
+        let parsed = S3Url::parse(url)?;
+        let client = self.build_client()?;
+        let rt = shared_runtime().map_err(S3Error::Io)?;
+        let request_payer = self.request_payer;
+
+        let mut request = client.get_object().bucket(&parsed.bucket).key(&parsed.key);
+        if request_payer {
+            request = request.request_payer(RequestPayer::Requester);
+        }
+
+        let output = rt
+            .block_on(request.send())
+            .map_err(|e| S3Error::Io(sdk_error(&format!("GetObject {}", parsed.s3_uri()), e)))?;
+        let content_length = output.content_length().unwrap_or(0).max(0) as u64;
+
+        let (tx, rx) = mpsc::channel(self.config.queue_depth.max(1));
+        let driver = rt.spawn(async move {
+            let mut body = output.body;
+            loop {
+                match body.next().await {
+                    Some(Ok(chunk)) => {
+                        // A send error means the reader was dropped.
+                        if tx.send(Ok(chunk)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        let _ = tx.send(Err(sdk_error("streaming GetObject body", e))).await;
+                        break;
+                    }
+                    None => break,
+                }
+            }
+        });
+
+        Ok(S3StreamReader {
+            inner: ChunkReader::new(rx, driver),
+            content_length,
+        })
     }
 }
 

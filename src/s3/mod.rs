@@ -12,10 +12,10 @@ pub mod range;
 mod reader;
 
 pub use range::{
-    set_global_request_limit, set_runtime_threads, ObjectMeta, RangeConfig, RangeFetcher,
-    RangedObjectReader, DEFAULT_CONCURRENCY, DEFAULT_PART_SIZE, DEFAULT_QUEUE_DEPTH,
+    set_global_request_limit, set_runtime_threads, ChunkReader, ObjectMeta, RangeConfig,
+    RangeFetcher, RangedObjectReader, DEFAULT_CONCURRENCY, DEFAULT_PART_SIZE, DEFAULT_QUEUE_DEPTH,
 };
-pub use reader::{S3Error, S3Fetcher, S3Reader, S3ReaderBuilder, S3Url};
+pub use reader::{S3Error, S3Fetcher, S3Reader, S3ReaderBuilder, S3StreamReader, S3Url};
 
 #[cfg(test)]
 mod tests {
@@ -646,5 +646,78 @@ mod tests {
             "loopback throughput: {:.0} MiB/s (best of 3)",
             size as f64 / best / (1024.0 * 1024.0)
         );
+    }
+
+    #[test]
+    fn test_streaming_read_matches_source_bytes() {
+        let data = make_fastq(5_000, 150);
+        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
+        let server = spawn_server(objects);
+
+        let mut reader = builder_for(&server)
+            .build_streaming("s3://bucket/reads.fastq")
+            .expect("build streaming reader");
+
+        assert_eq!(reader.content_length(), data.len() as u64);
+
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).expect("read");
+        assert_eq!(out, data);
+
+        // One unranged GET, so the ranged-request counter must stay at zero.
+        assert_eq!(server.range_gets.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_streaming_parses_fastq_end_to_end() {
+        let n_records = 5_000;
+        let read_len = 150;
+        let data = make_fastq(n_records, read_len);
+        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
+        let server = spawn_server(objects);
+
+        let builder = builder_for(&server);
+        let reader =
+            Reader::from_s3_builder_streaming(&builder, "s3://bucket/reads.fastq").expect("open");
+
+        let mut counter = Counter::default();
+        reader.process_parallel(&mut counter, 4).expect("process");
+
+        assert_eq!(*counter.total_records.lock(), n_records);
+        assert_eq!(*counter.total_bases.lock(), n_records * read_len);
+    }
+
+    #[test]
+    fn test_streaming_and_ranged_agree() {
+        let data = make_fastq(3_000, 120);
+        let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
+        let server = spawn_server(objects);
+
+        let mut streamed = Vec::new();
+        builder_for(&server)
+            .build_streaming("s3://bucket/reads.fastq")
+            .expect("stream")
+            .read_to_end(&mut streamed)
+            .expect("read");
+
+        let mut ranged = Vec::new();
+        builder_for(&server)
+            .part_size(4096)
+            .concurrency(4)
+            .build("s3://bucket/reads.fastq")
+            .expect("ranged")
+            .read_to_end(&mut ranged)
+            .expect("read");
+
+        assert_eq!(streamed, ranged, "both paths must yield identical bytes");
+    }
+
+    #[test]
+    fn test_streaming_missing_object_errors_on_open() {
+        let server = spawn_server(HashMap::new());
+        let err = builder_for(&server)
+            .build_streaming("s3://bucket/absent.fastq")
+            .expect_err("missing object must fail");
+        assert!(err.to_string().contains("GetObject"), "got: {err}");
     }
 }

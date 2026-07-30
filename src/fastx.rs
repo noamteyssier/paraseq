@@ -779,6 +779,17 @@ impl Reader<BoxedReader> {
         Self::new_with_batch_size(reader, batch_size)
     }
 
+    /// Create a reader over an S3 object using a single streaming `GetObject`.
+    ///
+    /// The direct analogue of `s5cmd cat | ...`. When the consumer is slower
+    /// than one connection -- which a single-threaded gzip decoder usually is
+    /// -- this matches the concurrent path using one connection instead of N.
+    pub fn from_s3_streaming(s3_url: &str) -> Result<Self, Error> {
+        let s3_reader = crate::s3::S3Reader::builder().build_streaming(s3_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(s3_reader))?;
+        Self::new(reader)
+    }
+
     /// Create a reader over an S3 object from a configured builder.
     ///
     /// Use this to set region, endpoint, concurrency, or part size.
@@ -787,6 +798,16 @@ impl Reader<BoxedReader> {
         s3_url: &str,
     ) -> Result<Self, Error> {
         let s3_reader = builder.build(s3_url)?;
+        let (reader, _format) = niffler::send::get_reader(Box::new(s3_reader))?;
+        Self::new(reader)
+    }
+
+    /// Create a streaming reader over an S3 object from a configured builder.
+    pub fn from_s3_builder_streaming(
+        builder: &crate::s3::S3ReaderBuilder,
+        s3_url: &str,
+    ) -> Result<Self, Error> {
+        let s3_reader = builder.build_streaming(s3_url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(s3_reader))?;
         Self::new(reader)
     }

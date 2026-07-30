@@ -155,15 +155,73 @@ impl RangeConfig {
     }
 }
 
+/// Presents a sequence of byte chunks produced by an async task as a blocking
+/// [`io::Read`].
+///
+/// This is the bridge between the tokio side and the parser: chunks arrive over
+/// a bounded channel (which is what applies backpressure) and are handed out
+/// in arrival order.
+pub struct ChunkReader {
+    rx: mpsc::Receiver<io::Result<Bytes>>,
+    current: Bytes,
+    driver: JoinHandle<()>,
+}
+
+impl ChunkReader {
+    pub(crate) fn new(rx: mpsc::Receiver<io::Result<Bytes>>, driver: JoinHandle<()>) -> Self {
+        Self {
+            rx,
+            current: Bytes::new(),
+            driver,
+        }
+    }
+}
+
+impl Read for ChunkReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let available = self.fill_buf()?;
+        let n = available.len().min(buf.len());
+        buf[..n].copy_from_slice(&available[..n]);
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl BufRead for ChunkReader {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        // Loop rather than branch so a zero-length chunk cannot be mistaken
+        // for EOF.
+        while self.current.is_empty() {
+            match self.rx.blocking_recv() {
+                Some(Ok(bytes)) => self.current = bytes,
+                Some(Err(e)) => return Err(e),
+                None => break,
+            }
+        }
+        Ok(&self.current)
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.current.advance(amt.min(self.current.len()));
+    }
+}
+
+impl Drop for ChunkReader {
+    fn drop(&mut self) {
+        // Cancel rather than join: an early stop (record limit, range, error)
+        // must not block on in-flight work draining.
+        self.driver.abort();
+        self.rx.close();
+    }
+}
+
 /// An [`io::Read`] over an object fetched via concurrent ranged requests.
 ///
 /// Parts complete out of order but are delivered strictly in order, so this is
 /// a drop-in replacement for a sequential `GET` stream — including in front of
 /// a decompressor.
 pub struct RangedObjectReader {
-    rx: mpsc::Receiver<io::Result<Bytes>>,
-    current: Bytes,
-    driver: JoinHandle<()>,
+    inner: ChunkReader,
     meta: ObjectMeta,
 }
 
@@ -181,9 +239,7 @@ impl RangedObjectReader {
         let driver = rt.spawn(drive(fetcher, meta.clone(), config, tx));
 
         Ok(Self {
-            rx,
-            current: Bytes::new(),
-            driver,
+            inner: ChunkReader::new(rx, driver),
             meta,
         })
     }
@@ -262,45 +318,22 @@ impl std::fmt::Debug for RangedObjectReader {
         f.debug_struct("RangedObjectReader")
             .field("content_length", &self.meta.content_length)
             .field("version_token", &self.meta.version_token)
-            .field("buffered", &self.current.len())
             .finish()
     }
 }
 
 impl Read for RangedObjectReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let available = self.fill_buf()?;
-        let n = available.len().min(buf.len());
-        buf[..n].copy_from_slice(&available[..n]);
-        self.consume(n);
-        Ok(n)
+        self.inner.read(buf)
     }
 }
 
 impl BufRead for RangedObjectReader {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        // Loop rather than branch so a zero-length part cannot be mistaken
-        // for EOF.
-        while self.current.is_empty() {
-            match self.rx.blocking_recv() {
-                Some(Ok(bytes)) => self.current = bytes,
-                Some(Err(e)) => return Err(e),
-                None => break,
-            }
-        }
-        Ok(&self.current)
+        self.inner.fill_buf()
     }
 
     fn consume(&mut self, amt: usize) {
-        self.current.advance(amt.min(self.current.len()));
-    }
-}
-
-impl Drop for RangedObjectReader {
-    fn drop(&mut self) {
-        // Cancel rather than join: an early stop (record limit, range, error)
-        // must not block on in-flight requests draining.
-        self.driver.abort();
-        self.rx.close();
+        self.inner.consume(amt)
     }
 }

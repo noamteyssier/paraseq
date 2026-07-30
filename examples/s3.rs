@@ -60,6 +60,10 @@ struct Cli {
     #[clap(long)]
     probe: Option<usize>,
 
+    /// Use a single streaming GetObject instead of concurrent ranged requests
+    #[clap(long)]
+    streaming: bool,
+
     /// Benchmark fetch and parse throughput instead of just parsing
     #[clap(long)]
     bench: bool,
@@ -124,12 +128,27 @@ fn main() -> Result<()> {
     }
 
     let start = Instant::now();
-    let reader = Reader::from_s3_builder(&builder, &args.url)?;
+    let reader = if args.streaming {
+        Reader::from_s3_builder_streaming(&builder, &args.url)?
+    } else {
+        Reader::from_s3_builder(&builder, &args.url)?
+    };
     let mut processor = SeqSum::default();
     reader.process_parallel(&mut processor, args.threads)?;
 
     let elapsed = start.elapsed();
     processor.report();
+    println!(
+        "mode: {}",
+        if args.streaming {
+            "streaming (1 connection)".to_string()
+        } else {
+            format!(
+                "ranged (c={}, {} MiB parts)",
+                args.concurrency, args.part_size_mib
+            )
+        }
+    );
     println!("elapsed: {:.2}s", elapsed.as_secs_f64());
     Ok(())
 }
