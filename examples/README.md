@@ -31,6 +31,7 @@ example itself.
 | [`interleaved.rs`](interleaved.rs) | Paired-end processing of one interleaved file via `PairedParallelProcessor`. Linked from the main README. |
 | [`range_parallel.rs`](range_parallel.rs) | Restricting processing to a bounded `[start, end)` range of records. |
 | [`reloading_parallel.rs`](reloading_parallel.rs) | Combining `Reader::reload` with parallel processing. |
+| [`ordered_parallel.rs`](ordered_parallel.rs) | Preserving input record order in the output via `parallel::Ordered`, opt-in per processor. |
 
 ## Multi-File and Collections
 
