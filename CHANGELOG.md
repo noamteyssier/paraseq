@@ -6,9 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
-### Added 
+### Added
 
 - A global record index to the `Record` trait to keep track of original record positions in the input file
+- `parallel::Ordered<P>` processor wrapper for opt-in output ordering: serializes `on_batch_complete` calls to match the original record stream order, at the cost of head-of-line blocking on the slowest outstanding batch. `process_record`/`process_record_batch` remain fully parallel.
+
+### Fixed
+- Fixed a race between claiming a batch's position in the stream (`records_seen`) and the reader's internal lock around `fill`, which could let offset/limit range processing (and now, ordering) attribute the wrong records to a batch under high thread contention with small batch sizes.
 
 ## 0.4.14
 
