@@ -24,7 +24,7 @@ pub mod ssh;
 #[cfg(feature = "gcs")]
 pub mod gcs;
 
-#[cfg(any(feature = "s3", feature = "s3-lite"))]
+#[cfg(feature = "s3")]
 pub mod s3;
 
 pub use error::Error;

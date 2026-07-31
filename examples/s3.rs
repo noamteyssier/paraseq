@@ -64,10 +64,6 @@ struct Cli {
     #[clap(long)]
     streaming: bool,
 
-    /// Use the blocking `s3-lite` backend (rusty-s3 + ureq) instead of aws-sdk-s3
-    #[clap(long)]
-    lite: bool,
-
     /// Benchmark fetch and parse throughput instead of just parsing
     #[clap(long)]
     bench: bool,
@@ -117,10 +113,6 @@ fn main() -> Result<()> {
         b
     };
 
-    if args.lite {
-        return run_lite(&args);
-    }
-
     if let Some(n) = args.probe {
         let mut reader = builder.build(&args.url)?;
         let mut buf = vec![0u8; n];
@@ -156,47 +148,6 @@ fn main() -> Result<()> {
                 args.concurrency, args.part_size_mib
             )
         }
-    );
-    println!("elapsed: {:.2}s", elapsed.as_secs_f64());
-    Ok(())
-}
-
-/// Runs the blocking `s3-lite` backend, which shares no code with the SDK path
-/// beyond the shared config types.
-fn run_lite(args: &Cli) -> Result<()> {
-    let mut builder = paraseq::s3::LiteS3Reader::builder()
-        .concurrency(args.concurrency)
-        .part_size(args.part_size_mib * 1024 * 1024);
-    if let Some(region) = &args.region {
-        builder = builder.region(region.clone());
-    }
-    if let Some(profile) = &args.profile {
-        builder = builder.profile(profile.clone());
-    }
-    if args.anonymous {
-        builder = builder.anonymous(true);
-    }
-
-    if let Some(n) = args.probe {
-        let mut reader = builder.build(&args.url)?;
-        let mut buf = vec![0u8; n];
-        let read = reader.read(&mut buf)?;
-        println!("content_length: {}", reader.content_length());
-        println!("read {read} bytes over TLS (s3-lite)");
-        println!("{}", String::from_utf8_lossy(&buf[..read.min(200)]));
-        return Ok(());
-    }
-
-    let start = Instant::now();
-    let reader = Reader::from_s3_lite_builder(&builder, &args.url)?;
-    let mut processor = SeqSum::default();
-    reader.process_parallel(&mut processor, args.threads)?;
-
-    let elapsed = start.elapsed();
-    processor.report();
-    println!(
-        "mode: s3-lite ranged (c={}, {} MiB parts)",
-        args.concurrency, args.part_size_mib
     );
     println!("elapsed: {:.2}s", elapsed.as_secs_f64());
     Ok(())

@@ -29,7 +29,7 @@ pub enum Error {
     #[error("GCS error: {0}")]
     Gcs(#[from] crate::gcs::GcsError),
 
-    #[cfg(any(feature = "s3", feature = "s3-lite"))]
+    #[cfg(feature = "s3")]
     #[error("S3 error: {0}")]
     S3(#[from] crate::s3::S3Error),
 

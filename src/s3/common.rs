@@ -1,7 +1,8 @@
-//! Types shared by the S3 backends.
+//! Config, identity, and error types for the S3 backend.
 //!
-//! Kept free of any client or runtime dependency so both the `s3` (aws-sdk,
-//! async) and `s3-lite` (rusty-s3 + ureq, blocking) backends can use them.
+//! Kept free of any client or runtime dependency, so [`range`](super::range)
+//! stays focused on the fetch window and [`reader`](super::reader) on the
+//! aws-sdk specifics.
 
 use std::io;
 
