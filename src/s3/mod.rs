@@ -140,6 +140,9 @@ mod tests {
         range_gets: &AtomicUsize,
         if_match_gets: &AtomicUsize,
     ) -> std::io::Result<()> {
+        // Responses go out as two writes (headers, then body); without this,
+        // Nagle holds the second one waiting for an ACK.
+        stream.set_nodelay(true)?;
         let mut writer = stream.try_clone()?;
         let mut reader = BufReader::new(stream);
 
@@ -564,11 +567,19 @@ mod tests {
 
     #[test]
     fn test_concurrency_does_not_change_result() {
-        let data = make_fastq(2_000, 100);
+        // Deliberately small: this test is about part *boundaries*, not volume,
+        // and every part is a round trip to the local server. At 2_000 records
+        // the `concurrency=1, part=1024` case alone costs ~450 sequential
+        // requests and dominates the suite's runtime. Bulk coverage lives in
+        // `test_ranged_read_matches_source_bytes` and
+        // `test_parses_fastq_end_to_end`.
+        let data = make_fastq(400, 100);
         let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);
         let server = spawn_server(objects);
 
         // Part boundaries must not affect the parse, regardless of window size.
+        // 997 is prime so boundaries land mid-record; 65_536 exercises the
+        // single-part path and a window wider than the part count.
         for (concurrency, part_size) in [(1, 1024), (2, 4096), (8, 997), (16, 65_536)] {
             let mut reader = builder_for(&server)
                 .part_size(part_size)
@@ -597,7 +608,10 @@ mod tests {
 
     #[test]
     fn test_early_drop_is_prompt() {
-        let data = make_fastq(50_000, 150);
+        // Only needs far more parts than the window is wide, so that requests
+        // are still pending at drop; generating megabytes to read 64 bytes is
+        // pure overhead.
+        let data = make_fastq(4_000, 150);
         let objects = HashMap::from([("bucket/reads.fastq".to_string(), data)]);
         let server = spawn_server(objects);
 
