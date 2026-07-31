@@ -770,6 +770,48 @@ mod tests {
         }
 
         #[test]
+        fn test_region_from_config_file() {
+            use std::io::Write as _;
+
+            let dir = std::env::temp_dir().join(format!("paraseq-cfg-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("config");
+            let mut file = std::fs::File::create(&path).unwrap();
+            writeln!(
+                file,
+                "[default]\nregion = us-east-1\n\n[profile west]\nregion=us-west-2\noutput = json\n\n[profile noregion]\noutput = json"
+            )
+            .unwrap();
+            drop(file);
+
+            // SAFETY: single-threaded within this test, and the value is
+            // restored before returning.
+            unsafe { std::env::set_var("AWS_CONFIG_FILE", &path) };
+
+            assert_eq!(
+                super::super::lite::region_from_config_file(None).as_deref(),
+                Some("us-east-1")
+            );
+            assert_eq!(
+                super::super::lite::region_from_config_file(Some("west")).as_deref(),
+                Some("us-west-2"),
+                "value should parse without spaces around ="
+            );
+            assert_eq!(
+                super::super::lite::region_from_config_file(Some("noregion")),
+                None,
+                "a profile without a region must not inherit another section's"
+            );
+            assert_eq!(
+                super::super::lite::region_from_config_file(Some("absent")),
+                None
+            );
+
+            unsafe { std::env::remove_var("AWS_CONFIG_FILE") };
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn test_lite_ranged_read_matches_source_bytes() {
             let data = make_fastq(5_000, 150);
             let objects = HashMap::from([("bucket/reads.fastq".to_string(), data.clone())]);

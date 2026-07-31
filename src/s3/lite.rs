@@ -206,13 +206,73 @@ pub struct LiteS3Fetcher {
     agent: ureq::Agent,
 }
 
+/// Builds an agent that surfaces redirects instead of chasing them.
+///
+/// S3 answers a request aimed at the wrong regional endpoint with `301` and no
+/// `Location` header -- the real region arrives in `x-amz-bucket-region`. A
+/// redirect-following client fails that with a confusing protocol error, so we
+/// keep the response and read the header ourselves.
+fn s3_agent() -> ureq::Agent {
+    ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .max_redirects(0)
+            .max_redirects_will_error(false)
+            .build(),
+    )
+}
+
+/// Asks S3 which region a bucket lives in.
+///
+/// The global endpoint answers with `x-amz-bucket-region` even when it rejects
+/// the request, so this works unsigned and against private buckets.
+fn probe_bucket_region(bucket: &str) -> Option<String> {
+    let response = s3_agent()
+        .head(&format!("https://s3.amazonaws.com/{bucket}"))
+        .call()
+        .ok()?;
+    header_str(response.headers(), "x-amz-bucket-region")
+}
+
+/// Reads `region` for `profile` out of the shared AWS config file.
+pub(crate) fn region_from_config_file(profile: Option<&str>) -> Option<String> {
+    let path = std::env::var("AWS_CONFIG_FILE")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs_home().map(|home| home.join(".aws").join("config")))?;
+    let contents = std::fs::read_to_string(path).ok()?;
+
+    let wanted = match profile {
+        Some("default") | None => "[default]".to_string(),
+        Some(name) => format!("[profile {name}]"),
+    };
+
+    let mut in_section = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_section = line == wanted;
+        } else if in_section {
+            if let Some(value) = line.strip_prefix("region") {
+                if let Some(value) = value.trim_start().strip_prefix('=') {
+                    return Some(value.trim().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var("HOME").ok().map(std::path::PathBuf::from)
+}
+
 impl LiteS3Fetcher {
     pub fn new(bucket: Bucket, credentials: Option<Credentials>, key: String) -> Self {
         Self {
             bucket,
             credentials,
             key,
-            agent: ureq::Agent::new_with_defaults(),
+            agent: s3_agent(),
         }
     }
 
@@ -260,6 +320,14 @@ impl BlockingRangeFetcher for LiteS3Fetcher {
         })?;
 
         if !response.status().is_success() {
+            if let Some(region) = header_str(response.headers(), "x-amz-bucket-region") {
+                return Err(io::Error::other(format!(
+                    "HeadObject {} returned HTTP {}: bucket is in region {region}, \
+                     but the request went to a different endpoint",
+                    self.key,
+                    response.status()
+                )));
+            }
             return Err(io::Error::other(format!(
                 "HeadObject {} returned HTTP {}",
                 self.key,
@@ -398,11 +466,26 @@ impl LiteS3ReaderBuilder {
         self
     }
 
-    fn region_or_default(&self) -> String {
+    /// Resolves the region to sign and address requests with.
+    ///
+    /// The bucket's region is what matters, and it need not match the caller's
+    /// environment, so an explicit setting and the environment are consulted
+    /// first and S3 itself is asked as the authority before falling back.
+    fn resolve_region(&self, bucket: &str) -> String {
         self.region
             .clone()
             .or_else(|| std::env::var("AWS_REGION").ok())
             .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+            .or_else(|| region_from_config_file(self.profile.as_deref()))
+            .or_else(|| {
+                // Only worth a round-trip against real S3; a custom endpoint
+                // (MinIO, R2) has no global endpoint to ask.
+                if self.endpoint_url.is_none() {
+                    probe_bucket_region(bucket)
+                } else {
+                    None
+                }
+            })
             .unwrap_or_else(|| "us-east-1".to_string())
     }
 
@@ -436,7 +519,7 @@ impl LiteS3ReaderBuilder {
     /// Open `url` for reading with a thread-backed ranged window.
     pub fn build(&self, url: &str) -> Result<ThreadedRangedReader, S3Error> {
         let parsed = S3Url::parse(url)?;
-        let region = self.region_or_default();
+        let region = self.resolve_region(&parsed.bucket);
 
         let endpoint = self
             .endpoint_url
