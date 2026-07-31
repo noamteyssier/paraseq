@@ -24,6 +24,12 @@ pub trait GenericProcessor<Rf>: Send + Clone {
     fn set_thread_id(&mut self, thread_id: usize) {
         // Default implementation does nothing
     }
+
+    /// Whether `on_batch_complete` must be called in the same order batches
+    /// were claimed from the input stream(s). See [`crate::parallel::Ordered`].
+    fn requires_ordering(&self) -> bool {
+        false
+    }
 }
 
 /// Implement either `process_record_batch` or `process_record`.
@@ -62,6 +68,12 @@ pub trait ParallelProcessor<Rf: Record>: Send + Clone {
     fn get_thread_id(&self) -> usize {
         unimplemented!("Must be implemented by the processor to be used")
     }
+
+    /// Whether `on_batch_complete` must be called in the same order batches
+    /// were claimed from the input stream(s). See [`crate::parallel::Ordered`].
+    fn requires_ordering(&self) -> bool {
+        false
+    }
 }
 
 impl<Rf: Record, P: ParallelProcessor<Rf>> GenericProcessor<Rf> for P {
@@ -76,6 +88,9 @@ impl<Rf: Record, P: ParallelProcessor<Rf>> GenericProcessor<Rf> for P {
     }
     fn set_thread_id(&mut self, thread_id: usize) {
         self.set_thread_id(thread_id);
+    }
+    fn requires_ordering(&self) -> bool {
+        self.requires_ordering()
     }
 }
 
@@ -116,6 +131,12 @@ pub trait PairedParallelProcessor<Rf: Record>: Send + Clone {
     fn get_thread_id(&self) -> usize {
         unimplemented!("Must be implemented by the processor to be used")
     }
+
+    /// Whether `on_batch_complete` must be called in the same order batches
+    /// were claimed from the input stream(s). See [`crate::parallel::Ordered`].
+    fn requires_ordering(&self) -> bool {
+        false
+    }
 }
 
 impl<Rf: Record, P: PairedParallelProcessor<Rf>> GenericProcessor<(Rf, Rf)> for P {
@@ -130,6 +151,9 @@ impl<Rf: Record, P: PairedParallelProcessor<Rf>> GenericProcessor<(Rf, Rf)> for 
     }
     fn set_thread_id(&mut self, thread_id: usize) {
         self.set_thread_id(thread_id);
+    }
+    fn requires_ordering(&self) -> bool {
+        self.requires_ordering()
     }
 }
 
@@ -170,6 +194,12 @@ pub trait MultiParallelProcessor<Rf: Record>: Send + Clone {
     fn get_thread_id(&self) -> usize {
         unimplemented!("Must be implemented by the processor to be used")
     }
+
+    /// Whether `on_batch_complete` must be called in the same order batches
+    /// were claimed from the input stream(s). See [`crate::parallel::Ordered`].
+    fn requires_ordering(&self) -> bool {
+        false
+    }
 }
 
 impl<Rf: Record, P: MultiParallelProcessor<Rf>> GenericProcessor<SmallVec<[Rf; MAX_ARITY]>> for P {
@@ -187,6 +217,9 @@ impl<Rf: Record, P: MultiParallelProcessor<Rf>> GenericProcessor<SmallVec<[Rf; M
     }
     fn set_thread_id(&mut self, thread_id: usize) {
         self.set_thread_id(thread_id);
+    }
+    fn requires_ordering(&self) -> bool {
+        self.requires_ordering()
     }
 }
 
