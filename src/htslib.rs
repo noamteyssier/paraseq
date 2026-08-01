@@ -37,6 +37,9 @@ pub enum ParallelHtslibError {
 pub struct Reader {
     reader: bam::Reader,
     batch_size: Option<usize>,
+    /// Running count of records already yielded by this reader, used to
+    /// assign each parsed record its stable, global index in the file.
+    total_records: u64,
 }
 impl Reader {
     pub fn from_optional_path<P: AsRef<Path>>(path: Option<P>) -> Result<Self> {
@@ -47,6 +50,7 @@ impl Reader {
         Ok(Self {
             reader: inner,
             batch_size: None,
+            total_records: 0,
         })
     }
 
@@ -55,6 +59,7 @@ impl Reader {
         Ok(Self {
             reader: inner,
             batch_size: None,
+            total_records: 0,
         })
     }
 
@@ -63,6 +68,7 @@ impl Reader {
         Ok(Self {
             reader: inner,
             batch_size: None,
+            total_records: 0,
         })
     }
 
@@ -70,6 +76,7 @@ impl Reader {
         Self {
             reader,
             batch_size: None,
+            total_records: 0,
         }
     }
 }
@@ -78,12 +85,14 @@ pub struct RefRecord<'a> {
     pub inner: &'a bam::Record,
     /// Used to store ASCII-encoded quality scores as BAM records store raw PHRED scores.
     qual: OnceLock<Option<Vec<u8>>>,
+    index: u64,
 }
 impl<'a> RefRecord<'a> {
-    pub fn new(record: &'a bam::Record) -> Self {
+    pub fn new(record: &'a bam::Record, index: u64) -> Self {
         Self {
             inner: record,
             qual: OnceLock::new(),
+            index,
         }
     }
 }
@@ -110,12 +119,17 @@ impl Record for RefRecord<'_> {
             })
             .as_deref()
     }
+    fn index(&self) -> u64 {
+        self.index
+    }
 }
 
 #[derive(Clone)]
 pub struct RecordSet {
     records: Vec<bam::Record>,
     n_records: usize,
+    /// Global index of the first record in this set within the original file
+    base_index: u64,
 }
 impl Default for RecordSet {
     fn default() -> Self {
@@ -127,13 +141,16 @@ impl RecordSet {
         Self {
             records: vec![bam::Record::default(); capacity],
             n_records: 0,
+            base_index: 0,
         }
     }
     pub fn iter(&self) -> impl ExactSizeIterator<Item = Result<RefRecord<'_>>> {
+        let base_index = self.base_index;
         self.records
             .iter()
             .take(self.n_records)
-            .map(RefRecord::new)
+            .enumerate()
+            .map(move |(i, record)| RefRecord::new(record, base_index + i as u64))
             .map(Ok)
     }
 }
@@ -154,6 +171,7 @@ impl GenericReader for Reader {
     fn fill(&mut self, record_set: &mut Self::RecordSet) -> Result<bool> {
         // reset the counter
         record_set.n_records = 0;
+        record_set.base_index = self.total_records;
 
         // fill the record set
         for record in &mut record_set.records {
@@ -164,6 +182,8 @@ impl GenericReader for Reader {
                 break;
             }
         }
+
+        self.total_records += record_set.n_records as u64;
 
         // false if reader is exhausted
         Ok(record_set.n_records > 0)
@@ -266,6 +286,39 @@ mod tests {
             reader.process_parallel(&mut proc, 1).unwrap();
             assert_eq!(proc.count(), 100);
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct IndexCollectingProcessor {
+        local_indices: Vec<u64>,
+        global_indices: Arc<std::sync::Mutex<Vec<u64>>>,
+    }
+    impl<Rf: Record> ParallelProcessor<Rf> for IndexCollectingProcessor {
+        fn process_record(&mut self, record: Rf) -> Result<()> {
+            self.local_indices.push(record.index());
+            Ok(())
+        }
+        fn on_batch_complete(&mut self) -> Result<()> {
+            self.global_indices
+                .lock()
+                .unwrap()
+                .extend(self.local_indices.drain(..));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_index_sequential_single_threaded() {
+        // NOTE: intentionally single-threaded (num_threads=1). Multi-threaded
+        // htslib processing hangs even with the pre-existing CountingProcessor
+        // and no index-related code involved -- a latent issue in htslib's
+        // parallel path, not something introduced by `index()`. No existing
+        // test in this suite exercises htslib with num_threads > 1 either.
+        let reader = Reader::from_path("./data/sample.sam").unwrap();
+        let mut proc = IndexCollectingProcessor::default();
+        reader.process_parallel(&mut proc, 1).unwrap();
+        let indices = proc.global_indices.lock().unwrap().clone();
+        assert_eq!(indices, (0..100u64).collect::<Vec<_>>());
     }
 
     #[test]

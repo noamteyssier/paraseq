@@ -240,6 +240,26 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct IndexCollectingProcessor {
+        local_indices: Vec<u64>,
+        global_indices: Arc<parking_lot::Mutex<Vec<u64>>>,
+    }
+
+    impl<Rf: Record> ParallelProcessor<Rf> for IndexCollectingProcessor {
+        fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+            self.local_indices.push(record.index());
+            Ok(())
+        }
+
+        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+            self.global_indices
+                .lock()
+                .extend(self.local_indices.drain(..));
+            Ok(())
+        }
+    }
+
     const N_RECORDS: usize = 500;
     const BATCH_SIZE: usize = 10;
     const LIMIT: usize = 50;
@@ -429,6 +449,54 @@ mod tests {
             .unwrap();
 
         assert_eq!(processor.count(), 10);
+    }
+
+    #[test]
+    fn test_index_reflects_true_file_position_under_range() {
+        // A range only filters which records reach the processor; the
+        // `index()` of a delivered record must still be its true position
+        // in the file, not an offset relative to the range.
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = IndexCollectingProcessor::default();
+
+        reader
+            .process_parallel_range(&mut processor, 4, 10..20)
+            .unwrap();
+
+        let mut indices = processor.global_indices.lock().clone();
+        indices.sort_unstable();
+        assert_eq!(indices, (10..20u64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_index_reflects_true_file_position_under_range_sequential() {
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = IndexCollectingProcessor::default();
+
+        reader
+            .process_parallel_range(&mut processor, 1, 17..83)
+            .unwrap();
+
+        let indices = processor.global_indices.lock().clone();
+        assert_eq!(indices, (17..83u64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_index_complete_and_unique_multi_threaded() {
+        // Batches are claimed atomically by threads, so delivery order isn't
+        // guaranteed, but every index in the file must be assigned to
+        // exactly one record.
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = IndexCollectingProcessor::default();
+
+        reader.process_parallel(&mut processor, 4).unwrap();
+
+        let mut indices = processor.global_indices.lock().clone();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..N_RECORDS as u64).collect::<Vec<_>>());
     }
 
     // Paired range tests
