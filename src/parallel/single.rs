@@ -1,5 +1,7 @@
 use itertools::Itertools;
+use parking_lot::Mutex;
 
+use crate::parallel::ordered::OrderGate;
 use crate::parallel::processor::GenericProcessor;
 use crate::parallel::{error::Result, ProcessError};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -107,8 +109,16 @@ where
 
     reader.set_num_threads(num_threads).map_err(Into::into)?;
 
-    let records_seen = Arc::new(AtomicUsize::default());
+    // Guards both the fill-and-claim step below: a batch's position label
+    // must be assigned atomically with the read that produced it, or two
+    // threads can race between releasing the reader's own lock (after
+    // `fill`) and calling `fetch_add`, letting a later chunk claim an
+    // earlier position (or vice versa) and corrupting offset/limit slicing
+    // and, if enabled, the order gate.
+    let records_seen = Arc::new(Mutex::new(0usize));
     let records_processed = Arc::new(AtomicUsize::default());
+    let order_gate = Arc::new(OrderGate::new());
+    let ordered = processor.requires_ordering();
 
     thread::scope(|scope| -> Result<()> {
         let reader = &reader;
@@ -119,62 +129,93 @@ where
             let mut record_set = reader.new_record_set();
             let records_seen = records_seen.clone();
             let records_processed = records_processed.clone();
+            let order_gate = order_gate.clone();
 
             let handle = scope.spawn(move || {
-                worker_processor.set_thread_id(thread_id);
+                // Run the worker body in a closure so any error path below can
+                // poison the order gate before propagating - otherwise other
+                // threads waiting on a batch that will never complete would
+                // deadlock instead of unwinding.
+                let result: Result<()> = (|| {
+                    worker_processor.set_thread_id(thread_id);
 
-                loop {
-                    // Check limit before grabbing batch
-                    if let Some(lim) = limit {
-                        if records_processed.load(Ordering::Relaxed) >= lim {
+                    loop {
+                        // Check limit before grabbing batch
+                        if let Some(lim) = limit {
+                            if records_processed.load(Ordering::Relaxed) >= lim {
+                                break;
+                            }
+                        }
+
+                        // Fill the batch and claim its position in the stream
+                        // as a single atomic step (see comment above on why
+                        // both must happen under the same lock).
+                        let (batch_start, batch_end) = {
+                            let mut seen = records_seen.lock();
+                            if !reader.fill(&mut record_set).map_err(Into::into)? {
+                                break; // EOF
+                            }
+                            let batch_size = S::n_records(&record_set);
+                            let batch_start = *seen;
+                            *seen += batch_size;
+                            (batch_start, batch_start + batch_size)
+                        };
+                        let batch_size = batch_end - batch_start;
+
+                        // Determine overlap with target range [offset, offset+limit)
+                        let range_end = limit.map(|lim| offset + lim).unwrap_or(usize::MAX);
+
+                        if batch_end <= offset {
+                            // Entire batch before offset - skip it. Still catch
+                            // the order gate up to this point so the first
+                            // processed batch's wait_turn isn't stuck waiting
+                            // for skipped ground it will never claim.
+                            if ordered {
+                                order_gate.advance(batch_end);
+                            }
+                            continue;
+                        }
+
+                        if batch_start >= range_end {
+                            // Entire batch after limit - done
                             break;
                         }
+
+                        // Calculate slice of this batch within range
+                        let skip_in_batch = offset.saturating_sub(batch_start);
+                        let take_count = (batch_size - skip_in_batch)
+                            .min(range_end - batch_start - skip_in_batch);
+
+                        // Process the slice
+                        let records = S::iter(&record_set)
+                            .skip(skip_in_batch)
+                            .take(take_count)
+                            .map(|r| r.map_err(Into::into));
+
+                        records.process_results(|records| {
+                            worker_processor.process_record_batch(records)
+                        })??;
+
+                        records_processed.fetch_add(take_count, Ordering::Relaxed);
+
+                        // Only the commit step is serialized to stream order;
+                        // process_record_batch above already ran unordered.
+                        if ordered {
+                            order_gate.wait_turn(batch_start);
+                        }
+                        worker_processor.on_batch_complete()?;
+                        if ordered {
+                            order_gate.advance(batch_end);
+                        }
                     }
+                    worker_processor.on_thread_complete()?;
+                    Ok(())
+                })();
 
-                    // Fill the batch
-                    if !reader.fill(&mut record_set).map_err(Into::into)? {
-                        break; // EOF
-                    }
-
-                    let batch_size = S::n_records(&record_set);
-
-                    // Atomically claim our position in the stream
-                    let batch_start = records_seen.fetch_add(batch_size, Ordering::SeqCst);
-                    let batch_end = batch_start + batch_size;
-
-                    // Determine overlap with target range [offset, offset+limit)
-                    let range_end = limit.map(|lim| offset + lim).unwrap_or(usize::MAX);
-
-                    if batch_end <= offset {
-                        // Entire batch before offset - skip it
-                        continue;
-                    }
-
-                    if batch_start >= range_end {
-                        // Entire batch after limit - done
-                        break;
-                    }
-
-                    // Calculate slice of this batch within range
-                    let skip_in_batch = offset.saturating_sub(batch_start);
-                    let take_count =
-                        (batch_size - skip_in_batch).min(range_end - batch_start - skip_in_batch);
-
-                    // Process the slice
-                    let records = S::iter(&record_set)
-                        .skip(skip_in_batch)
-                        .take(take_count)
-                        .map(|r| r.map_err(Into::into));
-
-                    records.process_results(|records| {
-                        worker_processor.process_record_batch(records)
-                    })??;
-
-                    records_processed.fetch_add(take_count, Ordering::Relaxed);
-                    worker_processor.on_batch_complete()?;
+                if result.is_err() && ordered {
+                    order_gate.poison();
                 }
-                worker_processor.on_thread_complete()?;
-                Ok(())
+                result
             });
 
             handles.push(handle);
@@ -423,6 +464,58 @@ mod tests {
             .unwrap();
 
         assert_eq!(processor.count(), 66);
+    }
+
+    // Regression test for a race between claiming a batch's stream position
+    // (`records_seen`) and the reader's own internal lock around `fill`.
+    // The two used to happen as separate steps, so a thread could be
+    // preempted between them and let a later-read chunk claim an earlier
+    // position (or vice versa), corrupting which records offset/limit
+    // slicing believes it's looking at. Small batches, many threads, and an
+    // uneven per-record delay (to perturb scheduling) reproduce it reliably
+    // without the fix; this asserts the exact record set survives regardless.
+    #[test]
+    fn test_range_exact_records_under_contention() {
+        use std::sync::Mutex;
+        use std::thread;
+        use std::time::Duration;
+
+        #[derive(Clone, Default)]
+        struct IdCollector {
+            seen: Arc<Mutex<Vec<usize>>>,
+        }
+
+        impl<Rf: Record> ParallelProcessor<Rf> for IdCollector {
+            fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+                let idx: usize = record
+                    .id_str()
+                    .strip_prefix("seq")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                // Bias early records to be slower, widening the window in
+                // which the fill/claim race (if reintroduced) could hit.
+                if idx < 100 {
+                    thread::sleep(Duration::from_micros(200));
+                }
+                self.seen.lock().unwrap().push(idx);
+                Ok(())
+            }
+        }
+
+        for attempt in 0..20 {
+            let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(400)), 4).unwrap();
+            let mut processor = IdCollector::default();
+
+            reader
+                .process_parallel_range(&mut processor, 16, 137..229)
+                .unwrap();
+
+            let mut got = processor.seen.lock().unwrap().clone();
+            got.sort_unstable();
+            let expected: Vec<usize> = (137..229).collect();
+            assert_eq!(got, expected, "mismatch on attempt {attempt}");
+        }
     }
 
     #[test]
