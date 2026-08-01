@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Added 
+
+- A global record index to the `Record` trait to keep track of original record positions in the input file
+
 ## 0.4.14
 
 ### Fixed
