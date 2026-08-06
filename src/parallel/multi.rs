@@ -1,14 +1,15 @@
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 
 use crate::fastx::GenericReader;
 use crate::parallel::error::ProcessError;
 use crate::MAX_ARITY;
 
-use super::single::MTGenericReader;
+use super::single::{BatchCounter, MTGenericReader};
 
 pub struct MultiReader<R: GenericReader> {
     readers: SmallVec<[Mutex<R>; MAX_ARITY]>,
+    records_seen: BatchCounter,
 }
 
 impl<R: GenericReader> MultiReader<R> {
@@ -16,6 +17,7 @@ impl<R: GenericReader> MultiReader<R> {
         assert!(!readers.is_empty());
         Self {
             readers: readers.into_iter().map(Mutex::new).collect(),
+            records_seen: BatchCounter::new(),
         }
     }
 }
@@ -35,29 +37,43 @@ where
             .collect()
     }
 
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        let mut prev_lock: Option<MutexGuard<_>> = None;
+    fn fill(
+        &self,
+        record_set: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
+        let mut r0 = self.readers[0].lock();
+        let filled_0 = r0.fill(&mut record_set[0])?;
 
-        let mut filled = None;
+        if !filled_0 {
+            // readers[0] is exhausted. checks for batch size mismatch
+            drop(r0);
+            for i in 1..self.readers.len() {
+                let mut r = self.readers[i].lock();
+                let filled_i = r.fill(&mut record_set[i])?;
+                drop(r);
+                if filled_i {
+                    return Err(ProcessError::MultiRecordMismatch(0));
+                }
+            }
+            return Ok(None);
+        }
 
-        for i in 0..self.readers.len() {
+        let batch_size = R::iter(&record_set[0]).len();
+        let claimed = self.records_seen.claim(batch_size);
+
+        let mut prev_lock = Some(r0);
+        for i in 1..self.readers.len() {
             let mut r = self.readers[i].lock();
             drop(prev_lock);
-            let filledi = r.fill(&mut record_set[i])?;
-            match filled {
-                None => {
-                    filled = Some(filledi);
-                }
-                Some(f) => {
-                    if filledi != f {
-                        return Err(ProcessError::MultiRecordMismatch(i));
-                    }
-                }
+            let filled_i = r.fill(&mut record_set[i])?;
+            if filled_i != filled_0 {
+                return Err(ProcessError::MultiRecordMismatch(i));
             }
             prev_lock = Some(r);
         }
         drop(prev_lock);
-        Ok(filled.unwrap())
+
+        Ok(Some(claimed))
     }
 
     fn iter(
@@ -69,14 +85,6 @@ where
             return either::Either::Left(err_iter);
         }
         either::Either::Right(SmallVecIt { its })
-    }
-
-    fn n_records(record_set: &Self::RecordSet) -> usize {
-        record_set
-            .first()
-            .map(R::iter)
-            .map(|it| it.len())
-            .unwrap_or(0)
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
@@ -131,6 +139,7 @@ impl<Item, E: Into<ProcessError>, I: ExactSizeIterator<Item = std::result::Resul
 pub struct InterleavedMultiReader<R: GenericReader> {
     reader: Mutex<R>,
     arity: usize,
+    records_seen: BatchCounter,
 }
 
 impl<R: GenericReader> InterleavedMultiReader<R> {
@@ -139,6 +148,7 @@ impl<R: GenericReader> InterleavedMultiReader<R> {
         Self {
             reader: Mutex::new(reader),
             arity,
+            records_seen: BatchCounter::new(),
         }
     }
 }
@@ -155,27 +165,42 @@ where
         (self.reader.lock().new_record_set(), self.arity)
     }
 
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        Ok(self.reader.lock().fill(&mut record_set.0)?)
+    fn fill(
+        &self,
+        record_set: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
+        let mut r = self.reader.lock();
+        if !r.fill(&mut record_set.0)? {
+            return Ok(None);
+        }
+        // Batch position is in record-groups, not individual records, to
+        // match what `iter` below yields.
+        let batch_size = {
+            let n_records = R::iter(&record_set.0).len();
+            if !n_records.is_multiple_of(self.arity) {
+                // Same variant `iter` below raises for this condition, so
+                // it doesn't matter which of the two catches a given batch
+                // first - callers see one consistent error either way.
+                return Err(ProcessError::MultiRecordSetSizeMismatch(
+                    n_records, self.arity,
+                ));
+            }
+            n_records / self.arity
+        };
+        Ok(Some(self.records_seen.claim(batch_size)))
     }
 
     fn iter(
         (record_set, arity): &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         let it = R::iter(record_set);
-        if it.len() % arity != 0 {
-            let err_iter = std::iter::once(Err(ProcessError::MultiRecordSetSizeMismatch(
-                it.len(),
-                *arity,
-            )));
-            return either::Either::Left(err_iter);
-        }
-        either::Either::Right(ChunkedIt { it, arity: *arity })
-    }
-
-    fn n_records((record_set, arity): &Self::RecordSet) -> usize {
-        // Return the number of record-groups, not individual records
-        R::iter(record_set).len() / arity
+        debug_assert!(
+            it.len() % arity == 0,
+            "InterleavedMultiReader::iter called on a record set ({}) not a multiple of arity ({}); fill() should already have rejected this",
+            it.len(),
+            arity
+        );
+        ChunkedIt { it, arity: *arity }
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
@@ -358,16 +383,72 @@ mod tests {
         assert!(err.to_string().contains("has fewer records"));
     }
 
-    #[test]
-    fn test_multi_interleaved_arity_mismatch_errors() {
-        // Not a multiple of the requested arity (3).
-        let reader = fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS * 3 + 1)));
-        let mut processor = CountingMultiProcessor::new(3);
+    // Regression tests for a silent-data-loss bug: when readers[0] runs out
+    // of records a full batch (or more) before the rest, `fill` used to
+    // return `Ok(None)` - the same signal used for a clean, simultaneous
+    // EOF - discarding the other readers' leftover records with no error.
+    // These use a small batch size so the mismatch spans a batch boundary
+    // (i.e. is only visible across separate `fill` calls), unlike
+    // `test_multi_mismatched_sizes_errors` above, which mismatches within
+    // a single batch and was already caught by `iter`.
 
-        let err = reader
-            .process_parallel_multi_interleaved(3, &mut processor, 1)
+    #[test]
+    fn test_multi_length_mismatch_reader0_shorter_errors() {
+        let r0 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(200)), 100).unwrap();
+        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(250)), 100).unwrap();
+        let mut processor = CountingMultiProcessor::new(2);
+
+        let err = r0
+            .process_parallel_multi(vec![r1], &mut processor, 1)
             .unwrap_err();
 
-        assert!(err.to_string().contains("must be divisible by"));
+        assert!(err.to_string().contains("File 0 has fewer records"));
+        // The 200 matched groups from the first two batches should still
+        // have been delivered before the mismatch was detected.
+        assert_eq!(processor.count(), 200);
+    }
+
+    #[test]
+    fn test_multi_length_mismatch_later_reader_shorter_errors() {
+        let r0 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(250)), 100).unwrap();
+        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(200)), 100).unwrap();
+        let mut processor = CountingMultiProcessor::new(2);
+
+        let err = r0
+            .process_parallel_multi(vec![r1], &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("File 1 has fewer records"));
+        assert_eq!(processor.count(), 200);
+    }
+
+    #[test]
+    fn test_multi_length_mismatch_errors_parallel() {
+        let r0 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(200)), 100).unwrap();
+        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(250)), 100).unwrap();
+        let mut processor = CountingMultiProcessor::new(2);
+
+        let err = r0
+            .process_parallel_multi(vec![r1], &mut processor, 4)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("has fewer records"));
+    }
+
+    #[test]
+    fn test_multi_interleaved_arity_mismatch_errors() {
+        // Not a multiple of the requested arity
+        for arity in 3..=5 {
+            let reader = fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS * arity + 1)));
+            let mut processor = CountingMultiProcessor::new(arity);
+
+            let err = reader
+                .process_parallel_multi_interleaved(arity, &mut processor, 1)
+                .unwrap_err();
+
+            assert!(err
+                .to_string()
+                .contains(&format!("must be divisible by {}", arity)));
+        }
     }
 }

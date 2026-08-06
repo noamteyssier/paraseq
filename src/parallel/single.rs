@@ -1,5 +1,4 @@
 use itertools::Itertools;
-use parking_lot::Mutex;
 
 use crate::parallel::ordered::OrderGate;
 use crate::parallel::processor::GenericProcessor;
@@ -15,13 +14,35 @@ pub(crate) trait MTGenericReader: Send + Sync {
     type RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet;
-    fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
+
+    /// Fills `record`, returning the `[start, end)` range this batch
+    /// occupies in the underlying stream(s), or `None` at EOF.
+    fn fill(
+        &self,
+        record: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error>;
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>>;
-    fn n_records(record_set: &Self::RecordSet) -> usize;
     fn set_num_threads(&mut self, _num_threads: usize) -> std::result::Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+/// Hands out non-overlapping `[start, end)` ranges from a monotonically
+/// increasing position counter, for `MTGenericReader::fill` implementors
+/// to claim their batch's position in.
+pub(crate) struct BatchCounter(AtomicUsize);
+
+impl BatchCounter {
+    pub(crate) fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    /// Claims `size` more positions and returns the `[start, end)` range.
+    pub(crate) fn claim(&self, size: usize) -> (usize, usize) {
+        let start = self.0.fetch_add(size, Ordering::Relaxed);
+        (start, start + size)
     }
 }
 
@@ -46,15 +67,13 @@ where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
     let mut record_set = reader.new_record_set();
-    let mut records_seen = 0; // Total records encountered
     let mut records_processed = 0; // Records actually processed
 
-    while reader.fill(&mut record_set).map_err(Into::into)? {
-        let batch_size = S::n_records(&record_set);
+    while let Some((batch_start, batch_end)) = reader.fill(&mut record_set).map_err(Into::into)? {
+        let batch_size = batch_end - batch_start;
 
         // Skip entire batch if still before offset
-        if records_seen + batch_size <= offset {
-            records_seen += batch_size;
+        if batch_end <= offset {
             continue;
         }
 
@@ -66,14 +85,12 @@ where
         }
 
         // Calculate slice of this batch to process
-        let skip_in_batch = offset.saturating_sub(records_seen);
+        let skip_in_batch = offset.saturating_sub(batch_start);
         let remaining_quota = limit.map(|lim| lim - records_processed);
         let take_count = match remaining_quota {
             Some(quota) => (batch_size - skip_in_batch).min(quota),
             None => batch_size - skip_in_batch,
         };
-
-        records_seen += batch_size;
 
         // Process only the relevant slice
         let records = S::iter(&record_set)
@@ -109,13 +126,6 @@ where
 
     reader.set_num_threads(num_threads).map_err(Into::into)?;
 
-    // Guards both the fill-and-claim step below: a batch's position label
-    // must be assigned atomically with the read that produced it, or two
-    // threads can race between releasing the reader's own lock (after
-    // `fill`) and calling `fetch_add`, letting a later chunk claim an
-    // earlier position (or vice versa) and corrupting offset/limit slicing
-    // and, if enabled, the order gate.
-    let records_seen = Arc::new(Mutex::new(0usize));
     let records_processed = Arc::new(AtomicUsize::default());
     let order_gate = Arc::new(OrderGate::new());
     let ordered = processor.requires_ordering();
@@ -127,7 +137,6 @@ where
         for thread_id in 0..num_threads {
             let mut worker_processor = processor.clone();
             let mut record_set = reader.new_record_set();
-            let records_seen = records_seen.clone();
             let records_processed = records_processed.clone();
             let order_gate = order_gate.clone();
 
@@ -147,18 +156,12 @@ where
                             }
                         }
 
-                        // Fill the batch and claim its position in the stream
-                        // as a single atomic step (see comment above on why
-                        // both must happen under the same lock).
-                        let (batch_start, batch_end) = {
-                            let mut seen = records_seen.lock();
-                            if !reader.fill(&mut record_set).map_err(Into::into)? {
-                                break; // EOF
-                            }
-                            let batch_size = S::n_records(&record_set);
-                            let batch_start = *seen;
-                            *seen += batch_size;
-                            (batch_start, batch_start + batch_size)
+                        // Fill the batch; `fill` itself claims this batch's
+                        // stream position atomically (see the trait docs).
+                        let Some((batch_start, batch_end)) =
+                            reader.fill(&mut record_set).map_err(Into::into)?
+                        else {
+                            break; // EOF
                         };
                         let batch_size = batch_end - batch_start;
 
