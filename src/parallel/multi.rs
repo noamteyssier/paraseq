@@ -1,16 +1,15 @@
 use parking_lot::{Mutex, MutexGuard};
 use smallvec::SmallVec;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fastx::GenericReader;
 use crate::parallel::error::ProcessError;
 use crate::MAX_ARITY;
 
-use super::single::MTGenericReader;
+use super::single::{BatchCounter, MTGenericReader};
 
 pub struct MultiReader<R: GenericReader> {
     readers: SmallVec<[Mutex<R>; MAX_ARITY]>,
-    records_seen: AtomicUsize,
+    records_seen: BatchCounter,
 }
 
 impl<R: GenericReader> MultiReader<R> {
@@ -18,7 +17,7 @@ impl<R: GenericReader> MultiReader<R> {
         assert!(!readers.is_empty());
         Self {
             readers: readers.into_iter().map(Mutex::new).collect(),
-            records_seen: AtomicUsize::new(0),
+            records_seen: BatchCounter::new(),
         }
     }
 }
@@ -56,9 +55,7 @@ where
                     filled = Some(filled_i);
                     if filled_i {
                         let batch_size = R::iter(&record_set[i]).len();
-                        let batch_start =
-                            self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
-                        claimed = Some((batch_start, batch_start + batch_size));
+                        claimed = Some(self.records_seen.claim(batch_size));
                     }
                 }
                 Some(f) => {
@@ -139,7 +136,7 @@ impl<Item, E: Into<ProcessError>, I: ExactSizeIterator<Item = std::result::Resul
 pub struct InterleavedMultiReader<R: GenericReader> {
     reader: Mutex<R>,
     arity: usize,
-    records_seen: AtomicUsize,
+    records_seen: BatchCounter,
 }
 
 impl<R: GenericReader> InterleavedMultiReader<R> {
@@ -148,7 +145,7 @@ impl<R: GenericReader> InterleavedMultiReader<R> {
         Self {
             reader: Mutex::new(reader),
             arity,
-            records_seen: AtomicUsize::new(0),
+            records_seen: BatchCounter::new(),
         }
     }
 }
@@ -187,8 +184,7 @@ where
             }
             n_records / self.arity
         };
-        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
-        Ok(Some((batch_start, batch_start + batch_size)))
+        Ok(Some(self.records_seen.claim(batch_size)))
     }
 
     fn iter(

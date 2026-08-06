@@ -1,16 +1,15 @@
 use itertools::Itertools;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fastx::GenericReader;
 use crate::parallel::error::{ProcessError, RecordPair};
 
-use super::single::MTGenericReader;
+use super::single::{BatchCounter, MTGenericReader};
 
 pub struct PairedReader<R: GenericReader> {
     reader1: Mutex<R>,
     reader2: Mutex<R>,
-    records_seen: AtomicUsize,
+    records_seen: BatchCounter,
 }
 
 impl<R: GenericReader> PairedReader<R> {
@@ -18,7 +17,7 @@ impl<R: GenericReader> PairedReader<R> {
         PairedReader {
             reader1: Mutex::new(reader1),
             reader2: Mutex::new(reader2),
-            records_seen: AtomicUsize::new(0),
+            records_seen: BatchCounter::new(),
         }
     }
 }
@@ -63,7 +62,7 @@ where
         }
 
         let batch_size = R::iter(&record_set.0).len();
-        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
+        let claimed = self.records_seen.claim(batch_size);
 
         let mut r2 = self.reader2.lock();
         drop(r1);
@@ -77,7 +76,7 @@ where
             // dropped with no signal to the caller.
             return Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
         }
-        Ok(Some((batch_start, batch_start + batch_size)))
+        Ok(Some(claimed))
     }
 
     fn iter(
@@ -115,14 +114,14 @@ where
 
 pub struct InterleavedPairedReader<R: GenericReader> {
     reader: Mutex<R>,
-    records_seen: AtomicUsize,
+    records_seen: BatchCounter,
 }
 
 impl<R: GenericReader> InterleavedPairedReader<R> {
     pub fn new(reader: R) -> Self {
         InterleavedPairedReader {
             reader: Mutex::new(reader),
-            records_seen: AtomicUsize::new(0),
+            records_seen: BatchCounter::new(),
         }
     }
 }
@@ -156,8 +155,7 @@ where
             }
             n_records / 2
         };
-        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
-        Ok(Some((batch_start, batch_start + batch_size)))
+        Ok(Some(self.records_seen.claim(batch_size)))
     }
 
     fn iter(
