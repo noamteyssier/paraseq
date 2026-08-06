@@ -174,7 +174,15 @@ where
         }
         // Batch position is in record-groups, not individual records, to
         // match what `iter` below yields.
-        let batch_size = R::iter(&record_set.0).len() / self.arity;
+        let batch_size = {
+            let n_records = R::iter(&record_set.0).len();
+            if !n_records.is_multiple_of(self.arity) {
+                return Err(ProcessError::IncompatibleInterleavedSetSizeArity(
+                    n_records, self.arity,
+                ));
+            }
+            n_records / self.arity
+        };
         let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
         Ok(Some((batch_start, batch_start + batch_size)))
     }
@@ -375,14 +383,18 @@ mod tests {
 
     #[test]
     fn test_multi_interleaved_arity_mismatch_errors() {
-        // Not a multiple of the requested arity (3).
-        let reader = fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS * 3 + 1)));
-        let mut processor = CountingMultiProcessor::new(3);
+        // Not a multiple of the requested arity
+        for arity in 3..=5 {
+            let reader = fastq::Reader::new(Cursor::new(make_fastq(N_GROUPS * arity + 1)));
+            let mut processor = CountingMultiProcessor::new(arity);
 
-        let err = reader
-            .process_parallel_multi_interleaved(3, &mut processor, 1)
-            .unwrap_err();
+            let err = reader
+                .process_parallel_multi_interleaved(arity, &mut processor, 1)
+                .unwrap_err();
 
-        assert!(err.to_string().contains("must be divisible by"));
+            assert!(err
+                .to_string()
+                .contains(&format!("expected a multiple of {}", arity)));
+        }
     }
 }

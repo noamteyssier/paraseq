@@ -126,14 +126,19 @@ where
         &self,
         record_set: &mut Self::RecordSet,
     ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
-        // FIXME: ENSURE THIS READS AN EVEN NUMBER OF RECORDS.
         let mut r = self.reader.lock();
         if !r.fill(record_set)? {
             return Ok(None);
         }
         // Batch position is in pairs, not individual records, to match
         // what `iter` below yields.
-        let batch_size = R::iter(record_set).len() / 2;
+        let batch_size = {
+            let n_records = R::iter(record_set).len();
+            if !n_records.is_multiple_of(2) {
+                return Err(ProcessError::IncompatibleInterleavedSetSize(n_records));
+            }
+            n_records / 2
+        };
         let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
         Ok(Some((batch_start, batch_start + batch_size)))
     }
