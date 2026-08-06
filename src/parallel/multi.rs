@@ -45,7 +45,16 @@ where
         let filled_0 = r0.fill(&mut record_set[0])?;
 
         if !filled_0 {
+            // readers[0] is exhausted. checks for batch size mismatch
             drop(r0);
+            for i in 1..self.readers.len() {
+                let mut r = self.readers[i].lock();
+                let filled_i = r.fill(&mut record_set[i])?;
+                drop(r);
+                if filled_i {
+                    return Err(ProcessError::MultiRecordMismatch(0));
+                }
+            }
             return Ok(None);
         }
 
@@ -369,6 +378,58 @@ mod tests {
 
         let err = r1
             .process_parallel_multi(vec![r2], &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("has fewer records"));
+    }
+
+    // Regression tests for a silent-data-loss bug: when readers[0] runs out
+    // of records a full batch (or more) before the rest, `fill` used to
+    // return `Ok(None)` - the same signal used for a clean, simultaneous
+    // EOF - discarding the other readers' leftover records with no error.
+    // These use a small batch size so the mismatch spans a batch boundary
+    // (i.e. is only visible across separate `fill` calls), unlike
+    // `test_multi_mismatched_sizes_errors` above, which mismatches within
+    // a single batch and was already caught by `iter`.
+
+    #[test]
+    fn test_multi_length_mismatch_reader0_shorter_errors() {
+        let r0 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(200)), 100).unwrap();
+        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(250)), 100).unwrap();
+        let mut processor = CountingMultiProcessor::new(2);
+
+        let err = r0
+            .process_parallel_multi(vec![r1], &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("File 0 has fewer records"));
+        // The 200 matched groups from the first two batches should still
+        // have been delivered before the mismatch was detected.
+        assert_eq!(processor.count(), 200);
+    }
+
+    #[test]
+    fn test_multi_length_mismatch_later_reader_shorter_errors() {
+        let r0 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(250)), 100).unwrap();
+        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(200)), 100).unwrap();
+        let mut processor = CountingMultiProcessor::new(2);
+
+        let err = r0
+            .process_parallel_multi(vec![r1], &mut processor, 1)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("File 1 has fewer records"));
+        assert_eq!(processor.count(), 200);
+    }
+
+    #[test]
+    fn test_multi_length_mismatch_errors_parallel() {
+        let r0 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(200)), 100).unwrap();
+        let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(250)), 100).unwrap();
+        let mut processor = CountingMultiProcessor::new(2);
+
+        let err = r0
+            .process_parallel_multi(vec![r1], &mut processor, 4)
             .unwrap_err();
 
         assert!(err.to_string().contains("has fewer records"));
