@@ -32,6 +32,15 @@ struct Inner {
     target: AtomicUsize,
     /// Hard ceiling on `target`.
     max: usize,
+    /// Workers live across *every* share of this pool.
+    ///
+    /// Each share tracks its own count to enforce its own slice, but a caller
+    /// supervising the whole run needs the total — and summing shares is not
+    /// possible from outside, because a share is handed to a worker thread and
+    /// never surfaced. Without this, an external scheduler normalising work
+    /// against "threads running" divides by the parent's count, which stays at
+    /// zero for the entire run.
+    total_live: AtomicUsize,
 }
 
 /// A shared, resizable worker count.
@@ -67,6 +76,7 @@ impl ThreadPool {
             inner: Arc::new(Inner {
                 target: AtomicUsize::new(threads.clamp(1, max)),
                 max,
+                total_live: AtomicUsize::new(0),
             }),
             live: Arc::new(AtomicUsize::new(0)),
             divisor: 1,
@@ -114,6 +124,15 @@ impl ThreadPool {
         self.live.load(Ordering::Relaxed)
     }
 
+    /// Workers running across every share of this pool.
+    ///
+    /// This is the figure a supervisor wants. [`Self::live`] reports only the
+    /// share it is called on, and the pool a caller holds is the *parent*, whose
+    /// own share never runs anything when a `Collection` splits it.
+    pub fn total_live(&self) -> usize {
+        self.inner.total_live.load(Ordering::Relaxed)
+    }
+
     /// The ceiling set at construction, across every share.
     pub fn max_threads(&self) -> usize {
         self.inner.max
@@ -146,7 +165,10 @@ impl ThreadPool {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return true,
+                Ok(_) => {
+                    self.inner.total_live.fetch_add(1, Ordering::AcqRel);
+                    return true;
+                }
                 Err(actual) => live = actual,
             }
         }
@@ -168,7 +190,10 @@ impl ThreadPool {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return true,
+                Ok(_) => {
+                    self.inner.total_live.fetch_sub(1, Ordering::AcqRel);
+                    return true;
+                }
                 Err(actual) => live = actual,
             }
         }
@@ -177,5 +202,6 @@ impl ThreadPool {
     /// Release unconditionally, for a worker leaving because the input ended.
     pub(crate) fn release_slot(&self) {
         self.live.fetch_sub(1, Ordering::AcqRel);
+        self.inner.total_live.fetch_sub(1, Ordering::AcqRel);
     }
 }

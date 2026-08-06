@@ -1124,6 +1124,52 @@ mod pool_tests {
         assert_eq!(proc.total.load(Ordering::Relaxed), N);
     }
 
+    /// A supervisor outside the run needs the aggregate live count.
+    ///
+    /// `live()` reports one share, and the pool a caller holds is the *parent*,
+    /// whose own share never runs anything once a `Collection` splits it — so the
+    /// obvious reading is zero for the whole run. An external scheduler normalising
+    /// work against "threads running" then divides by nothing and concludes the
+    /// consumer is never busy.
+    #[test]
+    fn total_live_counts_workers_across_every_share() {
+        use crate::fastx::{Collection, CollectionType};
+
+        const N: usize = 200_000;
+        let pool = ThreadPool::with_max(8, 8);
+        let observer = pool.clone();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let s2 = Arc::clone(&seen);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let st2 = Arc::clone(&stop);
+        let watcher = std::thread::spawn(move || {
+            while !st2.load(Ordering::Relaxed) {
+                s2.fetch_max(observer.total_live(), Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        });
+
+        let mut proc = TallyProcessor::default();
+        let inner: Vec<_> = (0..4)
+            .map(|_| crate::fastx::Reader::new(Cursor::new(make_fastq(N))).unwrap())
+            .collect();
+        Collection::new(inner, CollectionType::Single)
+            .unwrap()
+            .process_parallel_pool(&mut proc, &pool, None)
+            .unwrap();
+        stop.store(true, Ordering::Relaxed);
+        watcher.join().unwrap();
+
+        assert_eq!(proc.total.load(Ordering::Relaxed), N * 4);
+        assert!(
+            seen.load(Ordering::Relaxed) > 1,
+            "peak total_live was {}, so shares are invisible to the parent",
+            seen.load(Ordering::Relaxed)
+        );
+        // And it unwinds: nothing is left counted after the run.
+        assert_eq!(pool.total_live(), 0, "live count leaked after the run");
+    }
+
     /// A `Collection` splits its pool across the readers running at once.
     ///
     /// The regression this guards: handing every reader the *same* pool lets
