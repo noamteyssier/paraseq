@@ -177,7 +177,10 @@ where
         let batch_size = {
             let n_records = R::iter(&record_set.0).len();
             if !n_records.is_multiple_of(self.arity) {
-                return Err(ProcessError::IncompatibleInterleavedSetSizeArity(
+                // Same variant `iter` below raises for this condition, so
+                // it doesn't matter which of the two catches a given batch
+                // first - callers see one consistent error either way.
+                return Err(ProcessError::MultiRecordSetSizeMismatch(
                     n_records, self.arity,
                 ));
             }
@@ -191,14 +194,13 @@ where
         (record_set, arity): &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         let it = R::iter(record_set);
-        if it.len() % arity != 0 {
-            let err_iter = std::iter::once(Err(ProcessError::MultiRecordSetSizeMismatch(
-                it.len(),
-                *arity,
-            )));
-            return either::Either::Left(err_iter);
-        }
-        either::Either::Right(ChunkedIt { it, arity: *arity })
+        debug_assert!(
+            it.len() % arity == 0,
+            "InterleavedMultiReader::iter called on a record set ({}) not a multiple of arity ({}); fill() should already have rejected this",
+            it.len(),
+            arity
+        );
+        ChunkedIt { it, arity: *arity }
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
@@ -394,7 +396,7 @@ mod tests {
 
             assert!(err
                 .to_string()
-                .contains(&format!("expected a multiple of {}", arity)));
+                .contains(&format!("must be divisible by {}", arity)));
         }
     }
 }
