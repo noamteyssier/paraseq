@@ -63,7 +63,7 @@ where
         }
 
         let batch_size = R::iter(&record_set.0).len();
-        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
+        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
 
         let mut r2 = self.reader2.lock();
         drop(r1);
@@ -156,7 +156,7 @@ where
             }
             n_records / 2
         };
-        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
+        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
         Ok(Some((batch_start, batch_start + batch_size)))
     }
 

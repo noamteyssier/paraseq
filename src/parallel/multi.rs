@@ -56,7 +56,8 @@ where
                     filled = Some(filled_i);
                     if filled_i {
                         let batch_size = R::iter(&record_set[i]).len();
-                        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
+                        let batch_start =
+                            self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
                         claimed = Some((batch_start, batch_start + batch_size));
                     }
                 }
@@ -186,7 +187,7 @@ where
             }
             n_records / self.arity
         };
-        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
+        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
         Ok(Some((batch_start, batch_start + batch_size)))
     }
 

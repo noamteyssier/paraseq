@@ -1,4 +1,4 @@
-use std::ops::RangeBounds;
+use std::{ops::RangeBounds, sync::atomic::Ordering};
 
 use parking_lot::Mutex;
 
@@ -295,9 +295,7 @@ where
             return Ok(None);
         }
         let batch_size = R::iter(record_set).len();
-        let batch_start = self
-            .records_seen
-            .fetch_add(batch_size, std::sync::atomic::Ordering::SeqCst);
+        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
         Ok(Some((batch_start, batch_start + batch_size)))
     }
 
