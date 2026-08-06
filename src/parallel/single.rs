@@ -3,8 +3,8 @@ use itertools::Itertools;
 use crate::parallel::ordered::OrderGate;
 use crate::parallel::processor::GenericProcessor;
 use crate::parallel::{error::Result, ProcessError};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// A Sync version of GenericReader, i.e. for types with internal mutexes that can be shared between threads.
@@ -108,19 +108,47 @@ where
 }
 
 pub(crate) fn process_parallel_generic_range<S: MTGenericReader, T>(
-    mut reader: S,
+    reader: S,
     processor: &mut T,
-    mut num_threads: usize,
+    num_threads: usize,
     offset: usize,
     limit: Option<usize>,
 ) -> Result<()>
 where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
+    // A pool whose target never moves is exactly a fixed worker count. There is
+    // one implementation rather than two, so the resizable path cannot drift
+    // from the fixed one.
+    process_parallel_pool_range(
+        reader,
+        processor,
+        &crate::parallel::ThreadPool::new(num_threads),
+        offset,
+        limit,
+    )
+}
+
+/// As [`process_parallel_generic_range`], but the worker count may change while
+/// the run is in flight. See [`crate::parallel::ThreadPool`].
+pub(crate) fn process_parallel_pool_range<S: MTGenericReader, T>(
+    mut reader: S,
+    processor: &mut T,
+    pool: &crate::parallel::ThreadPool,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<()>
+where
+    T: for<'a> GenericProcessor<S::RefRecord<'a>>,
+{
+    let mut num_threads = pool.threads();
     if num_threads == 0 {
         num_threads = num_cpus::get();
     }
-    if num_threads == 1 {
+    // Only when the pool can never grow. A pool that *starts* at one worker but
+    // may be resized has to take the parallel path anyway, or it could never
+    // honour a later `set_threads` -- there is no pool in the sequential path.
+    if num_threads == 1 && pool.max_threads() == 1 {
         return process_sequential_generic_range(reader, processor, offset, limit);
     }
 
@@ -130,113 +158,207 @@ where
     let order_gate = Arc::new(OrderGate::new());
     let ordered = processor.requires_ordering();
 
+    // Workers spawned after the initial wave are in no handle list, so their
+    // errors are collected here rather than by `join`. `thread::scope` still
+    // joins every worker before its closure returns, so reading this afterwards
+    // cannot race.
+    let first_error: Mutex<Option<ProcessError>> = Mutex::new(None);
+    let next_id = AtomicUsize::new(0);
+    // Set as soon as any worker sees the input end.
+    //
+    // Without it, a worker leaving at EOF drops `live` below `target`, every
+    // remaining worker reads that as "the pool is short", and each spawns a
+    // replacement that immediately hits EOF and does the same. Measured before
+    // this existed: 3.1 million workers spawned for a 32-thread run.
+    let finished = AtomicBool::new(false);
+    // New workers are cloned from this, never from a running worker.
+    //
+    // `Clone` on a processor means "give me a fresh worker" -- the fixed path
+    // only ever clones the caller's untouched instance. Cloning a worker
+    // mid-flight instead copies whatever it has accumulated, and any processor
+    // keeping per-thread tallies then double-counts them when both flush in
+    // `on_thread_complete`. That turned an 8 million record file into 791
+    // billion records.
+    let template: Mutex<T> = Mutex::new(processor.clone());
+
     thread::scope(|scope| -> Result<()> {
         let reader = &reader;
+        let ctx = WorkerCtx {
+            reader,
+            pool,
+            next_id: &next_id,
+            first_error: &first_error,
+            finished: &finished,
+            template: &template,
+            order_gate: &order_gate,
+            ordered,
+            offset,
+            limit,
+        };
 
-        let mut handles = Vec::new();
-        for thread_id in 0..num_threads {
-            let mut worker_processor = processor.clone();
-            let mut record_set = reader.new_record_set();
-            let records_processed = records_processed.clone();
-            let order_gate = order_gate.clone();
-
-            let handle = scope.spawn(move || {
-                // Run the worker body in a closure so any error path below can
-                // poison the order gate before propagating - otherwise other
-                // threads waiting on a batch that will never complete would
-                // deadlock instead of unwinding.
-                let result: Result<()> = (|| {
-                    worker_processor.set_thread_id(thread_id);
-
-                    loop {
-                        // Check limit before grabbing batch
-                        if let Some(lim) = limit {
-                            if records_processed.load(Ordering::Relaxed) >= lim {
-                                break;
-                            }
-                        }
-
-                        // Fill the batch; `fill` itself claims this batch's
-                        // stream position atomically (see the trait docs).
-                        let Some((batch_start, batch_end)) =
-                            reader.fill(&mut record_set).map_err(Into::into)?
-                        else {
-                            break; // EOF
-                        };
-                        let batch_size = batch_end - batch_start;
-
-                        // Determine overlap with target range [offset, offset+limit)
-                        let range_end = limit.map(|lim| offset + lim).unwrap_or(usize::MAX);
-
-                        if batch_end <= offset {
-                            // Entire batch before offset - skip it. Still catch
-                            // the order gate up to this point so the first
-                            // processed batch's wait_turn isn't stuck waiting
-                            // for skipped ground it will never claim.
-                            if ordered {
-                                order_gate.advance(batch_end);
-                            }
-                            continue;
-                        }
-
-                        if batch_start >= range_end {
-                            // Entire batch after limit - done
-                            break;
-                        }
-
-                        // Calculate slice of this batch within range
-                        let skip_in_batch = offset.saturating_sub(batch_start);
-                        let take_count = (batch_size - skip_in_batch)
-                            .min(range_end - batch_start - skip_in_batch);
-
-                        // Process the slice
-                        let records = S::iter(&record_set)
-                            .skip(skip_in_batch)
-                            .take(take_count)
-                            .map(|r| r.map_err(Into::into));
-
-                        records.process_results(|records| {
-                            worker_processor.process_record_batch(records)
-                        })??;
-
-                        records_processed.fetch_add(take_count, Ordering::Relaxed);
-
-                        // Only the commit step is serialized to stream order;
-                        // process_record_batch above already ran unordered.
-                        if ordered {
-                            order_gate.wait_turn(batch_start);
-                        }
-                        worker_processor.on_batch_complete()?;
-                        if ordered {
-                            order_gate.advance(batch_end);
-                        }
-                    }
-                    worker_processor.on_thread_complete()?;
-                    Ok(())
-                })();
-
-                if result.is_err() && ordered {
-                    order_gate.poison();
-                }
-                result
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for workers
-        for handle in handles {
-            match handle.join() {
-                Ok(Ok(())) => (),
-                Ok(Err(e)) => return Err(e),
-                Err(_) => return Err(ProcessError::JoinError),
+        for _ in 0..num_threads {
+            if !pool.try_claim_slot() {
+                break;
             }
+            spawn_worker(
+                scope,
+                &ctx,
+                processor.clone(),
+                reader.new_record_set(),
+                records_processed.clone(),
+            );
         }
-
         Ok(())
     })?;
 
-    Ok(())
+    match first_error.into_inner().unwrap_or(None) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Everything a worker needs that is identical for every worker.
+///
+/// Grouped so that spawning one takes three arguments rather than a dozen, and
+/// so a worker can hand the same context to a successor.
+struct WorkerCtx<'env, S, T> {
+    reader: &'env S,
+    pool: &'env crate::parallel::ThreadPool,
+    next_id: &'env AtomicUsize,
+    first_error: &'env Mutex<Option<ProcessError>>,
+    finished: &'env AtomicBool,
+    template: &'env Mutex<T>,
+    order_gate: &'env Arc<OrderGate>,
+    ordered: bool,
+    offset: usize,
+    limit: Option<usize>,
+}
+
+impl<S, T> Clone for WorkerCtx<'_, S, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<S, T> Copy for WorkerCtx<'_, S, T> {}
+
+/// Run one worker, and let it spawn successors when the pool grows.
+///
+/// Spawning from inside a worker rather than from a dedicated coordinator puts
+/// the cost where it is already amortised: a worker checks the pool once per
+/// *batch*, between finishing one and asking for the next. No coordinator
+/// thread, and no polling interval to tune.
+fn spawn_worker<'scope, 'env, S, T>(
+    scope: &'scope thread::Scope<'scope, 'env>,
+    ctx: &WorkerCtx<'env, S, T>,
+    mut worker_processor: T,
+    mut record_set: S::RecordSet,
+    records_processed: Arc<AtomicUsize>,
+) where
+    S: MTGenericReader + Sync + 'env,
+    T: for<'a> GenericProcessor<S::RefRecord<'a>> + Send + 'env,
+{
+    let ctx = *ctx;
+    let thread_id = ctx.next_id.fetch_add(1, Ordering::Relaxed);
+    scope.spawn(move || {
+        let mut retired = false;
+
+        // As in the fixed path: run the body in a closure so any error can
+        // poison the order gate before propagating, rather than deadlocking
+        // workers waiting on a batch that will never complete.
+        let result: Result<()> = (|| {
+            worker_processor.set_thread_id(thread_id);
+
+            loop {
+                if let Some(lim) = ctx.limit {
+                    if records_processed.load(Ordering::Relaxed) >= lim {
+                        ctx.finished.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+
+                let Some((batch_start, batch_end)) =
+                    ctx.reader.fill(&mut record_set).map_err(Into::into)?
+                else {
+                    ctx.finished.store(true, Ordering::Relaxed);
+                    break; // EOF
+                };
+                let batch_size = batch_end - batch_start;
+                let range_end = ctx.limit.map(|lim| ctx.offset + lim).unwrap_or(usize::MAX);
+
+                if batch_end <= ctx.offset {
+                    if ctx.ordered {
+                        ctx.order_gate.advance(batch_end);
+                    }
+                    continue;
+                }
+                if batch_start >= range_end {
+                    ctx.finished.store(true, Ordering::Relaxed);
+                    break;
+                }
+
+                let skip_in_batch = ctx.offset.saturating_sub(batch_start);
+                let take_count =
+                    (batch_size - skip_in_batch).min(range_end - batch_start - skip_in_batch);
+
+                let records = S::iter(&record_set)
+                    .skip(skip_in_batch)
+                    .take(take_count)
+                    .map(|r| r.map_err(Into::into));
+
+                records
+                    .process_results(|records| worker_processor.process_record_batch(records))??;
+
+                records_processed.fetch_add(take_count, Ordering::Relaxed);
+
+                if ctx.ordered {
+                    ctx.order_gate.wait_turn(batch_start);
+                }
+                worker_processor.on_batch_complete()?;
+                if ctx.ordered {
+                    ctx.order_gate.advance(batch_end);
+                }
+
+                // Resize *here*, after the order gate has been advanced past
+                // this batch. Retiring while the gate still expects this worker
+                // to advance it would stall every other worker behind a turn
+                // that never comes.
+                //
+                // The whole steady-state cost of a resizable pool: two relaxed
+                // loads, taking neither branch unless the target has moved.
+                if ctx.pool.try_release_slot() {
+                    retired = true;
+                    break;
+                }
+                while !ctx.finished.load(Ordering::Relaxed) && ctx.pool.try_claim_slot() {
+                    let fresh = ctx.template.lock().unwrap().clone();
+                    // Allocated on this thread rather than the new worker's, so
+                    // the allocation pattern matches the fixed path exactly.
+                    // Still only when a worker is really created, so nothing is
+                    // pre-allocated for a worker that never exists.
+                    let fresh_set = ctx.reader.new_record_set();
+                    spawn_worker(scope, &ctx, fresh, fresh_set, records_processed.clone());
+                }
+            }
+            // Retiring workers flush too: `on_thread_complete` is where a
+            // processor commits its per-thread state, and a worker that leaves
+            // mid-run has just as much to commit as one that reaches EOF.
+            worker_processor.on_thread_complete()?;
+            Ok(())
+        })();
+
+        if !retired {
+            ctx.pool.release_slot();
+        }
+        if let Err(e) = result {
+            if ctx.ordered {
+                ctx.order_gate.poison();
+            }
+            let mut slot = ctx.first_error.lock().unwrap();
+            if slot.is_none() {
+                *slot = Some(e);
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -799,6 +921,214 @@ mod tests {
             p5.count(),
             50,
             "multi-interleaved should process 50 record-groups"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use crate::fastq;
+    use crate::parallel::{ParallelProcessor, ParallelReader, ProcessError, ThreadPool};
+    use crate::Record;
+
+    fn make_fastq(n: usize) -> Vec<u8> {
+        (0..n)
+            .flat_map(|i| format!("@seq{i}\nACGT\n+\nIIII\n").into_bytes())
+            .collect()
+    }
+
+    /// Deliberately keeps per-thread state and only publishes it in
+    /// `on_thread_complete`, exactly as a real processor does. That is what
+    /// makes it sensitive to *where* a new worker's clone comes from.
+    #[derive(Clone, Default)]
+    struct TallyProcessor {
+        total: Arc<AtomicUsize>,
+        threads_completed: Arc<AtomicUsize>,
+        local: usize,
+    }
+
+    impl<Rf: Record> ParallelProcessor<Rf> for TallyProcessor {
+        fn process_record(&mut self, _record: Rf) -> Result<(), ProcessError> {
+            self.local += 1;
+            Ok(())
+        }
+        fn on_thread_complete(&mut self) -> Result<(), ProcessError> {
+            self.total.fetch_add(self.local, Ordering::Relaxed);
+            self.threads_completed.fetch_add(1, Ordering::Relaxed);
+            self.local = 0;
+            Ok(())
+        }
+    }
+
+    /// A pool that never resizes must behave exactly like a fixed count.
+    #[test]
+    fn a_fixed_pool_matches_a_fixed_thread_count() {
+        const N: usize = 5_000;
+        for threads in [1usize, 2, 8] {
+            let mut proc = TallyProcessor::default();
+            let reader = fastq::Reader::new(Cursor::new(make_fastq(N)));
+            reader
+                .process_parallel_pool(&mut proc, &ThreadPool::new(threads))
+                .unwrap();
+            assert_eq!(proc.total.load(Ordering::Relaxed), N, "threads {threads}");
+        }
+    }
+
+    /// Regression: a worker leaving at EOF drops `live` below `target`, and
+    /// every remaining worker used to read that as "the pool is short" and
+    /// spawn a replacement, which hit EOF and did the same. That produced 3.1
+    /// million workers for a 32-thread run over an 8 M record file.
+    ///
+    /// The record count catches it; `threads_completed` catches it loudly.
+    #[test]
+    fn workers_leaving_at_eof_do_not_spawn_replacements() {
+        const N: usize = 20_000;
+        let mut proc = TallyProcessor::default();
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N)));
+        reader
+            .process_parallel_pool(&mut proc, &ThreadPool::new(8))
+            .unwrap();
+
+        assert_eq!(proc.total.load(Ordering::Relaxed), N);
+        assert!(
+            proc.threads_completed.load(Ordering::Relaxed) <= 8,
+            "{} workers ran for an 8-worker pool: EOF is being mistaken for a \
+             shortfall and workers are respawning each other",
+            proc.threads_completed.load(Ordering::Relaxed)
+        );
+    }
+
+    /// Regression: new workers must be cloned from the caller's pristine
+    /// processor, never from a running one.
+    ///
+    /// `Clone` on a processor means "give me a fresh worker". Cloning a worker
+    /// mid-flight copies its accumulated `local`, and both copies then publish
+    /// it in `on_thread_complete` -- turning 8 M records into 791 billion.
+    #[test]
+    fn grown_workers_start_from_a_pristine_processor() {
+        const N: usize = 200_000;
+        let pool = ThreadPool::with_max(1, 8);
+        let mut proc = TallyProcessor::default();
+
+        let p2 = pool.clone();
+        let grower = std::thread::spawn(move || {
+            for n in 2..=8 {
+                std::thread::sleep(std::time::Duration::from_micros(200));
+                p2.set_threads(n);
+            }
+        });
+
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N)));
+        reader.process_parallel_pool(&mut proc, &pool).unwrap();
+        grower.join().unwrap();
+
+        assert_eq!(
+            proc.total.load(Ordering::Relaxed),
+            N,
+            "records were counted more than once: a growing worker inherited \
+             another worker's partial tally"
+        );
+    }
+
+    /// Growth has to be reachable from a single worker, which means the
+    /// `num_threads == 1` sequential short-circuit must look at whether the
+    /// pool *can* grow, not at where it starts.
+    #[test]
+    fn a_pool_starting_at_one_can_still_grow() {
+        const N: usize = 200_000;
+        let pool = ThreadPool::with_max(1, 4);
+        let mut proc = TallyProcessor::default();
+
+        let p2 = pool.clone();
+        let grower = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_micros(500));
+            p2.set_threads(4);
+        });
+
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N)));
+        reader.process_parallel_pool(&mut proc, &pool).unwrap();
+        grower.join().unwrap();
+
+        assert_eq!(proc.total.load(Ordering::Relaxed), N);
+    }
+
+    /// Shrinking must never retire the last worker.
+    ///
+    /// The assertion is that this test *finishes*. If the pool could empty
+    /// itself there would be no worker left to reach EOF, `thread::scope` would
+    /// wait on threads that no longer exist to be created, and the test would
+    /// hang rather than fail. Sampling `live()` instead would race the end of
+    /// the run, where zero is the correct answer.
+    #[test]
+    fn shrinking_always_leaves_one_worker() {
+        const N: usize = 400_000;
+        let pool = ThreadPool::with_max(8, 8);
+        let mut proc = TallyProcessor::default();
+
+        let p2 = pool.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = stop.clone();
+        let shrinker = std::thread::spawn(move || {
+            for n in (1..=8).rev() {
+                if s2.load(Ordering::Relaxed) {
+                    break;
+                }
+                p2.set_threads(n);
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        });
+
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N)));
+        reader.process_parallel_pool(&mut proc, &pool).unwrap();
+        stop.store(true, Ordering::Relaxed);
+        shrinker.join().unwrap();
+
+        assert_eq!(proc.total.load(Ordering::Relaxed), N);
+    }
+
+    /// The property that has to hold under arbitrary resizing: every record is
+    /// processed exactly once, however many workers come and go.
+    #[test]
+    fn thread_churn_processes_every_record_exactly_once() {
+        const N: usize = 200_000;
+        let pool = ThreadPool::with_max(4, 16);
+        let mut proc = TallyProcessor::default();
+
+        let p2 = pool.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = stop.clone();
+        let churner = std::thread::spawn(move || {
+            let mut n = 1;
+            while !s2.load(Ordering::Relaxed) {
+                n = if n >= 16 { 1 } else { n + 3 };
+                p2.set_threads(n);
+                std::thread::sleep(std::time::Duration::from_micros(100));
+            }
+        });
+
+        let reader = fastq::Reader::new(Cursor::new(make_fastq(N)));
+        reader.process_parallel_pool(&mut proc, &pool).unwrap();
+        stop.store(true, Ordering::Relaxed);
+        churner.join().unwrap();
+
+        assert_eq!(proc.total.load(Ordering::Relaxed), N);
+    }
+
+    /// A pool never exceeds the ceiling it was built with.
+    #[test]
+    fn the_maximum_is_respected() {
+        let pool = ThreadPool::with_max(2, 4);
+        pool.set_threads(999);
+        assert_eq!(pool.threads(), 4);
+        pool.set_threads(0);
+        assert_eq!(
+            pool.threads(),
+            1,
+            "a pool must always want at least one worker"
         );
     }
 }

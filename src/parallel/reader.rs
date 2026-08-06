@@ -31,6 +31,16 @@ pub trait ParallelReader {
     where
         T: for<'a> ParallelProcessor<Self::Rf<'a>>;
 
+    /// As [`Self::process_parallel`], but the worker count may change while the
+    /// run is in flight. See [`crate::parallel::ThreadPool`].
+    fn process_parallel_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+    ) -> Result<()>
+    where
+        T: for<'a> ParallelProcessor<Self::Rf<'a>>;
+
     fn process_parallel_paired<T>(
         self,
         r2: Self,
@@ -116,6 +126,23 @@ where
         T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
     {
         process_parallel_generic(SingleReader::new(self), processor, num_threads)
+    }
+
+    fn process_parallel_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+    ) -> Result<()>
+    where
+        T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
+    {
+        crate::parallel::single::process_parallel_pool_range(
+            SingleReader::new(self),
+            processor,
+            pool,
+            0,
+            None,
+        )
     }
 
     fn process_parallel_range<T>(
