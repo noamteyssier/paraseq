@@ -1,4 +1,4 @@
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 
 use crate::fastx::GenericReader;
@@ -41,36 +41,30 @@ where
         &self,
         record_set: &mut Self::RecordSet,
     ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
-        let mut prev_lock: Option<MutexGuard<_>> = None;
+        let mut r0 = self.readers[0].lock();
+        let filled_0 = r0.fill(&mut record_set[0])?;
 
-        let mut filled = None;
-        let mut claimed: Option<(usize, usize)> = None;
+        if !filled_0 {
+            drop(r0);
+            return Ok(None);
+        }
 
-        for i in 0..self.readers.len() {
+        let batch_size = R::iter(&record_set[0]).len();
+        let claimed = self.records_seen.claim(batch_size);
+
+        let mut prev_lock = Some(r0);
+        for i in 1..self.readers.len() {
             let mut r = self.readers[i].lock();
             drop(prev_lock);
             let filled_i = r.fill(&mut record_set[i])?;
-            match filled {
-                None => {
-                    filled = Some(filled_i);
-                    if filled_i {
-                        let batch_size = R::iter(&record_set[i]).len();
-                        claimed = Some(self.records_seen.claim(batch_size));
-                    }
-                }
-                Some(f) => {
-                    if filled_i != f {
-                        return Err(ProcessError::MultiRecordMismatch(i));
-                    }
-                }
+            if filled_i != filled_0 {
+                return Err(ProcessError::MultiRecordMismatch(i));
             }
             prev_lock = Some(r);
         }
         drop(prev_lock);
-        if !filled.unwrap() {
-            return Ok(None);
-        }
-        Ok(claimed)
+
+        Ok(Some(claimed))
     }
 
     fn iter(
