@@ -29,6 +29,23 @@ pub(crate) trait MTGenericReader: Send + Sync {
     }
 }
 
+/// Hands out non-overlapping `[start, end)` ranges from a monotonically
+/// increasing position counter, for `MTGenericReader::fill` implementors
+/// to claim their batch's position in.
+pub(crate) struct BatchCounter(AtomicUsize);
+
+impl BatchCounter {
+    pub(crate) fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    /// Claims `size` more positions and returns the `[start, end)` range.
+    pub(crate) fn claim(&self, size: usize) -> (usize, usize) {
+        let start = self.0.fetch_add(size, Ordering::Relaxed);
+        (start, start + size)
+    }
+}
+
 pub(crate) fn process_parallel_generic<S: MTGenericReader, T>(
     reader: S,
     processor: &mut T,

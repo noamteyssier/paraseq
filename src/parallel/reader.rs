@@ -1,4 +1,4 @@
-use std::{ops::RangeBounds, sync::atomic::Ordering};
+use std::ops::RangeBounds;
 
 use parking_lot::Mutex;
 
@@ -7,7 +7,9 @@ use crate::{
     parallel::{
         multi::{InterleavedMultiReader, MultiReader},
         paired::{InterleavedPairedReader, PairedReader},
-        single::{process_parallel_generic, process_parallel_generic_range, MTGenericReader},
+        single::{
+            process_parallel_generic, process_parallel_generic_range, BatchCounter, MTGenericReader,
+        },
         MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
     },
     ProcessError, Record, Result,
@@ -262,14 +264,14 @@ where
 
 pub(crate) struct SingleReader<R: GenericReader> {
     reader: Mutex<R>,
-    records_seen: std::sync::atomic::AtomicUsize,
+    records_seen: BatchCounter,
 }
 
 impl<R: GenericReader> SingleReader<R> {
     pub fn new(reader1: R) -> Self {
         SingleReader {
             reader: Mutex::new(reader1),
-            records_seen: std::sync::atomic::AtomicUsize::new(0),
+            records_seen: BatchCounter::new(),
         }
     }
 }
@@ -295,8 +297,7 @@ where
             return Ok(None);
         }
         let batch_size = R::iter(record_set).len();
-        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::Relaxed);
-        Ok(Some((batch_start, batch_start + batch_size)))
+        Ok(Some(self.records_seen.claim(batch_size)))
     }
 
     fn iter(
