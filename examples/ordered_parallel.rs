@@ -19,7 +19,7 @@ mod common;
 
 use anyhow::Result;
 use clap::Parser;
-use common::{input_handle, output_handle, OutputFormat, Writer};
+use common::{output_handle, OutputFormat, Writer};
 use paraseq::parallel::Ordered;
 use paraseq::{fastx, prelude::*};
 
@@ -49,13 +49,13 @@ struct Cli {
 fn main() -> Result<()> {
     let args = Cli::parse();
 
+    let reader = fastx::Reader::from_optional_path(args.input)?;
     let writer = Writer::new(output_handle(&args.output)?, args.format);
+
     if args.ordered {
-        let reader = fastx::Reader::new(input_handle(&args.input)?)?;
         let mut processor = Ordered(writer);
         reader.process_parallel(&mut processor, args.threads)?;
     } else {
-        let reader = fastx::Reader::new(input_handle(&args.input)?)?;
         let mut processor = writer;
         reader.process_parallel(&mut processor, args.threads)?;
     }
