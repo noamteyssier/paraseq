@@ -26,7 +26,9 @@ pub trait GenericProcessor<Rf>: Send + Clone {
     }
 
     /// Whether `on_batch_complete` must be called in the same order batches
-    /// were claimed from the input stream(s). See [`crate::parallel::Ordered`].
+    /// were claimed from the input stream(s). Override to return `true` to
+    /// opt in directly, or wrap the processor in [`crate::parallel::Ordered`]
+    /// to opt in without an impl (e.g. for a processor type you don't own).
     fn requires_ordering(&self) -> bool {
         false
     }
@@ -70,7 +72,9 @@ pub trait ParallelProcessor<Rf: Record>: Send + Clone {
     }
 
     /// Whether `on_batch_complete` must be called in the same order batches
-    /// were claimed from the input stream(s). See [`crate::parallel::Ordered`].
+    /// were claimed from the input stream(s). Override to return `true` to
+    /// opt in directly, or wrap the processor in [`crate::parallel::Ordered`]
+    /// to opt in without an impl (e.g. for a processor type you don't own).
     fn requires_ordering(&self) -> bool {
         false
     }
@@ -133,7 +137,9 @@ pub trait PairedParallelProcessor<Rf: Record>: Send + Clone {
     }
 
     /// Whether `on_batch_complete` must be called in the same order batches
-    /// were claimed from the input stream(s). See [`crate::parallel::Ordered`].
+    /// were claimed from the input stream(s). Override to return `true` to
+    /// opt in directly, or wrap the processor in [`crate::parallel::Ordered`]
+    /// to opt in without an impl (e.g. for a processor type you don't own).
     fn requires_ordering(&self) -> bool {
         false
     }
@@ -196,7 +202,9 @@ pub trait MultiParallelProcessor<Rf: Record>: Send + Clone {
     }
 
     /// Whether `on_batch_complete` must be called in the same order batches
-    /// were claimed from the input stream(s). See [`crate::parallel::Ordered`].
+    /// were claimed from the input stream(s). Override to return `true` to
+    /// opt in directly, or wrap the processor in [`crate::parallel::Ordered`]
+    /// to opt in without an impl (e.g. for a processor type you don't own).
     fn requires_ordering(&self) -> bool {
         false
     }

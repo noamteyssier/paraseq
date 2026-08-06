@@ -9,6 +9,13 @@
 //! `on_batch_complete` step to match input order; `process_record`/
 //! `process_record_batch` still run fully in parallel.
 //!
+//! `Ordered` is a convenience for processors you don't own (as here, where
+//! the writer comes from the `common` example module). If you own the
+//! processor type, you can skip the wrapper and override
+//! `requires_ordering(&self) -> bool { true }` directly in its
+//! `ParallelProcessor`/`PairedParallelProcessor`/`MultiParallelProcessor`
+//! impl instead.
+//!
 //! ```sh
 //! cargo run --release --example ordered_parallel -- data/sample.fastq --ordered
 //! ```
