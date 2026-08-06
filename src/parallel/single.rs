@@ -141,14 +141,14 @@ pub(crate) fn process_parallel_pool_range<S: MTGenericReader, T>(
 where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
-    let mut num_threads = pool.threads();
+    let mut num_threads = pool.share_target();
     if num_threads == 0 {
         num_threads = num_cpus::get();
     }
     // Only when the pool can never grow. A pool that *starts* at one worker but
     // may be resized has to take the parallel path anyway, or it could never
     // honour a later `set_threads` -- there is no pool in the sequential path.
-    if num_threads == 1 && pool.max_threads() == 1 {
+    if num_threads == 1 && pool.share_max() == 1 {
         return process_sequential_generic_range(reader, processor, offset, limit);
     }
 
@@ -196,6 +196,12 @@ where
             limit,
         };
 
+        // At least one worker always starts: `share_target` floors at one and a
+        // share's live count starts at zero, so the first claim cannot fail.
+        // That matters more than it looks -- a share that spawned no workers
+        // would return immediately and silently skip its whole input, and no
+        // later growth could rescue it, because only a running worker spawns
+        // another.
         for _ in 0..num_threads {
             if !pool.try_claim_slot() {
                 break;
@@ -1116,6 +1122,102 @@ mod pool_tests {
         churner.join().unwrap();
 
         assert_eq!(proc.total.load(Ordering::Relaxed), N);
+    }
+
+    /// A `Collection` splits its pool across the readers running at once.
+    ///
+    /// The regression this guards: handing every reader the *same* pool lets
+    /// the first claim every slot, so the rest spawn nothing. Since only a
+    /// running worker spawns another, those readers never start and their input
+    /// is silently skipped -- the counts come back short, with no error.
+    #[test]
+    fn a_collection_processes_every_reader_from_a_shared_pool() {
+        use crate::fastx::{Collection, CollectionType};
+
+        const N: usize = 5_000;
+        for readers in [1usize, 2, 4, 8] {
+            let mut proc = TallyProcessor::default();
+            let inner: Vec<_> = (0..readers)
+                .map(|_| crate::fastx::Reader::new(Cursor::new(make_fastq(N))).unwrap())
+                .collect();
+            let collection = Collection::new(inner, CollectionType::Single).unwrap();
+            // Fewer threads than readers, so the split rounds down toward zero
+            // and every share has to be floored at one.
+            collection
+                .process_parallel_pool(&mut proc, &ThreadPool::new(2), None)
+                .unwrap();
+            assert_eq!(
+                proc.total.load(Ordering::Relaxed),
+                N * readers,
+                "{readers} readers: some reader was never started"
+            );
+        }
+    }
+
+    /// The same, for the grouped (paired) dispatch path.
+    #[test]
+    fn a_paired_collection_processes_every_group() {
+        use crate::fastx::{Collection, CollectionType};
+
+        const N: usize = 4_000;
+        #[derive(Clone, Default)]
+        struct PairTally {
+            total: Arc<AtomicUsize>,
+            local: usize,
+        }
+        impl<Rf: Record> crate::parallel::PairedParallelProcessor<Rf> for PairTally {
+            fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), ProcessError> {
+                self.local += 1;
+                Ok(())
+            }
+            fn on_thread_complete(&mut self) -> Result<(), ProcessError> {
+                self.total.fetch_add(self.local, Ordering::Relaxed);
+                self.local = 0;
+                Ok(())
+            }
+        }
+
+        for pairs in [1usize, 2, 4] {
+            let mut proc = PairTally::default();
+            let inner: Vec<_> = (0..pairs * 2)
+                .map(|_| crate::fastx::Reader::new(Cursor::new(make_fastq(N))).unwrap())
+                .collect();
+            let collection = Collection::new(inner, CollectionType::Paired).unwrap();
+            collection
+                .process_parallel_paired_pool(&mut proc, &ThreadPool::new(2), None)
+                .unwrap();
+            assert_eq!(
+                proc.total.load(Ordering::Relaxed),
+                N * pairs,
+                "{pairs} pairs: some group was never started"
+            );
+        }
+    }
+
+    /// A share reads the same target as its parent, so one `set_threads`
+    /// retargets every reader at once.
+    #[test]
+    fn shares_track_the_parent_target() {
+        let pool = ThreadPool::with_max(16, 32);
+        let a = pool.share(4);
+        let b = pool.share(4);
+        assert_eq!(a.share_target(), 4);
+        assert_eq!(b.share_target(), 4);
+
+        pool.set_threads(32);
+        assert_eq!(a.share_target(), 8, "a share must see the parent resize");
+        assert_eq!(b.share_target(), 8);
+
+        // A share never rounds down to zero workers.
+        let thin = pool.share(64);
+        assert_eq!(thin.share_target(), 1);
+        assert_eq!(thin.share_max(), 1);
+
+        // Live counts are per share, not shared: claiming in one leaves the
+        // other untouched.
+        assert!(a.try_claim_slot());
+        assert_eq!(a.live(), 1);
+        assert_eq!(b.live(), 0);
     }
 
     /// A pool never exceeds the ceiling it was built with.

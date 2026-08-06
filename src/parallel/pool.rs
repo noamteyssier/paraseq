@@ -25,22 +25,29 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 struct Inner {
-    /// Workers that should be running.
+    /// Workers that should be running, across every share of this pool.
+    ///
+    /// Shared by all shares so that one `set_threads` reaches every reader a
+    /// `Collection` is driving, without anything having to fan the change out.
     target: AtomicUsize,
-    /// Workers actually running. Only ever changed by a worker claiming or
-    /// releasing its own slot, so it cannot drift from reality.
-    live: AtomicUsize,
-    /// Hard ceiling. Bounds `target`, so a caller cannot ask for unbounded
-    /// threads by accident.
+    /// Hard ceiling on `target`.
     max: usize,
 }
 
 /// A shared, resizable worker count.
 ///
-/// Cloning is cheap and every clone refers to the same pool.
+/// Cloning is cheap and every clone refers to the same pool. A `Collection`
+/// driving several readers at once gives each one a [`share`](Self::share) of
+/// the same pool, so the target the caller sets is a *total* rather than a
+/// per-reader figure.
 #[derive(Debug, Clone)]
 pub struct ThreadPool {
     inner: Arc<Inner>,
+    /// Workers running in *this* share. Only ever changed by a worker claiming
+    /// or releasing its own slot, so it cannot drift from reality.
+    live: Arc<AtomicUsize>,
+    /// How many shares divide `inner.target`. One for an unshared pool.
+    divisor: usize,
 }
 
 impl ThreadPool {
@@ -59,13 +66,33 @@ impl ThreadPool {
         Self {
             inner: Arc::new(Inner {
                 target: AtomicUsize::new(threads.clamp(1, max)),
-                live: AtomicUsize::new(0),
                 max,
             }),
+            live: Arc::new(AtomicUsize::new(0)),
+            divisor: 1,
         }
     }
 
-    /// Change how many workers should be running.
+    /// A view of this pool for one of `ways` concurrent consumers.
+    ///
+    /// Each share tracks its own live workers but reads the same target, so a
+    /// `set_threads` on any of them retargets all of them at once. The target
+    /// is a total: `ways` shares of a 32-thread pool run 8 workers each.
+    ///
+    /// Sharing rather than handing the same pool to every reader is deliberate.
+    /// A single pool would let the first reader claim every slot, leaving the
+    /// rest to spawn nothing — and since workers are only spawned *by* running
+    /// workers, those readers would never start and their input would be
+    /// silently skipped.
+    pub fn share(&self, ways: usize) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            live: Arc::new(AtomicUsize::new(0)),
+            divisor: self.divisor.saturating_mul(ways.max(1)).max(1),
+        }
+    }
+
+    /// Change how many workers should be running, across every share.
     ///
     /// Takes effect within one batch per worker: growth spawns as running
     /// workers notice the gap, and shrinking retires workers after they finish
@@ -77,19 +104,29 @@ impl ThreadPool {
             .store(threads.clamp(1, self.inner.max), Ordering::Relaxed);
     }
 
-    /// The current target.
+    /// The current target, across every share.
     pub fn threads(&self) -> usize {
         self.inner.target.load(Ordering::Relaxed)
     }
 
-    /// Workers actually running now.
+    /// Workers running in this share.
     pub fn live(&self) -> usize {
-        self.inner.live.load(Ordering::Relaxed)
+        self.live.load(Ordering::Relaxed)
     }
 
-    /// The ceiling set at construction.
+    /// The ceiling set at construction, across every share.
     pub fn max_threads(&self) -> usize {
         self.inner.max
+    }
+
+    /// This share's slice of the target, never below one.
+    pub(crate) fn share_target(&self) -> usize {
+        (self.threads() / self.divisor).max(1)
+    }
+
+    /// This share's slice of the ceiling, never below one.
+    pub(crate) fn share_max(&self) -> usize {
+        (self.inner.max / self.divisor).max(1)
     }
 
     /// Claim a slot for a new worker, if the pool is short of its target.
@@ -98,13 +135,12 @@ impl ThreadPool {
     /// the same shortfall at once, and two of them spawning for one slot would
     /// overshoot the target.
     pub(crate) fn try_claim_slot(&self) -> bool {
-        let mut live = self.inner.live.load(Ordering::Relaxed);
+        let mut live = self.live.load(Ordering::Relaxed);
         loop {
-            let target = self.inner.target.load(Ordering::Relaxed);
-            if live >= target || live >= self.inner.max {
+            if live >= self.share_target() || live >= self.share_max() {
                 return false;
             }
-            match self.inner.live.compare_exchange_weak(
+            match self.live.compare_exchange_weak(
                 live,
                 live + 1,
                 Ordering::AcqRel,
@@ -121,12 +157,12 @@ impl ThreadPool {
     /// Symmetric to [`Self::try_claim_slot`]: the CAS is what stops every
     /// surplus worker retiring at once when the target drops by one.
     pub(crate) fn try_release_slot(&self) -> bool {
-        let mut live = self.inner.live.load(Ordering::Relaxed);
+        let mut live = self.live.load(Ordering::Relaxed);
         loop {
-            if live <= self.inner.target.load(Ordering::Relaxed) || live <= 1 {
+            if live <= self.share_target() || live <= 1 {
                 return false;
             }
-            match self.inner.live.compare_exchange_weak(
+            match self.live.compare_exchange_weak(
                 live,
                 live - 1,
                 Ordering::AcqRel,
@@ -140,6 +176,6 @@ impl ThreadPool {
 
     /// Release unconditionally, for a worker leaving because the input ended.
     pub(crate) fn release_slot(&self) {
-        self.inner.live.fetch_sub(1, Ordering::AcqRel);
+        self.live.fetch_sub(1, Ordering::AcqRel);
     }
 }
