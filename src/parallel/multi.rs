@@ -1,5 +1,6 @@
 use parking_lot::{Mutex, MutexGuard};
 use smallvec::SmallVec;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fastx::GenericReader;
 use crate::parallel::error::ProcessError;
@@ -9,6 +10,7 @@ use super::single::MTGenericReader;
 
 pub struct MultiReader<R: GenericReader> {
     readers: SmallVec<[Mutex<R>; MAX_ARITY]>,
+    records_seen: AtomicUsize,
 }
 
 impl<R: GenericReader> MultiReader<R> {
@@ -16,6 +18,7 @@ impl<R: GenericReader> MultiReader<R> {
         assert!(!readers.is_empty());
         Self {
             readers: readers.into_iter().map(Mutex::new).collect(),
+            records_seen: AtomicUsize::new(0),
         }
     }
 }
@@ -35,21 +38,30 @@ where
             .collect()
     }
 
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(
+        &self,
+        record_set: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
         let mut prev_lock: Option<MutexGuard<_>> = None;
 
         let mut filled = None;
+        let mut claimed: Option<(usize, usize)> = None;
 
         for i in 0..self.readers.len() {
             let mut r = self.readers[i].lock();
             drop(prev_lock);
-            let filledi = r.fill(&mut record_set[i])?;
+            let filled_i = r.fill(&mut record_set[i])?;
             match filled {
                 None => {
-                    filled = Some(filledi);
+                    filled = Some(filled_i);
+                    if filled_i {
+                        let batch_size = R::iter(&record_set[i]).len();
+                        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
+                        claimed = Some((batch_start, batch_start + batch_size));
+                    }
                 }
                 Some(f) => {
-                    if filledi != f {
+                    if filled_i != f {
                         return Err(ProcessError::MultiRecordMismatch(i));
                     }
                 }
@@ -57,7 +69,10 @@ where
             prev_lock = Some(r);
         }
         drop(prev_lock);
-        Ok(filled.unwrap())
+        if !filled.unwrap() {
+            return Ok(None);
+        }
+        Ok(claimed)
     }
 
     fn iter(
@@ -69,14 +84,6 @@ where
             return either::Either::Left(err_iter);
         }
         either::Either::Right(SmallVecIt { its })
-    }
-
-    fn n_records(record_set: &Self::RecordSet) -> usize {
-        record_set
-            .first()
-            .map(R::iter)
-            .map(|it| it.len())
-            .unwrap_or(0)
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
@@ -131,6 +138,7 @@ impl<Item, E: Into<ProcessError>, I: ExactSizeIterator<Item = std::result::Resul
 pub struct InterleavedMultiReader<R: GenericReader> {
     reader: Mutex<R>,
     arity: usize,
+    records_seen: AtomicUsize,
 }
 
 impl<R: GenericReader> InterleavedMultiReader<R> {
@@ -139,6 +147,7 @@ impl<R: GenericReader> InterleavedMultiReader<R> {
         Self {
             reader: Mutex::new(reader),
             arity,
+            records_seen: AtomicUsize::new(0),
         }
     }
 }
@@ -155,8 +164,19 @@ where
         (self.reader.lock().new_record_set(), self.arity)
     }
 
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        Ok(self.reader.lock().fill(&mut record_set.0)?)
+    fn fill(
+        &self,
+        record_set: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
+        let mut r = self.reader.lock();
+        if !r.fill(&mut record_set.0)? {
+            return Ok(None);
+        }
+        // Batch position is in record-groups, not individual records, to
+        // match what `iter` below yields.
+        let batch_size = R::iter(&record_set.0).len() / self.arity;
+        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
+        Ok(Some((batch_start, batch_start + batch_size)))
     }
 
     fn iter(
@@ -171,11 +191,6 @@ where
             return either::Either::Left(err_iter);
         }
         either::Either::Right(ChunkedIt { it, arity: *arity })
-    }
-
-    fn n_records((record_set, arity): &Self::RecordSet) -> usize {
-        // Return the number of record-groups, not individual records
-        R::iter(record_set).len() / arity
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {

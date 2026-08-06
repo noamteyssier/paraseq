@@ -262,12 +262,14 @@ where
 
 pub(crate) struct SingleReader<R: GenericReader> {
     reader: Mutex<R>,
+    records_seen: std::sync::atomic::AtomicUsize,
 }
 
 impl<R: GenericReader> SingleReader<R> {
     pub fn new(reader1: R) -> Self {
         SingleReader {
             reader: Mutex::new(reader1),
+            records_seen: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -284,19 +286,25 @@ where
         self.reader.lock().new_record_set()
     }
 
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(
+        &self,
+        record_set: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
         let mut r1 = self.reader.lock();
-        Ok(R::fill(&mut r1, record_set)?)
+        if !R::fill(&mut r1, record_set)? {
+            return Ok(None);
+        }
+        let batch_size = R::iter(record_set).len();
+        let batch_start = self
+            .records_seen
+            .fetch_add(batch_size, std::sync::atomic::Ordering::SeqCst);
+        Ok(Some((batch_start, batch_start + batch_size)))
     }
 
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         R::iter(record_set).map(|r| Ok(r?))
-    }
-
-    fn n_records(record_set: &Self::RecordSet) -> usize {
-        R::iter(record_set).len()
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
