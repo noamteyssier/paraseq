@@ -40,9 +40,6 @@ pub enum ProcessError {
     #[error("Incompatible interleaved set size - expected an even number: {0}")]
     IncompatibleInterleavedSetSize(usize),
 
-    #[error("Incompatible interleaved set size - expected a multiple of {1}: {0}")]
-    IncompatibleInterleavedSetSizeArity(usize, usize),
-
     /// Record synchronization error between paired files
     #[error("Record synchronization error between paired files. {0} has less records.")]
     PairedRecordMismatch(RecordPair),

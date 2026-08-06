@@ -164,17 +164,13 @@ where
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         let it = R::iter(record_set);
-
-        if it.len() % 2 != 0 {
-            let error_iter =
-                std::iter::once(Err(ProcessError::IncompatibleInterleavedSetSize(it.len())));
-            return either::Either::Left(error_iter);
-        }
-
-        let tuple_iter = it
-            .tuples()
-            .map(|(r1, r2)| std::result::Result::Ok((r1?, r2?)));
-        either::Either::Right(tuple_iter)
+        debug_assert!(
+            it.len() % 2 == 0,
+            "InterleavedPairedReader::iter called on an odd-length record set ({}); fill() should already have rejected this",
+            it.len()
+        );
+        it.tuples()
+            .map(|(r1, r2)| std::result::Result::Ok((r1?, r2?)))
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
