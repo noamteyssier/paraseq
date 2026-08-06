@@ -7,7 +7,9 @@ use log::warn;
 use crate::parallel::multi::{InterleavedMultiReader, MultiReader};
 use crate::parallel::paired::{InterleavedPairedReader, PairedReader};
 use crate::parallel::reader::{range_to_offset_limit, SingleReader};
-use crate::parallel::single::{process_parallel_generic, process_parallel_generic_range};
+use crate::parallel::single::{
+    process_parallel_generic, process_parallel_generic_range, process_parallel_pool_range,
+};
 use crate::ProcessError;
 use crate::{fasta, fastq, Error, Record};
 
@@ -197,6 +199,127 @@ impl<R: io::Read + Send> Collection<R> {
                 }
             }
 
+            Ok(())
+        })
+    }
+
+    /// As [`Self::handle_single_readers`], but every reader running at the same
+    /// time gets a share of one resizable pool.
+    ///
+    /// Readers within a batch run concurrently, so the pool is split
+    /// `batch_size` ways: the target the caller sets stays a *total* across the
+    /// run rather than a per-reader figure, matching what `total_threads` means
+    /// on the fixed path.
+    fn handle_single_readers_pool<T, F>(
+        mut self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+        threads_per_reader: Option<usize>,
+        scope_fn: F,
+    ) -> crate::Result<()>
+    where
+        T: Clone + Send,
+        F: Fn(Reader<R>, &mut T, &crate::parallel::ThreadPool) -> crate::Result<()> + Send + Sync,
+    {
+        let total_readers = self.inner.len().max(1);
+        let total_threads = num_cpus::get().min(pool.threads().max(1));
+        let threads_per_reader = match threads_per_reader {
+            Some(num) => num.min(total_threads).max(1),
+            None => (total_threads / total_readers).max(1),
+        };
+        let batch_size = (total_threads / threads_per_reader).max(1);
+        let num_batches = total_readers.div_ceil(batch_size);
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let scope_fn = &scope_fn;
+
+            for _batch_idx in 0..num_batches {
+                let mut batch = Vec::new();
+                let rbound = batch_size.min(self.inner.len());
+                batch.extend(self.inner.drain(..rbound));
+                // Split across the readers actually in this batch, not the
+                // nominal batch size, or the last short batch would under-use
+                // the pool.
+                let ways = batch.len().max(1);
+
+                let mut subhandles = Vec::new();
+                for reader in batch {
+                    let mut thread_proc = processor.clone();
+                    let share = pool.share(ways);
+                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
+                        scope_fn(reader, &mut thread_proc, &share)?;
+                        Ok(())
+                    }));
+                }
+                for handle in subhandles {
+                    handle
+                        .join()
+                        .map_err(|_| crate::ProcessError::JoinError)??;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// As [`Self::handle_grouped_readers`], but every group running at the same
+    /// time gets a share of one resizable pool.
+    fn handle_grouped_readers_pool<T, F>(
+        mut self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+        threads_per_group: Option<usize>,
+        arity: usize,
+        scope_fn: F,
+    ) -> crate::Result<()>
+    where
+        T: Clone + Send,
+        F: Fn(Vec<Reader<R>>, &mut T, &crate::parallel::ThreadPool) -> crate::Result<()>
+            + Send
+            + Sync,
+    {
+        let total_groups = (self.inner.len() / arity).max(1);
+        let total_threads = num_cpus::get().min(pool.threads().max(1));
+        let threads_per_group = match threads_per_group {
+            Some(num) => num.min(total_threads).max(1),
+            None => {
+                if total_threads >= arity {
+                    (total_threads / total_groups).max(arity)
+                } else {
+                    (total_threads / total_groups).max(1)
+                }
+            }
+        };
+        let batch_size = (total_threads / threads_per_group).max(1);
+        let num_batches = total_groups.div_ceil(batch_size);
+
+        thread::scope(|scope| -> crate::Result<()> {
+            let scope_fn = &scope_fn;
+
+            for _batch_idx in 0..num_batches {
+                let mut batch = Vec::new();
+                let groups_in_batch =
+                    batch_size.min(total_groups.saturating_sub(_batch_idx * batch_size));
+                for _ in 0..groups_in_batch {
+                    let group: Vec<_> = self.inner.drain(..arity).collect();
+                    batch.push(group);
+                }
+                let ways = batch.len().max(1);
+
+                let mut subhandles = Vec::new();
+                for group in batch {
+                    let mut thread_proc = processor.clone();
+                    let share = pool.share(ways);
+                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
+                        scope_fn(group, &mut thread_proc, &share)?;
+                        Ok(())
+                    }));
+                }
+                for handle in subhandles {
+                    handle
+                        .join()
+                        .map_err(|_| crate::ProcessError::JoinError)??;
+                }
+            }
             Ok(())
         })
     }
@@ -623,6 +746,134 @@ impl<R: io::Read + Send> Collection<R> {
                     threads,
                     start,
                     limit,
+                )
+            },
+        )
+    }
+
+    /// As [`Self::process_parallel`], but the worker count may change while the
+    /// run is in flight. See [`crate::parallel::ThreadPool`].
+    ///
+    /// The pool's target is a total across every reader running concurrently,
+    /// not a per-reader count.
+    pub fn process_parallel_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Single);
+        self.handle_single_readers_pool(
+            processor,
+            pool,
+            threads_per_reader,
+            |reader, proc, share| {
+                process_parallel_pool_range(SingleReader::new(reader), proc, share, 0, None)
+            },
+        )
+    }
+
+    /// As [`Self::process_parallel_paired`], with a resizable worker count.
+    pub fn process_parallel_paired_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Paired);
+        self.handle_grouped_readers_pool(
+            processor,
+            pool,
+            threads_per_reader,
+            2,
+            |mut readers, proc, share| {
+                let r1 = readers.remove(0);
+                let r2 = readers.remove(0);
+                process_parallel_pool_range(PairedReader::new(r1, r2), proc, share, 0, None)
+            },
+        )
+    }
+
+    /// As [`Self::process_parallel_interleaved`], with a resizable worker count.
+    pub fn process_parallel_interleaved_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
+    {
+        self.warn_if_mismatch(CollectionType::Interleaved);
+        self.handle_single_readers_pool(
+            processor,
+            pool,
+            threads_per_reader,
+            |reader, proc, share| {
+                process_parallel_pool_range(
+                    InterleavedPairedReader::new(reader),
+                    proc,
+                    share,
+                    0,
+                    None,
+                )
+            },
+        )
+    }
+
+    /// As [`Self::process_parallel_multi`], with a resizable worker count.
+    pub fn process_parallel_multi_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+        Self: Sized,
+    {
+        let arity = self.get_arity_for_multi();
+        self.handle_grouped_readers_pool(
+            processor,
+            pool,
+            threads_per_reader,
+            arity,
+            |readers, proc, share| {
+                process_parallel_pool_range(MultiReader::new(readers), proc, share, 0, None)
+            },
+        )
+    }
+
+    /// As [`Self::process_parallel_multi_interleaved`], with a resizable worker
+    /// count.
+    pub fn process_parallel_multi_interleaved_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+        threads_per_reader: Option<usize>,
+    ) -> crate::Result<()>
+    where
+        T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
+        Self: Sized,
+    {
+        let arity = self.get_arity_for_interleaved_multi();
+        self.handle_single_readers_pool(
+            processor,
+            pool,
+            threads_per_reader,
+            move |reader, proc, share| {
+                process_parallel_pool_range(
+                    InterleavedMultiReader::new(reader, arity),
+                    proc,
+                    share,
+                    0,
+                    None,
                 )
             },
         )
