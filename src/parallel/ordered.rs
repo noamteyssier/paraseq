@@ -76,6 +76,23 @@ impl OrderGate {
 /// flushing it in `on_batch_complete` get correctly ordered output with no
 /// other changes required.
 ///
+/// This is purely a convenience: it does nothing but forward every method
+/// to the wrapped processor and override `requires_ordering` to return
+/// `true`. If you own the processor type, it's equivalent (and one less
+/// layer) to override `requires_ordering` directly in your own impl:
+///
+/// ```ignore
+/// impl<Rf: Record> ParallelProcessor<Rf> for MyWriter {
+///     // ...
+///     fn requires_ordering(&self) -> bool {
+///         true
+///     }
+/// }
+/// ```
+///
+/// Reach for `Ordered` instead when you don't own the processor type -
+/// e.g. wrapping a closure or a processor defined elsewhere:
+///
 /// ```ignore
 /// let mut processor = Ordered(MyWriter::new(...));
 /// reader.process_parallel(&mut processor, num_threads)?;
