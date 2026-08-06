@@ -1,5 +1,6 @@
 use itertools::Itertools;
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fastx::GenericReader;
 use crate::parallel::error::ProcessError;
@@ -9,6 +10,7 @@ use super::single::MTGenericReader;
 pub struct PairedReader<R: GenericReader> {
     reader1: Mutex<R>,
     reader2: Mutex<R>,
+    records_seen: AtomicUsize,
 }
 
 impl<R: GenericReader> PairedReader<R> {
@@ -16,6 +18,7 @@ impl<R: GenericReader> PairedReader<R> {
         PairedReader {
             reader1: Mutex::new(reader1),
             reader2: Mutex::new(reader2),
+            records_seen: AtomicUsize::new(0),
         }
     }
 }
@@ -35,14 +38,29 @@ where
         )
     }
 
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(
+        &self,
+        record_set: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
         let mut r1 = self.reader1.lock();
-        let filled1 = R::fill(&mut r1, &mut record_set.0)?;
+        let filled_1 = R::fill(&mut r1, &mut record_set.0)?;
+        if !filled_1 {
+            drop(r1);
+            return Ok(None);
+        }
+
+        let batch_size = R::iter(&record_set.0).len();
+        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
+
         let mut r2 = self.reader2.lock();
         drop(r1);
-        let filled2 = R::fill(&mut r2, &mut record_set.1)?;
+        let filled_2 = R::fill(&mut r2, &mut record_set.1)?;
         drop(r2);
-        Ok(filled1 && filled2)
+
+        if !filled_2 {
+            return Ok(None);
+        }
+        Ok(Some((batch_start, batch_start + batch_size)))
     }
 
     fn iter(
@@ -69,10 +87,6 @@ where
         either::Either::Right(record_iter)
     }
 
-    fn n_records(record_set: &Self::RecordSet) -> usize {
-        R::iter(&record_set.0).len()
-    }
-
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
         self.reader1.lock().set_threads(num_threads)?;
 
@@ -84,12 +98,14 @@ where
 
 pub struct InterleavedPairedReader<R: GenericReader> {
     reader: Mutex<R>,
+    records_seen: AtomicUsize,
 }
 
 impl<R: GenericReader> InterleavedPairedReader<R> {
     pub fn new(reader: R) -> Self {
         InterleavedPairedReader {
             reader: Mutex::new(reader),
+            records_seen: AtomicUsize::new(0),
         }
     }
 }
@@ -106,9 +122,20 @@ where
         self.reader.lock().new_record_set()
     }
 
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(
+        &self,
+        record_set: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
         // FIXME: ENSURE THIS READS AN EVEN NUMBER OF RECORDS.
-        Ok(self.reader.lock().fill(record_set)?)
+        let mut r = self.reader.lock();
+        if !r.fill(record_set)? {
+            return Ok(None);
+        }
+        // Batch position is in pairs, not individual records, to match
+        // what `iter` below yields.
+        let batch_size = R::iter(record_set).len() / 2;
+        let batch_start = self.records_seen.fetch_add(batch_size, Ordering::SeqCst);
+        Ok(Some((batch_start, batch_start + batch_size)))
     }
 
     fn iter(
@@ -126,11 +153,6 @@ where
             .tuples()
             .map(|(r1, r2)| std::result::Result::Ok((r1?, r2?)));
         either::Either::Right(tuple_iter)
-    }
-
-    fn n_records(record_set: &Self::RecordSet) -> usize {
-        // Return the number of pairs, not individual records
-        R::iter(record_set).len() / 2
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
