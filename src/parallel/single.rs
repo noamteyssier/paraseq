@@ -158,59 +158,36 @@ where
     let order_gate = Arc::new(OrderGate::new());
     let ordered = processor.requires_ordering();
 
-    // Workers spawned after the initial wave are in no handle list, so their
-    // errors are collected here rather than by `join`. `thread::scope` still
-    // joins every worker before its closure returns, so reading this afterwards
-    // cannot race.
     let first_error: Mutex<Option<ProcessError>> = Mutex::new(None);
-    let next_id = AtomicUsize::new(0);
-    // Set as soon as any worker sees the input end.
-    //
-    // Without it, a worker leaving at EOF drops `live` below `target`, every
-    // remaining worker reads that as "the pool is short", and each spawns a
-    // replacement that immediately hits EOF and does the same. Measured before
-    // this existed: 3.1 million workers spawned for a 32-thread run.
+    // Set at end of input (or when the record limit is reached). Parked
+    // workers wait on the pool's gate with this in their predicate, so setting
+    // it must be paired with `pool.wake_all()` or they would sleep forever.
     let finished = AtomicBool::new(false);
-    // New workers are cloned from this, never from a running worker.
-    //
-    // `Clone` on a processor means "give me a fresh worker" -- the fixed path
-    // only ever clones the caller's untouched instance. Cloning a worker
-    // mid-flight instead copies whatever it has accumulated, and any processor
-    // keeping per-thread tallies then double-counts them when both flush in
-    // `on_thread_complete`. That turned an 8 million record file into 791
-    // billion records.
-    let template: Mutex<T> = Mutex::new(processor.clone());
 
     thread::scope(|scope| -> Result<()> {
         let reader = &reader;
         let ctx = WorkerCtx {
             reader,
             pool,
-            next_id: &next_id,
             first_error: &first_error,
             finished: &finished,
-            template: &template,
             order_gate: &order_gate,
             ordered,
             offset,
             limit,
         };
 
-        // At least one worker always starts: `share_target` floors at one and a
-        // share's live count starts at zero, so the first claim cannot fail.
-        // That matters more than it looks -- a share that spawned no workers
-        // would return immediately and silently skip its whole input, and no
-        // later growth could rescue it, because only a running worker spawns
-        // another.
-        for _ in 0..num_threads {
-            if !pool.try_claim_slot() {
-                break;
-            }
+        // The whole spawn set, once, each worker with a stable index. A worker
+        // whose index is at or above the target parks immediately (allocating
+        // nothing); growth wakes it. Because nothing ever spawns after this
+        // loop, the worker count is bounded by construction -- there is no
+        // claim/release accounting to race against EOF.
+        for worker_id in 0..pool.share_max() {
             spawn_worker(
                 scope,
                 &ctx,
+                worker_id,
                 processor.clone(),
-                reader.new_record_set(),
                 records_processed.clone(),
             );
         }
@@ -227,65 +204,98 @@ where
 ///
 /// Grouped so that spawning one takes three arguments rather than a dozen, and
 /// so a worker can hand the same context to a successor.
-struct WorkerCtx<'env, S, T> {
+struct WorkerCtx<'env, S> {
     reader: &'env S,
     pool: &'env crate::parallel::ThreadPool,
-    next_id: &'env AtomicUsize,
     first_error: &'env Mutex<Option<ProcessError>>,
     finished: &'env AtomicBool,
-    template: &'env Mutex<T>,
     order_gate: &'env Arc<OrderGate>,
     ordered: bool,
     offset: usize,
     limit: Option<usize>,
 }
 
-impl<S, T> Clone for WorkerCtx<'_, S, T> {
+impl<S> Clone for WorkerCtx<'_, S> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<S, T> Copy for WorkerCtx<'_, S, T> {}
+impl<S> Copy for WorkerCtx<'_, S> {}
 
-/// Run one worker, and let it spawn successors when the pool grows.
+/// Run one worker of the fixed spawn set.
 ///
-/// Spawning from inside a worker rather than from a dedicated coordinator puts
-/// the cost where it is already amortised: a worker checks the pool once per
-/// *batch*, between finishing one and asking for the next. No coordinator
-/// thread, and no polling interval to tune.
+/// The worker parks when its index is at or above the target and resumes when
+/// growth brings the target back over it. It allocates its `RecordSet` lazily,
+/// on first activation, so a worker that never runs holds no batch memory.
+/// Parking happens only at a batch boundary, after the order gate has been
+/// advanced past the batch in hand, so ordered mode never waits on a turn a
+/// parked worker owes.
 fn spawn_worker<'scope, 'env, S, T>(
     scope: &'scope thread::Scope<'scope, 'env>,
-    ctx: &WorkerCtx<'env, S, T>,
+    ctx: &WorkerCtx<'env, S>,
+    worker_id: usize,
     mut worker_processor: T,
-    mut record_set: S::RecordSet,
     records_processed: Arc<AtomicUsize>,
 ) where
     S: MTGenericReader + Sync + 'env,
     T: for<'a> GenericProcessor<S::RefRecord<'a>> + Send + 'env,
 {
     let ctx = *ctx;
-    let thread_id = ctx.next_id.fetch_add(1, Ordering::Relaxed);
     scope.spawn(move || {
-        let mut retired = false;
+        let mut record_set: Option<S::RecordSet> = None;
+        let mut active = false;
 
         // As in the fixed path: run the body in a closure so any error can
         // poison the order gate before propagating, rather than deadlocking
         // workers waiting on a batch that will never complete.
         let result: Result<()> = (|| {
-            worker_processor.set_thread_id(thread_id);
+            worker_processor.set_thread_id(worker_id);
 
             loop {
+                if ctx.finished.load(Ordering::Acquire) {
+                    break;
+                }
+                // Over target: park until growth or end of input. The
+                // predicate is re-checked under the pool's gate, and both
+                // `set_threads` and the finished path notify under that same
+                // gate, so the wakeup cannot be lost.
+                if worker_id >= ctx.pool.share_target() {
+                    if active {
+                        ctx.pool.exit_live();
+                        active = false;
+                    }
+                    // Parked memory is proportional to *active* workers: the
+                    // batch in this set was fully processed and the order gate
+                    // advanced past it before we got here, so its contents are
+                    // dead -- drop the buffers rather than hold megabytes idle
+                    // for however long the pool stays shrunk. Re-activation
+                    // re-allocates; resizes happen on controller cadences
+                    // (hundreds of ms), so the churn is noise.
+                    record_set = None;
+                    ctx.pool.park_until(|| {
+                        worker_id < ctx.pool.share_target() || ctx.finished.load(Ordering::Acquire)
+                    });
+                    continue;
+                }
+                if !active {
+                    ctx.pool.enter_live();
+                    active = true;
+                }
+                let record_set = record_set.get_or_insert_with(|| ctx.reader.new_record_set());
+
                 if let Some(lim) = ctx.limit {
                     if records_processed.load(Ordering::Relaxed) >= lim {
-                        ctx.finished.store(true, Ordering::Relaxed);
+                        ctx.finished.store(true, Ordering::Release);
+                        ctx.pool.wake_all();
                         break;
                     }
                 }
 
                 let Some((batch_start, batch_end)) =
-                    ctx.reader.fill(&mut record_set).map_err(Into::into)?
+                    ctx.reader.fill(record_set).map_err(Into::into)?
                 else {
-                    ctx.finished.store(true, Ordering::Relaxed);
+                    ctx.finished.store(true, Ordering::Release);
+                    ctx.pool.wake_all();
                     break; // EOF
                 };
                 let batch_size = batch_end - batch_start;
@@ -298,7 +308,8 @@ fn spawn_worker<'scope, 'env, S, T>(
                     continue;
                 }
                 if batch_start >= range_end {
-                    ctx.finished.store(true, Ordering::Relaxed);
+                    ctx.finished.store(true, Ordering::Release);
+                    ctx.pool.wake_all();
                     break;
                 }
 
@@ -306,7 +317,7 @@ fn spawn_worker<'scope, 'env, S, T>(
                 let take_count =
                     (batch_size - skip_in_batch).min(range_end - batch_start - skip_in_batch);
 
-                let records = S::iter(&record_set)
+                let records = S::iter(record_set)
                     .skip(skip_in_batch)
                     .take(take_count)
                     .map(|r| r.map_err(Into::into));
@@ -323,42 +334,23 @@ fn spawn_worker<'scope, 'env, S, T>(
                 if ctx.ordered {
                     ctx.order_gate.advance(batch_end);
                 }
-
-                // Resize *here*, after the order gate has been advanced past
-                // this batch. Retiring while the gate still expects this worker
-                // to advance it would stall every other worker behind a turn
-                // that never comes.
-                //
-                // The whole steady-state cost of a resizable pool: two relaxed
-                // loads, taking neither branch unless the target has moved.
-                if ctx.pool.try_release_slot() {
-                    retired = true;
-                    break;
-                }
-                while !ctx.finished.load(Ordering::Relaxed) && ctx.pool.try_claim_slot() {
-                    let fresh = ctx.template.lock().unwrap().clone();
-                    // Allocated on this thread rather than the new worker's, so
-                    // the allocation pattern matches the fixed path exactly.
-                    // Still only when a worker is really created, so nothing is
-                    // pre-allocated for a worker that never exists.
-                    let fresh_set = ctx.reader.new_record_set();
-                    spawn_worker(scope, &ctx, fresh, fresh_set, records_processed.clone());
-                }
             }
-            // Retiring workers flush too: `on_thread_complete` is where a
-            // processor commits its per-thread state, and a worker that leaves
-            // mid-run has just as much to commit as one that reaches EOF.
             worker_processor.on_thread_complete()?;
             Ok(())
         })();
 
-        if !retired {
-            ctx.pool.release_slot();
+        if active {
+            ctx.pool.exit_live();
         }
         if let Err(e) = result {
             if ctx.ordered {
                 ctx.order_gate.poison();
             }
+            // An erroring worker also ends the run for its peers -- parked
+            // workers in particular, who would otherwise sleep until a wakeup
+            // that is never coming once their siblings have stopped filling.
+            ctx.finished.store(true, Ordering::Release);
+            ctx.pool.wake_all();
             let mut slot = ctx.first_error.lock().unwrap();
             if slot.is_none() {
                 *slot = Some(e);
@@ -984,28 +976,53 @@ mod pool_tests {
         }
     }
 
-    /// Regression: a worker leaving at EOF drops `live` below `target`, and
-    /// every remaining worker used to read that as "the pool is short" and
-    /// spawn a replacement, which hit EOF and did the same. That produced 3.1
-    /// million workers for a 32-thread run over an 8 M record file.
+    /// Regression: a worker leaving at EOF used to drop `live` below
+    /// `target`, every remaining worker read that as "the pool is short" and
+    /// spawned a replacement, which hit EOF and did the same — 3.1 million
+    /// workers for a 32-thread run over an 8 M record file. Even with an EOF
+    /// guard, a small input could race 9 concurrent workers into an 8-worker
+    /// pool, because peers made spawn decisions from observed live counts.
     ///
-    /// The record count catches it; `threads_completed` catches it loudly.
+    /// The fixed spawn set makes the bound structural: workers are spawned
+    /// once with stable indices and nothing spawns afterwards, so there is no
+    /// decision left to race on. The input here is deliberately tiny (the size
+    /// at which the old design failed deterministically), the run is repeated,
+    /// and *concurrency* is measured directly rather than inferred from
+    /// completion counts.
     #[test]
-    fn workers_leaving_at_eof_do_not_spawn_replacements() {
-        const N: usize = 20_000;
-        let mut proc = TallyProcessor::default();
-        let reader = fastq::Reader::new(Cursor::new(make_fastq(N)));
-        reader
-            .process_parallel_pool(&mut proc, &ThreadPool::new(8))
-            .unwrap();
+    fn worker_concurrency_is_bounded_by_construction() {
+        const N: usize = 200;
+        #[derive(Clone, Default)]
+        struct ConcurrencyProbe {
+            current: Arc<AtomicUsize>,
+            peak: Arc<AtomicUsize>,
+            total: Arc<AtomicUsize>,
+        }
+        impl<Rf: crate::Record> crate::parallel::ParallelProcessor<Rf> for ConcurrencyProbe {
+            fn process_record(&mut self, _r: Rf) -> Result<(), ProcessError> {
+                let now = self.current.fetch_add(1, Ordering::AcqRel) + 1;
+                self.peak.fetch_max(now, Ordering::AcqRel);
+                self.total.fetch_add(1, Ordering::Relaxed);
+                self.current.fetch_sub(1, Ordering::AcqRel);
+                Ok(())
+            }
+        }
 
-        assert_eq!(proc.total.load(Ordering::Relaxed), N);
-        assert!(
-            proc.threads_completed.load(Ordering::Relaxed) <= 8,
-            "{} workers ran for an 8-worker pool: EOF is being mistaken for a \
-             shortfall and workers are respawning each other",
-            proc.threads_completed.load(Ordering::Relaxed)
-        );
+        for _ in 0..25 {
+            let proc_template = ConcurrencyProbe::default();
+            let mut proc = proc_template.clone();
+            let reader = fastq::Reader::new(Cursor::new(make_fastq(N)));
+            reader
+                .process_parallel_pool(&mut proc, &ThreadPool::new(8))
+                .unwrap();
+            assert_eq!(proc_template.total.load(Ordering::Relaxed), N);
+            let peak = proc_template.peak.load(Ordering::Relaxed);
+            assert!(
+                peak <= 8,
+                "{peak} concurrent workers in an 8-worker pool: the spawn-set \
+                 bound has been broken"
+            );
+        }
     }
 
     /// Regression: new workers must be cloned from the caller's pristine
@@ -1259,11 +1276,12 @@ mod pool_tests {
         assert_eq!(thin.share_target(), 1);
         assert_eq!(thin.share_max(), 1);
 
-        // Live counts are per share, not shared: claiming in one leaves the
-        // other untouched.
-        assert!(a.try_claim_slot());
+        // Live counts are per share, not shared.
+        a.enter_live();
         assert_eq!(a.live(), 1);
         assert_eq!(b.live(), 0);
+        assert_eq!(pool.total_live(), 1, "the parent sees the aggregate");
+        a.exit_live();
     }
 
     /// A pool never exceeds the ceiling it was built with.
