@@ -7,7 +7,9 @@ use crate::{
     parallel::{
         multi::{InterleavedMultiReader, MultiReader},
         paired::{InterleavedPairedReader, PairedReader},
-        single::{process_parallel_generic, process_parallel_generic_range, MTGenericReader},
+        single::{
+            process_parallel_generic, process_parallel_generic_range, BatchCounter, MTGenericReader,
+        },
         MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
     },
     ProcessError, Record, Result,
@@ -262,12 +264,14 @@ where
 
 pub(crate) struct SingleReader<R: GenericReader> {
     reader: Mutex<R>,
+    records_seen: BatchCounter,
 }
 
 impl<R: GenericReader> SingleReader<R> {
     pub fn new(reader1: R) -> Self {
         SingleReader {
             reader: Mutex::new(reader1),
+            records_seen: BatchCounter::new(),
         }
     }
 }
@@ -284,19 +288,22 @@ where
         self.reader.lock().new_record_set()
     }
 
-    fn fill(&self, record_set: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+    fn fill(
+        &self,
+        record_set: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
         let mut r1 = self.reader.lock();
-        Ok(R::fill(&mut r1, record_set)?)
+        if !R::fill(&mut r1, record_set)? {
+            return Ok(None);
+        }
+        let batch_size = R::iter(record_set).len();
+        Ok(Some(self.records_seen.claim(batch_size)))
     }
 
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         R::iter(record_set).map(|r| Ok(r?))
-    }
-
-    fn n_records(record_set: &Self::RecordSet) -> usize {
-        R::iter(record_set).len()
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {

@@ -39,4 +39,19 @@ gcs = ["dep:which"]
 [dev-dependencies]
 clap = { version = "4.5.40", features = ["derive"] }
 niffler = "3.0.0"
-paraseq = { path = ".", features = ["url", "htslib", "ssh", "gcs"] }
+
+[[example]]
+name = "htslib"
+required-features = ["htslib"]
+
+[[example]]
+name = "url"
+required-features = ["url"]
+
+[[example]]
+name = "ssh"
+required-features = ["ssh"]
+
+[[example]]
+name = "gcs"
+required-features = ["gcs"]

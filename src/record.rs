@@ -24,6 +24,14 @@ pub trait Record {
     /// Returns the quality scores of the record (if available).
     fn qual(&self) -> Option<&[u8]>;
 
+    /// Returns the record's 0-based index within the original input file.
+    ///
+    /// This is the record's stable, global position as it appears in the
+    /// source file: it is assigned as records are parsed and is unaffected
+    /// by batching, threading, or any `range`/limit applied during
+    /// processing.
+    fn index(&self) -> u64;
+
     /// Convert ID to string reference (UTF-8)
     ///
     /// # Safety
@@ -126,6 +134,9 @@ mod tests {
         }
         fn qual(&self) -> Option<&[u8]> {
             self.qual.as_deref()
+        }
+        fn index(&self) -> u64 {
+            0
         }
     }
 

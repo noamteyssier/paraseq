@@ -1,5 +1,6 @@
 use itertools::Itertools;
 
+use crate::parallel::ordered::OrderGate;
 use crate::parallel::processor::GenericProcessor;
 use crate::parallel::{error::Result, ProcessError};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,13 +14,35 @@ pub(crate) trait MTGenericReader: Send + Sync {
     type RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet;
-    fn fill(&self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error>;
+
+    /// Fills `record`, returning the `[start, end)` range this batch
+    /// occupies in the underlying stream(s), or `None` at EOF.
+    fn fill(
+        &self,
+        record: &mut Self::RecordSet,
+    ) -> std::result::Result<Option<(usize, usize)>, Self::Error>;
     fn iter(
         record_set: &Self::RecordSet,
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>>;
-    fn n_records(record_set: &Self::RecordSet) -> usize;
     fn set_num_threads(&mut self, _num_threads: usize) -> std::result::Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+/// Hands out non-overlapping `[start, end)` ranges from a monotonically
+/// increasing position counter, for `MTGenericReader::fill` implementors
+/// to claim their batch's position in.
+pub(crate) struct BatchCounter(AtomicUsize);
+
+impl BatchCounter {
+    pub(crate) fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    /// Claims `size` more positions and returns the `[start, end)` range.
+    pub(crate) fn claim(&self, size: usize) -> (usize, usize) {
+        let start = self.0.fetch_add(size, Ordering::Relaxed);
+        (start, start + size)
     }
 }
 
@@ -44,15 +67,13 @@ where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
     let mut record_set = reader.new_record_set();
-    let mut records_seen = 0; // Total records encountered
     let mut records_processed = 0; // Records actually processed
 
-    while reader.fill(&mut record_set).map_err(Into::into)? {
-        let batch_size = S::n_records(&record_set);
+    while let Some((batch_start, batch_end)) = reader.fill(&mut record_set).map_err(Into::into)? {
+        let batch_size = batch_end - batch_start;
 
         // Skip entire batch if still before offset
-        if records_seen + batch_size <= offset {
-            records_seen += batch_size;
+        if batch_end <= offset {
             continue;
         }
 
@@ -64,14 +85,12 @@ where
         }
 
         // Calculate slice of this batch to process
-        let skip_in_batch = offset.saturating_sub(records_seen);
+        let skip_in_batch = offset.saturating_sub(batch_start);
         let remaining_quota = limit.map(|lim| lim - records_processed);
         let take_count = match remaining_quota {
             Some(quota) => (batch_size - skip_in_batch).min(quota),
             None => batch_size - skip_in_batch,
         };
-
-        records_seen += batch_size;
 
         // Process only the relevant slice
         let records = S::iter(&record_set)
@@ -107,8 +126,9 @@ where
 
     reader.set_num_threads(num_threads).map_err(Into::into)?;
 
-    let records_seen = Arc::new(AtomicUsize::default());
     let records_processed = Arc::new(AtomicUsize::default());
+    let order_gate = Arc::new(OrderGate::new());
+    let ordered = processor.requires_ordering();
 
     thread::scope(|scope| -> Result<()> {
         let reader = &reader;
@@ -117,64 +137,88 @@ where
         for thread_id in 0..num_threads {
             let mut worker_processor = processor.clone();
             let mut record_set = reader.new_record_set();
-            let records_seen = records_seen.clone();
             let records_processed = records_processed.clone();
+            let order_gate = order_gate.clone();
 
             let handle = scope.spawn(move || {
-                worker_processor.set_thread_id(thread_id);
+                // Run the worker body in a closure so any error path below can
+                // poison the order gate before propagating - otherwise other
+                // threads waiting on a batch that will never complete would
+                // deadlock instead of unwinding.
+                let result: Result<()> = (|| {
+                    worker_processor.set_thread_id(thread_id);
 
-                loop {
-                    // Check limit before grabbing batch
-                    if let Some(lim) = limit {
-                        if records_processed.load(Ordering::Relaxed) >= lim {
+                    loop {
+                        // Check limit before grabbing batch
+                        if let Some(lim) = limit {
+                            if records_processed.load(Ordering::Relaxed) >= lim {
+                                break;
+                            }
+                        }
+
+                        // Fill the batch; `fill` itself claims this batch's
+                        // stream position atomically (see the trait docs).
+                        let Some((batch_start, batch_end)) =
+                            reader.fill(&mut record_set).map_err(Into::into)?
+                        else {
+                            break; // EOF
+                        };
+                        let batch_size = batch_end - batch_start;
+
+                        // Determine overlap with target range [offset, offset+limit)
+                        let range_end = limit.map(|lim| offset + lim).unwrap_or(usize::MAX);
+
+                        if batch_end <= offset {
+                            // Entire batch before offset - skip it. Still catch
+                            // the order gate up to this point so the first
+                            // processed batch's wait_turn isn't stuck waiting
+                            // for skipped ground it will never claim.
+                            if ordered {
+                                order_gate.advance(batch_end);
+                            }
+                            continue;
+                        }
+
+                        if batch_start >= range_end {
+                            // Entire batch after limit - done
                             break;
                         }
+
+                        // Calculate slice of this batch within range
+                        let skip_in_batch = offset.saturating_sub(batch_start);
+                        let take_count = (batch_size - skip_in_batch)
+                            .min(range_end - batch_start - skip_in_batch);
+
+                        // Process the slice
+                        let records = S::iter(&record_set)
+                            .skip(skip_in_batch)
+                            .take(take_count)
+                            .map(|r| r.map_err(Into::into));
+
+                        records.process_results(|records| {
+                            worker_processor.process_record_batch(records)
+                        })??;
+
+                        records_processed.fetch_add(take_count, Ordering::Relaxed);
+
+                        // Only the commit step is serialized to stream order;
+                        // process_record_batch above already ran unordered.
+                        if ordered {
+                            order_gate.wait_turn(batch_start);
+                        }
+                        worker_processor.on_batch_complete()?;
+                        if ordered {
+                            order_gate.advance(batch_end);
+                        }
                     }
+                    worker_processor.on_thread_complete()?;
+                    Ok(())
+                })();
 
-                    // Fill the batch
-                    if !reader.fill(&mut record_set).map_err(Into::into)? {
-                        break; // EOF
-                    }
-
-                    let batch_size = S::n_records(&record_set);
-
-                    // Atomically claim our position in the stream
-                    let batch_start = records_seen.fetch_add(batch_size, Ordering::SeqCst);
-                    let batch_end = batch_start + batch_size;
-
-                    // Determine overlap with target range [offset, offset+limit)
-                    let range_end = limit.map(|lim| offset + lim).unwrap_or(usize::MAX);
-
-                    if batch_end <= offset {
-                        // Entire batch before offset - skip it
-                        continue;
-                    }
-
-                    if batch_start >= range_end {
-                        // Entire batch after limit - done
-                        break;
-                    }
-
-                    // Calculate slice of this batch within range
-                    let skip_in_batch = offset.saturating_sub(batch_start);
-                    let take_count =
-                        (batch_size - skip_in_batch).min(range_end - batch_start - skip_in_batch);
-
-                    // Process the slice
-                    let records = S::iter(&record_set)
-                        .skip(skip_in_batch)
-                        .take(take_count)
-                        .map(|r| r.map_err(Into::into));
-
-                    records.process_results(|records| {
-                        worker_processor.process_record_batch(records)
-                    })??;
-
-                    records_processed.fetch_add(take_count, Ordering::Relaxed);
-                    worker_processor.on_batch_complete()?;
+                if result.is_err() && ordered {
+                    order_gate.poison();
                 }
-                worker_processor.on_thread_complete()?;
-                Ok(())
+                result
             });
 
             handles.push(handle);
@@ -236,6 +280,26 @@ mod tests {
             self.global_count
                 .fetch_add(self.local_count, Ordering::Relaxed);
             self.local_count = 0;
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct IndexCollectingProcessor {
+        local_indices: Vec<u64>,
+        global_indices: Arc<parking_lot::Mutex<Vec<u64>>>,
+    }
+
+    impl<Rf: Record> ParallelProcessor<Rf> for IndexCollectingProcessor {
+        fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+            self.local_indices.push(record.index());
+            Ok(())
+        }
+
+        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+            self.global_indices
+                .lock()
+                .extend(self.local_indices.drain(..));
             Ok(())
         }
     }
@@ -405,6 +469,58 @@ mod tests {
         assert_eq!(processor.count(), 66);
     }
 
+    // Regression test for a race between claiming a batch's stream position
+    // (`records_seen`) and the reader's own internal lock around `fill`.
+    // The two used to happen as separate steps, so a thread could be
+    // preempted between them and let a later-read chunk claim an earlier
+    // position (or vice versa), corrupting which records offset/limit
+    // slicing believes it's looking at. Small batches, many threads, and an
+    // uneven per-record delay (to perturb scheduling) reproduce it reliably
+    // without the fix; this asserts the exact record set survives regardless.
+    #[test]
+    fn test_range_exact_records_under_contention() {
+        use std::sync::Mutex;
+        use std::thread;
+        use std::time::Duration;
+
+        #[derive(Clone, Default)]
+        struct IdCollector {
+            seen: Arc<Mutex<Vec<usize>>>,
+        }
+
+        impl<Rf: Record> ParallelProcessor<Rf> for IdCollector {
+            fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+                let idx: usize = record
+                    .id_str()
+                    .strip_prefix("seq")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                // Bias early records to be slower, widening the window in
+                // which the fill/claim race (if reintroduced) could hit.
+                if idx < 100 {
+                    thread::sleep(Duration::from_micros(200));
+                }
+                self.seen.lock().unwrap().push(idx);
+                Ok(())
+            }
+        }
+
+        for attempt in 0..20 {
+            let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(400)), 4).unwrap();
+            let mut processor = IdCollector::default();
+
+            reader
+                .process_parallel_range(&mut processor, 16, 137..229)
+                .unwrap();
+
+            let mut got = processor.seen.lock().unwrap().clone();
+            got.sort_unstable();
+            let expected: Vec<usize> = (137..229).collect();
+            assert_eq!(got, expected, "mismatch on attempt {attempt}");
+        }
+    }
+
     #[test]
     fn test_range_single_batch() {
         let reader =
@@ -429,6 +545,54 @@ mod tests {
             .unwrap();
 
         assert_eq!(processor.count(), 10);
+    }
+
+    #[test]
+    fn test_index_reflects_true_file_position_under_range() {
+        // A range only filters which records reach the processor; the
+        // `index()` of a delivered record must still be its true position
+        // in the file, not an offset relative to the range.
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = IndexCollectingProcessor::default();
+
+        reader
+            .process_parallel_range(&mut processor, 4, 10..20)
+            .unwrap();
+
+        let mut indices = processor.global_indices.lock().clone();
+        indices.sort_unstable();
+        assert_eq!(indices, (10..20u64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_index_reflects_true_file_position_under_range_sequential() {
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = IndexCollectingProcessor::default();
+
+        reader
+            .process_parallel_range(&mut processor, 1, 17..83)
+            .unwrap();
+
+        let indices = processor.global_indices.lock().clone();
+        assert_eq!(indices, (17..83u64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_index_complete_and_unique_multi_threaded() {
+        // Batches are claimed atomically by threads, so delivery order isn't
+        // guaranteed, but every index in the file must be assigned to
+        // exactly one record.
+        let reader =
+            fastq::Reader::with_batch_size(Cursor::new(make_fastq(N_RECORDS)), BATCH_SIZE).unwrap();
+        let mut processor = IndexCollectingProcessor::default();
+
+        reader.process_parallel(&mut processor, 4).unwrap();
+
+        let mut indices = processor.global_indices.lock().clone();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..N_RECORDS as u64).collect::<Vec<_>>());
     }
 
     // Paired range tests

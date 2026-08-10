@@ -90,10 +90,6 @@ jobs:
         run: cargo run --quiet --example fastx -- data/sample.fastq --format fasta > /dev/null
       - name: read_write
         run: cargo run --quiet --example read_write -- data/sample.fastq.gz --format fastq > /dev/null
-      - name: htslib
-        run: cargo run --quiet --example htslib -- data/sample.bam --format fastq > /dev/null
-      - name: htslib (paired)
-        run: cargo run --quiet --example htslib -- data/paired.bam --format fastq --paired > /dev/null
 
   url:
     name: Test URL
@@ -101,4 +97,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Run URL example
-        run: cargo run --release --example url
+        run: cargo run --release --example url -F url
+
+  htslib:
+    name: Test HTSlib
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v7
+      - name: htslib
+        run: cargo run --quiet --example htslib -F htslib -- data/sample.bam --format fastq > /dev/null
+      - name: htslib (paired)
+        run: cargo run --quiet --example htslib -F htslib -- data/paired.bam --format fastq --paired > /dev/null
