@@ -11,17 +11,29 @@
 //! A [`ThreadPool`] lets that caller start somewhere reasonable and converge on
 //! evidence instead of committing up front.
 //!
+//! # Design: a fixed spawn set, parked when over target
+//!
+//! Every worker the pool can ever run is spawned once, up front, with a stable
+//! index. A worker whose index is at or above the current target parks on a
+//! condvar at a batch boundary; growing the target wakes it. **No worker ever
+//! spawns another**, so the pool can never hold more workers than its ceiling
+//! — that bound is structural, not enforced by counting, and there is no
+//! spawn decision left to race on. (An earlier design spawned on demand when
+//! running workers observed a shortfall; distinguishing "a peer left at EOF"
+//! from "the pool is short" from a worker's viewpoint is inherently racy, and
+//! under a small input the observed worker count could exceed the ceiling.)
+//!
+//! A parked worker holds no `RecordSet` — workers allocate theirs lazily on
+//! first activation — so a worker that never runs costs one OS thread and
+//! nothing else.
+//!
 //! # Cost
 //!
-//! Workers are spawned on demand, not pre-spawned and parked. Pre-spawning is
-//! simpler but allocates a `RecordSet` per worker up front — at large batch
-//! sizes that is megabytes each, paid whether or not the worker ever runs.
-//!
-//! In exchange, a worker checks two relaxed atomics once per *batch* — not per
-//! record — and takes neither branch unless the target has actually moved.
+//! An active worker checks one relaxed atomic once per *batch* — not per
+//! record — and touches the mutex only when parking or being woken.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Debug)]
 struct Inner {
@@ -32,15 +44,24 @@ struct Inner {
     target: AtomicUsize,
     /// Hard ceiling on `target`.
     max: usize,
-    /// Workers live across *every* share of this pool.
+    /// Workers active across *every* share of this pool.
     ///
-    /// Each share tracks its own count to enforce its own slice, but a caller
-    /// supervising the whole run needs the total — and summing shares is not
-    /// possible from outside, because a share is handed to a worker thread and
-    /// never surfaced. Without this, an external scheduler normalising work
-    /// against "threads running" divides by the parent's count, which stays at
-    /// zero for the entire run.
+    /// Purely telemetry: an external supervisor normalising work against
+    /// "threads running" reads this. Nothing in the pool decides anything from
+    /// it — activation is by stable worker index against the target, so this
+    /// count can lag reality by a batch without consequence.
     total_live: AtomicUsize,
+    /// Orders `set_threads` against a worker's check-then-park.
+    ///
+    /// The predicate a parked worker waits on reads atomics, but the *check
+    /// then wait* must happen under this lock, and every state change that
+    /// could unpark someone must notify while holding it. Changing state and
+    /// notifying without the lock loses the wakeup when the change lands
+    /// between a worker's check and its park — a bug class we have hit
+    /// elsewhere, and one that a test with any other periodic notifier will
+    /// never catch, because the next notify repairs the loss.
+    gate: Mutex<()>,
+    signal: Condvar,
 }
 
 /// A shared, resizable worker count.
@@ -77,6 +98,8 @@ impl ThreadPool {
                 target: AtomicUsize::new(threads.clamp(1, max)),
                 max,
                 total_live: AtomicUsize::new(0),
+                gate: Mutex::new(()),
+                signal: Condvar::new(),
             }),
             live: Arc::new(AtomicUsize::new(0)),
             divisor: 1,
@@ -89,11 +112,9 @@ impl ThreadPool {
     /// `set_threads` on any of them retargets all of them at once. The target
     /// is a total: `ways` shares of a 32-thread pool run 8 workers each.
     ///
-    /// Sharing rather than handing the same pool to every reader is deliberate.
-    /// A single pool would let the first reader claim every slot, leaving the
-    /// rest to spawn nothing — and since workers are only spawned *by* running
-    /// workers, those readers would never start and their input would be
-    /// silently skipped.
+    /// Sharing rather than handing the same pool to every reader is deliberate:
+    /// each share spawns and parks its own slice of workers against its own
+    /// slice of the target, so no reader can starve another of workers.
     pub fn share(&self, ways: usize) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -104,14 +125,17 @@ impl ThreadPool {
 
     /// Change how many workers should be running, across every share.
     ///
-    /// Takes effect within one batch per worker: growth spawns as running
-    /// workers notice the gap, and shrinking retires workers after they finish
-    /// the batch in hand. Never interrupts work in progress, so no record is
-    /// processed twice or dropped.
+    /// Takes effect within one batch per worker: growth wakes parked workers,
+    /// and shrinking parks workers after they finish the batch in hand. Never
+    /// interrupts work in progress, so no record is processed twice or
+    /// dropped.
     pub fn set_threads(&self, threads: usize) {
         self.inner
             .target
-            .store(threads.clamp(1, self.inner.max), Ordering::Relaxed);
+            .store(threads.clamp(1, self.inner.max), Ordering::Release);
+        // Lock-then-notify: see `Inner::gate` for why the lock is not optional.
+        let _gate = self.inner.gate.lock().unwrap();
+        self.inner.signal.notify_all();
     }
 
     /// The current target, across every share.
@@ -148,59 +172,34 @@ impl ThreadPool {
         (self.inner.max / self.divisor).max(1)
     }
 
-    /// Claim a slot for a new worker, if the pool is short of its target.
+    /// Block until `active()` is true, re-checking under the pool's gate.
     ///
-    /// A CAS rather than a load-then-store because several workers may notice
-    /// the same shortfall at once, and two of them spawning for one slot would
-    /// overshoot the target.
-    pub(crate) fn try_claim_slot(&self) -> bool {
-        let mut live = self.live.load(Ordering::Relaxed);
-        loop {
-            if live >= self.share_target() || live >= self.share_max() {
-                return false;
-            }
-            match self.live.compare_exchange_weak(
-                live,
-                live + 1,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    self.inner.total_live.fetch_add(1, Ordering::AcqRel);
-                    return true;
-                }
-                Err(actual) => live = actual,
-            }
+    /// The closure is evaluated with the gate held; any state it reads must be
+    /// changed only in combination with a locked notify (see [`Inner::gate`]).
+    pub(crate) fn park_until(&self, mut active: impl FnMut() -> bool) {
+        let mut gate = self.inner.gate.lock().unwrap();
+        while !active() {
+            gate = self.inner.signal.wait(gate).unwrap();
         }
     }
 
-    /// Release this worker's slot if the pool is over its target.
+    /// Wake every parked worker so it re-checks its predicate.
     ///
-    /// Symmetric to [`Self::try_claim_slot`]: the CAS is what stops every
-    /// surplus worker retiring at once when the target drops by one.
-    pub(crate) fn try_release_slot(&self) -> bool {
-        let mut live = self.live.load(Ordering::Relaxed);
-        loop {
-            if live <= self.share_target() || live <= 1 {
-                return false;
-            }
-            match self.live.compare_exchange_weak(
-                live,
-                live - 1,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    self.inner.total_live.fetch_sub(1, Ordering::AcqRel);
-                    return true;
-                }
-                Err(actual) => live = actual,
-            }
-        }
+    /// For state changes made outside the pool (end of input, a poisoned
+    /// order gate) that must be able to unpark workers.
+    pub(crate) fn wake_all(&self) {
+        let _gate = self.inner.gate.lock().unwrap();
+        self.inner.signal.notify_all();
     }
 
-    /// Release unconditionally, for a worker leaving because the input ended.
-    pub(crate) fn release_slot(&self) {
+    /// Record this worker as active. Telemetry only.
+    pub(crate) fn enter_live(&self) {
+        self.live.fetch_add(1, Ordering::AcqRel);
+        self.inner.total_live.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Record this worker as parked or exited. Telemetry only.
+    pub(crate) fn exit_live(&self) {
         self.live.fetch_sub(1, Ordering::AcqRel);
         self.inner.total_live.fetch_sub(1, Ordering::AcqRel);
     }
