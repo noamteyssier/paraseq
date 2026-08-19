@@ -5,3 +5,6 @@ pub use crate::{
     },
     Record,
 };
+
+#[cfg(feature = "pool")]
+pub use crate::parallel::{PoolParallelReader, ThreadPool};

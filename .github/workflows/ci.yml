@@ -40,6 +40,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --verbose
+      - name: Test pool feature
+        run: cargo test --verbose --features pool
 
   style:
     name: Style
