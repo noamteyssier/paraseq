@@ -8,6 +8,7 @@ pub mod fastx;
 pub mod parallel;
 pub mod prelude;
 mod record;
+mod validation;
 
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -27,6 +28,7 @@ pub mod gcs;
 pub use error::Error;
 pub use parallel::{ProcessError, Result};
 pub use record::Record;
+pub use validation::{NucleotideAlphabet, RecordValidation, ValidationError};
 
 /// Default maximum number of records in a record set.
 pub const DEFAULT_MAX_RECORDS: usize = 1024;
