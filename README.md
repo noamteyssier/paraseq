@@ -37,6 +37,7 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 - Supports URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag)
 - Supports SSH paths as inputs respecting system configuration (with `ssh` feature flag)
 - Supports Google Cloud Storage (GCS) URIs (with `gcs` feature flag). _requires [`gcloud`](https://cloud.google.com/sdk/docs/install) to be installed and authenticated_
+- Enables the experimental resizable `ThreadPool` and `PoolParallelReader` APIs (with the non-default `pool` feature flag). The existing fixed-thread APIs are unchanged when this feature is enabled.
 
 ## Usage
 

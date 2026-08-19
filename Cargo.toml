@@ -1,6 +1,6 @@
 [package]
 name = "paraseq"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 authors = ["Noam Teyssier"]
 keywords = ["fasta", "fastq", "parser", "parallel", "paired"]
@@ -35,6 +35,7 @@ htslib = ["dep:rust-htslib"]
 url = ["dep:reqwest", "dep:niffler"]
 ssh = ["dep:which"]
 gcs = ["dep:which"]
+pool = []
 
 [dev-dependencies]
 clap = { version = "4.5.40", features = ["derive"] }

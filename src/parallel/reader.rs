@@ -104,6 +104,24 @@ pub trait ParallelReader {
         T: for<'a> MultiParallelProcessor<Self::Rf<'a>>;
 }
 
+/// Opt-in parallel processing with a worker count that may change in flight.
+///
+/// This extension trait is available only with the `pool` feature. Keeping it
+/// separate from [`ParallelReader`] ensures enabling the pool adds a new path
+/// without changing the original fixed-thread interface or implementation.
+#[cfg(feature = "pool")]
+pub trait PoolParallelReader: ParallelReader {
+    /// As [`ParallelReader::process_parallel`], but the worker count may change
+    /// while the run is in flight. See [`crate::parallel::ThreadPool`].
+    fn process_parallel_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+    ) -> Result<()>
+    where
+        T: for<'a> ParallelProcessor<Self::Rf<'a>>;
+}
+
 impl<S: GenericReader> ParallelReader for S
 where
     for<'a> <S as GenericReader>::RefRecord<'a>: Record,
@@ -258,6 +276,30 @@ where
             num_threads,
             start,
             limit,
+        )
+    }
+}
+
+#[cfg(feature = "pool")]
+impl<S: GenericReader> PoolParallelReader for S
+where
+    for<'a> <S as GenericReader>::RefRecord<'a>: Record,
+    ProcessError: From<S::Error>,
+{
+    fn process_parallel_pool<T>(
+        self,
+        processor: &mut T,
+        pool: &crate::parallel::ThreadPool,
+    ) -> Result<()>
+    where
+        T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
+    {
+        crate::parallel::pool::process_parallel_pool_range(
+            SingleReader::new(self),
+            processor,
+            pool,
+            0,
+            None,
         )
     }
 }
