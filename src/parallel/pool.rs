@@ -32,6 +32,10 @@
 //! An active worker checks one relaxed atomic once per *batch* — not per
 //! record — and touches the mutex only when parking or being woken.
 
+mod processor;
+
+pub(crate) use processor::process_parallel_pool_range;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -81,16 +85,16 @@ pub struct ThreadPool {
 }
 
 impl ThreadPool {
-    /// A pool that never changes size — equivalent to passing `threads`
-    /// directly to `process_parallel*`.
+    /// A pool that never changes size. Values below one are clamped to one.
     pub fn new(threads: usize) -> Self {
         Self::with_max(threads, threads)
     }
 
     /// A pool starting at `threads` that may later grow as far as `max`.
     ///
-    /// `max` bounds growth only; it costs nothing until asked for, because
-    /// workers are spawned on demand.
+    /// `max` bounds the fixed set of worker threads spawned for each parallel
+    /// run. Workers above the current target park without allocating a
+    /// `RecordSet` until the pool grows.
     pub fn with_max(threads: usize, max: usize) -> Self {
         let max = max.max(1);
         Self {

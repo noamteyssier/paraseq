@@ -6,10 +6,10 @@ use log::warn;
 
 use crate::parallel::multi::{InterleavedMultiReader, MultiReader};
 use crate::parallel::paired::{InterleavedPairedReader, PairedReader};
+#[cfg(feature = "pool")]
+use crate::parallel::pool::process_parallel_pool_range;
 use crate::parallel::reader::{range_to_offset_limit, SingleReader};
-use crate::parallel::single::{
-    process_parallel_generic, process_parallel_generic_range, process_parallel_pool_range,
-};
+use crate::parallel::single::{process_parallel_generic, process_parallel_generic_range};
 use crate::ProcessError;
 use crate::{fasta, fastq, Error, Record};
 
@@ -210,6 +210,7 @@ impl<R: io::Read + Send> Collection<R> {
     /// `batch_size` ways: the target the caller sets stays a *total* across the
     /// run rather than a per-reader figure, matching what `total_threads` means
     /// on the fixed path.
+    #[cfg(feature = "pool")]
     fn handle_single_readers_pool<T, F>(
         mut self,
         processor: &mut T,
@@ -263,6 +264,7 @@ impl<R: io::Read + Send> Collection<R> {
 
     /// As [`Self::handle_grouped_readers`], but every group running at the same
     /// time gets a share of one resizable pool.
+    #[cfg(feature = "pool")]
     fn handle_grouped_readers_pool<T, F>(
         mut self,
         processor: &mut T,
@@ -756,6 +758,7 @@ impl<R: io::Read + Send> Collection<R> {
     ///
     /// The pool's target is a total across every reader running concurrently,
     /// not a per-reader count.
+    #[cfg(feature = "pool")]
     pub fn process_parallel_pool<T>(
         self,
         processor: &mut T,
@@ -777,6 +780,7 @@ impl<R: io::Read + Send> Collection<R> {
     }
 
     /// As [`Self::process_parallel_paired`], with a resizable worker count.
+    #[cfg(feature = "pool")]
     pub fn process_parallel_paired_pool<T>(
         self,
         processor: &mut T,
@@ -801,6 +805,7 @@ impl<R: io::Read + Send> Collection<R> {
     }
 
     /// As [`Self::process_parallel_interleaved`], with a resizable worker count.
+    #[cfg(feature = "pool")]
     pub fn process_parallel_interleaved_pool<T>(
         self,
         processor: &mut T,
@@ -828,6 +833,7 @@ impl<R: io::Read + Send> Collection<R> {
     }
 
     /// As [`Self::process_parallel_multi`], with a resizable worker count.
+    #[cfg(feature = "pool")]
     pub fn process_parallel_multi_pool<T>(
         self,
         processor: &mut T,
@@ -852,6 +858,7 @@ impl<R: io::Read + Send> Collection<R> {
 
     /// As [`Self::process_parallel_multi_interleaved`], with a resizable worker
     /// count.
+    #[cfg(feature = "pool")]
     pub fn process_parallel_multi_interleaved_pool<T>(
         self,
         processor: &mut T,
