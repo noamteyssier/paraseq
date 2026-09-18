@@ -200,6 +200,31 @@ fn simd_find_record_starts<S: Simd>(
     }
 }
 
+/// Find every `\n` in `haystack` with an explicit u8x64 SIMD compare, pushing each
+/// match's offset (relative to `haystack`) into `newlines`. Used to de-wrap multiline
+/// FASTA sequences, which can span many megabases in reference genomes.
+#[inline(always)]
+fn simd_find_newlines<S: Simd>(simd: S, haystack: &[u8], newlines: &mut Vec<usize>) {
+    let needle = u8x64::splat(simd, b'\n');
+    let (chunks, remainder) = haystack.as_chunks::<64>();
+    let mut base = 0usize;
+    for chunk in chunks {
+        let v = u8x64::from_slice(simd, chunk);
+        let mut bits = v.simd_eq(needle).to_bitmask();
+        while bits != 0 {
+            let bit = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            newlines.push(base + bit);
+        }
+        base += 64;
+    }
+    for (i, &b) in remainder.iter().enumerate() {
+        if b == b'\n' {
+            newlines.push(base + i);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RecordSet {
     /// Main buffer for records
@@ -498,9 +523,8 @@ impl<'a> RefRecord<'a> {
     pub fn seq(&self) -> Cow<'_, [u8]> {
         let seq_region = self.seq_raw();
 
-        // // Count newlines in the sequence region
-        // let newline_count = memchr::memchr_iter(b'\n', seq_region).count();
-        let newlines = memchr::memchr_iter(b'\n', seq_region).collect::<Vec<_>>();
+        let mut newlines = Vec::new();
+        dispatch!(Level::new(), simd => simd_find_newlines(simd, seq_region, &mut newlines));
 
         if newlines.is_empty() {
             // No newlines - can borrow directly
@@ -947,6 +971,26 @@ mod tests {
     }
 
     #[test]
+    fn test_multiline_fasta_across_simd_chunk_boundary() {
+        // `simd_find_newlines` scans in 64-byte SIMD chunks. A short line
+        // length packs several newlines into a single chunk's bitmask, and
+        // enough lines push the sequence past multiple chunk boundaries plus
+        // a scalar remainder -- none of which the other multiline tests
+        // (all well under 64 bytes) actually exercise.
+        let line = "ACGTACGTAC"; // 10 bytes
+        let lines: Vec<&str> = std::iter::repeat(line).take(100).collect();
+        let record = format!(">long_multiline\n{}\n", lines.join("\n"));
+        let expected: String = lines.concat();
+
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed.seq_str(), expected);
+    }
+
+    #[test]
     fn test_mixed_single_and_multiline() {
         let mixed_records = ">single\nACTG\n>multiline\nTGCA\nGGCC\nAAAA\n>another_single\nTTTT\n";
         let mut reader = Reader::new(Cursor::new(mixed_records));
@@ -1006,5 +1050,4 @@ mod tests {
             println!("{}", parsed_record.id_str());
         }
     }
-
 }
