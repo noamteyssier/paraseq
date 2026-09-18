@@ -25,7 +25,6 @@ reqwest = { version = "0.13.5", optional = true, features = ["blocking"] }
 rust-htslib = { version = "1.0.1", default-features = false, optional = true }
 smallvec = "1.16.1"
 thiserror = "2.0.20"
-which = { version = "8.0.6", optional = true }
 
 [features]
 default = ["anyhow", "niffler", "niffler/default"]
@@ -33,8 +32,8 @@ anyhow = ["dep:anyhow"]
 niffler = ["dep:niffler"]
 htslib = ["dep:rust-htslib"]
 url = ["dep:reqwest", "dep:niffler"]
-ssh = ["dep:which"]
-gcs = ["dep:which"]
+ssh = []
+gcs = []
 pool = []
 
 [dev-dependencies]
