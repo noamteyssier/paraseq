@@ -94,6 +94,33 @@ where
     }
 }
 
+/// Pulls one item from each of `n` sources via `next_item`, collecting them
+/// into a group. `None` from any source early-breaks the whole group; the
+/// first `Err` is kept (subsequent items are still drained to keep sources
+/// in sync) and converted via `Into<ProcessError>`.
+fn collect_group<Item, E: Into<ProcessError>>(
+    n: usize,
+    mut next_item: impl FnMut(usize) -> Option<std::result::Result<Item, E>>,
+) -> Option<std::result::Result<SmallVec<[Item; MAX_ARITY]>, ProcessError>> {
+    let mut out = std::result::Result::Ok(SmallVec::default());
+    for i in 0..n {
+        // None early-breaks everything.
+        let elem = next_item(i)?;
+        // Err proceeds.
+        if out.is_ok() {
+            match elem {
+                Ok(it) => {
+                    out.as_mut().unwrap().push(it);
+                }
+                Err(it) => {
+                    out = std::result::Result::Err(it.into());
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 struct SmallVecIt<I> {
     its: SmallVec<[I; MAX_ARITY]>,
 }
@@ -104,23 +131,7 @@ impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E
     type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, ProcessError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut out = std::result::Result::Ok(SmallVec::default());
-        for it in self.its.iter_mut() {
-            // None early-breaks everything.
-            let elem = it.next()?;
-            // Err proceeds.
-            if out.is_ok() {
-                match elem {
-                    Ok(it) => {
-                        out.as_mut().unwrap().push(it);
-                    }
-                    Err(it) => {
-                        out = std::result::Result::Err(it.into());
-                    }
-                }
-            }
-        }
-        Some(out)
+        collect_group(self.its.len(), |i| self.its[i].next())
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -222,23 +233,7 @@ impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E
     type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, ProcessError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut out = std::result::Result::Ok(SmallVec::default());
-        for _ in 0..self.arity {
-            // None early-breaks everything.
-            let elem = self.it.next()?;
-            // Err proceeds.
-            if out.is_ok() {
-                match elem {
-                    Ok(it) => {
-                        out.as_mut().unwrap().push(it);
-                    }
-                    Err(it) => {
-                        out = std::result::Result::Err(it.into());
-                    }
-                }
-            }
-        }
-        Some(out)
+        collect_group(self.arity, |_| self.it.next())
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
