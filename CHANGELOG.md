@@ -4,11 +4,6 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## Unreleased
-
-### Removed
-
-- `parking_lot` dependency — all internal `Mutex`/`Condvar` usage now uses `std::sync`. Benchmarking on real FASTQ workloads showed no measurable difference, since these locks aren't contended enough to matter.
 
 ## 0.6.0
 
@@ -19,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Removed
 
 - `from_url`, `from_ssh`, `from_gcs`, `from_gcs_with_gcloud_args`, and `from_gcs_with_project` on `fasta::Reader`, `fastq::Reader`, and `fastx::Reader` — use `ReaderBuilder::url(..)`/`::ssh(..)`/`::gcs(..)` with `.build_fasta()`/`.build_fastq()`/`.build()` instead. `from_path`/`from_stdin`/`from_optional_path` are unaffected.
+- `parking_lot` dependency — all internal `Mutex`/`Condvar` usage now uses `std::sync`. Benchmarking on real FASTQ workloads showed no measurable difference, since these locks aren't contended enough to matter.
 
 ## 0.5.1
 
