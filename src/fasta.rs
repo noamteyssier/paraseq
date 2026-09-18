@@ -6,6 +6,8 @@ use crate::BoxedReader;
 #[cfg(feature = "niffler")]
 use std::path::Path;
 
+use fearless_simd::{dispatch, prelude::*, u8x64, Level};
+
 use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
@@ -161,6 +163,43 @@ impl<R: io::Read> Reader<R> {
     }
 }
 
+/// Find every `>` in `buffer_prefix[search_from..]` with an explicit u8x64 SIMD compare,
+/// pushing the absolute offset of each match that starts a line (position 0 of the whole
+/// buffer, or immediately preceded by `\n`) into `record_starts`. Mirrors
+/// `RecordSet::find_record_starts`.
+#[inline(always)]
+fn simd_find_record_starts<S: Simd>(
+    simd: S,
+    buffer_prefix: &[u8],
+    search_from: usize,
+    record_starts: &mut Vec<usize>,
+) {
+    let mut push_if_line_start = |abs_pos: usize| {
+        if abs_pos == 0 || buffer_prefix[abs_pos - 1] == b'\n' {
+            record_starts.push(abs_pos);
+        }
+    };
+
+    let needle = u8x64::splat(simd, b'>');
+    let (chunks, remainder) = buffer_prefix[search_from..].as_chunks::<64>();
+    let mut base = search_from;
+    for chunk in chunks {
+        let v = u8x64::from_slice(simd, chunk);
+        let mut bits = v.simd_eq(needle).to_bitmask();
+        while bits != 0 {
+            let bit = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            push_if_line_start(base + bit);
+        }
+        base += 64;
+    }
+    for (i, &b) in remainder.iter().enumerate() {
+        if b == b'>' {
+            push_if_line_start(base + i);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RecordSet {
     /// Main buffer for records
@@ -220,14 +259,15 @@ impl RecordSet {
     /// and ending at the effective end of the buffer
     /// Only considers '>' characters that are at the beginning of lines
     fn find_record_starts(&mut self, current_pos: usize) {
-        let search_buffer = &self.buffer[self.last_searched_pos..current_pos];
-        memchr::memchr_iter(b'>', search_buffer).for_each(|i| {
-            let abs_pos = i + self.last_searched_pos;
-            // Check if this '>' is at the start of a line (position 0 or after newline)
-            if abs_pos == 0 || self.buffer[abs_pos - 1] == b'\n' {
-                self.record_starts.push(abs_pos);
-            }
-        });
+        let level = Level::new();
+        let buffer_prefix = &self.buffer[..current_pos];
+        let search_from = self.last_searched_pos;
+        dispatch!(level, simd => simd_find_record_starts(
+            simd,
+            buffer_prefix,
+            search_from,
+            &mut self.record_starts,
+        ));
         self.last_searched_pos = current_pos;
     }
 
@@ -966,4 +1006,5 @@ mod tests {
             println!("{}", parsed_record.id_str());
         }
     }
+
 }
