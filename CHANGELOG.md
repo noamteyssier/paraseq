@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `from_url`, `from_ssh`, `from_gcs`, `from_gcs_with_gcloud_args`, and `from_gcs_with_project` on `fasta::Reader`, `fastq::Reader`, and `fastx::Reader` — use `ReaderBuilder::url(..)`/`::ssh(..)`/`::gcs(..)` with `.build_fasta()`/`.build_fastq()`/`.build()` instead. `from_path`/`from_stdin`/`from_optional_path` are unaffected.
 - `parking_lot` dependency — all internal `Mutex`/`Condvar` usage now uses `std::sync`. Benchmarking on real FASTQ workloads showed no measurable difference, since these locks aren't contended enough to matter.
 
+### Performance
+
+- Record-boundary scanning (`\n` in `fastq`, `>` in `fasta`) now uses an explicit `u8x64` SIMD compare via `fearless_simd` instead of `memchr::memchr_iter`. On real data this measured ~1.5-2x throughput on FASTQ (newlines every ~220bp) and ~8-20% on FASTA (sparse `>`, once per multi-KB record). (tests are measuring in-memory parsing not I/O.)
+
 ## 0.5.1
 
 ### Added
