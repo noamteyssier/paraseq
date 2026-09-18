@@ -287,7 +287,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct IndexCollectingProcessor {
         local_indices: Vec<u64>,
-        global_indices: Arc<parking_lot::Mutex<Vec<u64>>>,
+        global_indices: Arc<std::sync::Mutex<Vec<u64>>>,
     }
 
     impl<Rf: Record> ParallelProcessor<Rf> for IndexCollectingProcessor {
@@ -299,6 +299,7 @@ mod tests {
         fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
             self.global_indices
                 .lock()
+                .unwrap()
                 .extend(self.local_indices.drain(..));
             Ok(())
         }
@@ -560,7 +561,7 @@ mod tests {
             .process_parallel_range(&mut processor, 4, 10..20)
             .unwrap();
 
-        let mut indices = processor.global_indices.lock().clone();
+        let mut indices = processor.global_indices.lock().unwrap().clone();
         indices.sort_unstable();
         assert_eq!(indices, (10..20u64).collect::<Vec<_>>());
     }
@@ -575,7 +576,7 @@ mod tests {
             .process_parallel_range(&mut processor, 1, 17..83)
             .unwrap();
 
-        let indices = processor.global_indices.lock().clone();
+        let indices = processor.global_indices.lock().unwrap().clone();
         assert_eq!(indices, (17..83u64).collect::<Vec<_>>());
     }
 
@@ -590,7 +591,7 @@ mod tests {
 
         reader.process_parallel(&mut processor, 4).unwrap();
 
-        let mut indices = processor.global_indices.lock().clone();
+        let mut indices = processor.global_indices.lock().unwrap().clone();
         indices.sort_unstable();
         assert_eq!(indices, (0..N_RECORDS as u64).collect::<Vec<_>>());
     }

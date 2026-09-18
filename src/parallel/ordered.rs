@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
 
-use parking_lot::{Condvar, Mutex};
 use smallvec::SmallVec;
 
 use crate::{Record, MAX_ARITY};
@@ -39,9 +39,9 @@ impl OrderGate {
     /// point the overall call is going to return that error regardless, so
     /// releasing waiters without re-checking ordering is safe.
     pub(crate) fn wait_turn(&self, batch_start: usize) {
-        let mut next = self.next.lock();
+        let mut next = self.next.lock().unwrap();
         while *next != batch_start && !self.poisoned.load(Ordering::Acquire) {
-            self.cond.wait(&mut next);
+            next = self.cond.wait(next).unwrap();
         }
     }
 
@@ -50,7 +50,7 @@ impl OrderGate {
     /// assignment because batches skipped for being before a requested
     /// offset advance the gate without waiting, and may race each other.
     pub(crate) fn advance(&self, batch_end: usize) {
-        let mut next = self.next.lock();
+        let mut next = self.next.lock().unwrap();
         if batch_end > *next {
             *next = batch_end;
         }
@@ -181,11 +181,9 @@ impl<Rf: Record, P: MultiParallelProcessor<Rf>> MultiParallelProcessor<Rf> for O
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
-
-    use parking_lot::Mutex;
 
     use super::Ordered;
     use crate::fastq;
@@ -231,7 +229,7 @@ mod tests {
         }
 
         fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
-            self.emitted.lock().extend(self.local_ids.drain(..));
+            self.emitted.lock().unwrap().extend(self.local_ids.drain(..));
             Ok(())
         }
     }
@@ -252,7 +250,7 @@ mod tests {
         reader.process_parallel(&mut processor, 8).unwrap();
 
         let expected: Vec<usize> = (0..N_RECORDS).collect();
-        assert_eq!(*emitted.lock(), expected);
+        assert_eq!(*emitted.lock().unwrap(), expected);
     }
 
     #[test]
@@ -270,7 +268,7 @@ mod tests {
 
         reader.process_parallel(&mut processor, 8).unwrap();
 
-        let mut sorted = emitted.lock().clone();
+        let mut sorted = emitted.lock().unwrap().clone();
         sorted.sort_unstable();
         assert_eq!(sorted, (0..N_RECORDS).collect::<Vec<_>>());
     }
@@ -293,6 +291,6 @@ mod tests {
             .unwrap();
 
         let expected: Vec<usize> = (137..229).collect();
-        assert_eq!(*emitted.lock(), expected);
+        assert_eq!(*emitted.lock().unwrap(), expected);
     }
 }

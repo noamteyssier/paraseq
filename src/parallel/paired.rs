@@ -1,5 +1,6 @@
+use std::sync::Mutex;
+
 use itertools::Itertools;
-use parking_lot::Mutex;
 
 use crate::fastx::GenericReader;
 use crate::parallel::error::ProcessError;
@@ -32,8 +33,8 @@ where
 
     fn new_record_set(&self) -> Self::RecordSet {
         (
-            self.reader1.lock().new_record_set(),
-            self.reader2.lock().new_record_set(),
+            self.reader1.lock().unwrap().new_record_set(),
+            self.reader2.lock().unwrap().new_record_set(),
         )
     }
 
@@ -41,7 +42,7 @@ where
         &self,
         record_set: &mut Self::RecordSet,
     ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
-        let mut r1 = self.reader1.lock();
+        let mut r1 = self.reader1.lock().unwrap();
         let filled_1 = R::fill(&mut r1, &mut record_set.0)?;
 
         if !filled_1 {
@@ -51,7 +52,7 @@ where
             // reader1 doesn't) instead of silently discarding reader2's
             // leftovers.
             drop(r1);
-            let mut r2 = self.reader2.lock();
+            let mut r2 = self.reader2.lock().unwrap();
             let filled_2 = R::fill(&mut r2, &mut record_set.1)?;
             drop(r2);
             return if filled_2 {
@@ -64,7 +65,7 @@ where
         let batch_size = R::iter(&record_set.0).len();
         let claimed = self.records_seen.claim(batch_size);
 
-        let mut r2 = self.reader2.lock();
+        let mut r2 = self.reader2.lock().unwrap();
         drop(r1);
         let filled_2 = R::fill(&mut r2, &mut record_set.1)?;
         drop(r2);
@@ -104,9 +105,9 @@ where
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
-        self.reader1.lock().set_threads(num_threads)?;
+        self.reader1.lock().unwrap().set_threads(num_threads)?;
 
-        self.reader2.lock().set_threads(num_threads)?;
+        self.reader2.lock().unwrap().set_threads(num_threads)?;
 
         Ok(())
     }
@@ -135,14 +136,14 @@ where
     type RefRecord<'a> = (R::RefRecord<'a>, R::RefRecord<'a>);
 
     fn new_record_set(&self) -> Self::RecordSet {
-        self.reader.lock().new_record_set()
+        self.reader.lock().unwrap().new_record_set()
     }
 
     fn fill(
         &self,
         record_set: &mut Self::RecordSet,
     ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
-        let mut r = self.reader.lock();
+        let mut r = self.reader.lock().unwrap();
         if !r.fill(record_set)? {
             return Ok(None);
         }
@@ -174,6 +175,7 @@ where
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
         self.reader
             .lock()
+            .unwrap()
             .set_threads(num_threads)
             .map_err(Into::into)
     }

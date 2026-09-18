@@ -1149,8 +1149,7 @@ where
 mod testing {
 
     use crate::prelude::{ParallelProcessor, ParallelReader};
-    use parking_lot::Mutex;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
@@ -1164,7 +1163,7 @@ mod testing {
     }
     impl Processor {
         pub fn n_records(&self) -> usize {
-            *self.global_count.lock()
+            *self.global_count.lock().unwrap()
         }
     }
     impl<Rf: crate::Record> ParallelProcessor<Rf> for Processor {
@@ -1173,7 +1172,7 @@ mod testing {
             Ok(())
         }
         fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            *self.global_count.lock() += self.local_count;
+            *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
         }
@@ -1248,7 +1247,7 @@ mod testing {
             Ok(())
         }
         fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            self.global_buf.lock().extend_from_slice(&self.local_buf);
+            self.global_buf.lock().unwrap().extend_from_slice(&self.local_buf);
             self.local_buf.clear();
             Ok(())
         }
@@ -1269,7 +1268,7 @@ mod testing {
                         ..Default::default()
                     };
                     reader.process_parallel(&mut writer, 1).unwrap();
-                    let written = writer.global_buf.lock().clone();
+                    let written = writer.global_buf.lock().unwrap().clone();
 
                     let reparsed = Reader::new(std::io::Cursor::new(written)).unwrap();
                     let mut proc = Processor::default();
@@ -1287,7 +1286,7 @@ mod testing {
     }
     impl PairProcessor {
         fn n_pairs(&self) -> usize {
-            *self.global_count.lock()
+            *self.global_count.lock().unwrap()
         }
     }
     impl<Rf: crate::Record> crate::prelude::PairedParallelProcessor<Rf> for PairProcessor {
@@ -1296,7 +1295,7 @@ mod testing {
             Ok(())
         }
         fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            *self.global_count.lock() += self.local_count;
+            *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
         }
@@ -1307,7 +1306,7 @@ mod testing {
             Ok(())
         }
         fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            *self.global_count.lock() += self.local_count;
+            *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
         }

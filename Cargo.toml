@@ -20,7 +20,6 @@ log = "0.4.34"
 memchr = "2.8.3"
 niffler = { version = "3.0.1", optional = true, default-features = false }
 num_cpus = "1.17.0"
-parking_lot = "0.12.5"
 reqwest = { version = "0.13.5", optional = true, features = ["blocking"] }
 rust-htslib = { version = "1.0.1", default-features = false, optional = true }
 smallvec = "1.16.1"
