@@ -44,29 +44,6 @@ impl Reader<BoxedReader> {
             None => Self::from_stdin(),
         }
     }
-
-    pub fn from_path_with_batch_size<P: AsRef<Path>>(
-        path: P,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::from_path(path)?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    pub fn from_stdin_with_batch_size(batch_size: usize) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    pub fn from_optional_path_with_batch_size<P: AsRef<Path>>(
-        path: Option<P>,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        match path {
-            Some(path) => Self::from_path_with_batch_size(path, batch_size),
-            None => Self::from_stdin_with_batch_size(batch_size),
-        }
-    }
 }
 
 #[cfg(feature = "url")]
@@ -76,12 +53,6 @@ impl Reader<BoxedReader> {
         let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
         Ok(Self::new(reader))
     }
-
-    pub fn from_url_with_batch_size(url: &str, batch_size: usize) -> Result<Self, Error> {
-        let stream = reqwest::blocking::get(url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
-        Self::with_batch_size(reader, batch_size)
-    }
 }
 
 #[cfg(feature = "ssh")]
@@ -90,12 +61,6 @@ impl Reader<BoxedReader> {
         let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
         let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
         Ok(Self::new(reader))
-    }
-
-    pub fn from_ssh_with_batch_size(ssh_url: &str, batch_size: usize) -> Result<Self, Error> {
-        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
-        Self::with_batch_size(reader, batch_size)
     }
 }
 
@@ -121,35 +86,6 @@ impl Reader<BoxedReader> {
         let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
         Ok(Self::new(reader))
     }
-
-    /// Create a GCS reader with custom batch size using Application Default Credentials
-    pub fn from_gcs_with_batch_size(gcs_url: &str, batch_size: usize) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    /// Create a GCS reader with custom batch size using custom gcloud arguments
-    pub fn from_gcs_with_gcloud_args_and_batch_size(
-        gcs_url: &str,
-        gcloud_args: &[&str],
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, gcloud_args)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    /// Create a GCS reader with custom batch size using a specific project ID
-    pub fn from_gcs_with_project_and_batch_size(
-        gcs_url: &str,
-        project_id: &str,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
 }
 
 impl<R: io::Read> Reader<R> {
@@ -164,12 +100,18 @@ impl<R: io::Read> Reader<R> {
         }
     }
     pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
+        let mut reader = Self::new(reader);
+        reader.set_batch_size(batch_size)?;
+        Ok(reader)
+    }
+
+    /// Sets the maximum number of records per batch for parallel processing.
+    pub fn set_batch_size(&mut self, batch_size: usize) -> Result<(), Error> {
         if batch_size == 0 {
             return Err(Error::InvalidBatchSize(batch_size));
         }
-        let mut reader = Self::new(reader);
-        reader.batch_size = Some(batch_size);
-        Ok(reader)
+        self.batch_size = Some(batch_size);
+        Ok(())
     }
 
     /// Limit processing to the first `n` records.
@@ -1001,7 +943,8 @@ mod tests {
             } else {
                 format!("./data/sample.fastq{}", ext)
             };
-            let mut reader = Reader::from_path_with_batch_size(path, 2).unwrap();
+            let mut reader = Reader::from_path(path).unwrap();
+            reader.set_batch_size(2).unwrap();
             let mut record_set = RecordSet::new(1);
 
             assert!(record_set.fill(&mut reader).unwrap());
