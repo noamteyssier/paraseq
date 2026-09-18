@@ -11,21 +11,21 @@ readme = "README.md"
 documentation = "https://docs.rs/paraseq"
 
 [dependencies]
-anyhow = { version = "1.0.95", optional = true }
-crossbeam-channel = "0.5.14"
-either = "1.15.0"
-env_logger = "0.11.8"
-itertools = "0.14.0"
-log = "0.4.29"
-memchr = "2.7.4"
-niffler = { version = "3.0.0", optional = true, default-features = false }
+anyhow = { version = "1.0.104", optional = true }
+crossbeam-channel = "0.5.17"
+either = "1.18.0"
+env_logger = "0.11.11"
+itertools = "0.15.0"
+log = "0.4.34"
+memchr = "2.8.3"
+niffler = { version = "3.0.1", optional = true, default-features = false }
 num_cpus = "1.17.0"
-parking_lot = "0.12.3"
-reqwest = { version = "0.12.22", optional = true, features = ["blocking"] }
+parking_lot = "0.12.5"
+reqwest = { version = "0.13.5", optional = true, features = ["blocking"] }
 rust-htslib = { version = "1.0.1", default-features = false, optional = true }
-smallvec = "1.15.1"
-thiserror = "2.0.11"
-which = { version = "8.0.0", optional = true }
+smallvec = "1.16.1"
+thiserror = "2.0.20"
+which = { version = "8.0.6", optional = true }
 
 [features]
 default = ["anyhow", "niffler", "niffler/default"]
@@ -38,8 +38,8 @@ gcs = ["dep:which"]
 pool = []
 
 [dev-dependencies]
-clap = { version = "4.5.40", features = ["derive"] }
-niffler = "3.0.0"
+clap = { version = "4.6.7", features = ["derive"] }
+niffler = "3.0.1"
 
 [[example]]
 name = "htslib"
