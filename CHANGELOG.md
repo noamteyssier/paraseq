@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## 0.6.0
+
+### Added
+
+- `ReaderBuilder`, a single entry point for constructing `fasta`/`fastq`/`fastx` readers from a path, stdin, url, ssh, or gcs source, with chainable `.batch_size()`, `.record_limit()`, `.ssh_args()`, `.gcloud_args()`, and `.project()` config.
+
+### Removed
+
+- `from_url`, `from_ssh`, `from_gcs`, `from_gcs_with_gcloud_args`, and `from_gcs_with_project` on `fasta::Reader`, `fastq::Reader`, and `fastx::Reader` — use `ReaderBuilder::url(..)`/`::ssh(..)`/`::gcs(..)` with `.build_fasta()`/`.build_fastq()`/`.build()` instead. `from_path`/`from_stdin`/`from_optional_path` are unaffected.
+
 ## 0.5.1
 
 ### Added
