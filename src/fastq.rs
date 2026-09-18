@@ -6,6 +6,8 @@ use crate::BoxedReader;
 #[cfg(feature = "niffler")]
 use std::path::Path;
 
+use fearless_simd::{dispatch, prelude::*, u8x64, Level};
+
 use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
 
 pub struct Reader<R: io::Read> {
@@ -263,6 +265,73 @@ impl<R: io::Read> Reader<R> {
     }
 }
 
+/// Mutable pending-newline state threaded through `simd_scan_newlines`, bundled to keep
+/// its argument count clippy-friendly.
+struct ScanState<'a> {
+    pending_nl: &'a mut u8,
+    pending_nl_pos: &'a mut [usize; 3],
+    record_start: &'a mut usize,
+    positions: &'a mut Vec<Positions>,
+}
+
+/// Find every `\n` in `haystack` with an explicit u8x64 SIMD compare, folding each match
+/// directly into the pending-newline state machine (mirrors `RecordSet::scan_for_records`).
+/// Returns true as soon as `positions.len() >= capacity` (caller should stop reading).
+#[inline(always)]
+fn simd_scan_newlines<S: Simd>(
+    simd: S,
+    haystack: &[u8],
+    search_from: usize,
+    state: &mut ScanState,
+    capacity: usize,
+) -> bool {
+    let mut record_nl = |abs: usize| -> bool {
+        if *state.pending_nl < 3 {
+            state.pending_nl_pos[*state.pending_nl as usize] = abs;
+            *state.pending_nl += 1;
+            false
+        } else {
+            state.positions.push(Positions {
+                start: *state.record_start,
+                seq_start: state.pending_nl_pos[0],
+                sep_start: state.pending_nl_pos[1],
+                qual_start: state.pending_nl_pos[2],
+                qual_end: abs - 1,
+                end: abs,
+            });
+            *state.record_start = abs;
+            *state.pending_nl = 0;
+            state.positions.len() >= capacity
+        }
+    };
+
+    let needle = u8x64::splat(simd, b'\n');
+    let (chunks, remainder) = haystack.as_chunks::<64>();
+    let mut base = 0usize;
+    for chunk in chunks {
+        let v = u8x64::from_slice(simd, chunk);
+        let mut bits = v.simd_eq(needle).to_bitmask();
+        while bits != 0 {
+            let bit = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let abs = base + bit + search_from + 1;
+            if record_nl(abs) {
+                return true;
+            }
+        }
+        base += 64;
+    }
+    for (i, &b) in remainder.iter().enumerate() {
+        if b == b'\n' {
+            let abs = base + i + search_from + 1;
+            if record_nl(abs) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[derive(Debug)]
 pub struct RecordSet {
     /// Main buffer for records
@@ -331,28 +400,21 @@ impl RecordSet {
     /// Scan bytes `search_from..search_to` in the buffer, building Positions inline.
     /// Returns true if capacity was reached (caller should stop reading).
     fn scan_for_records(&mut self, search_from: usize, search_to: usize) -> bool {
-        for nl in memchr::memchr_iter(b'\n', &self.buffer[search_from..search_to]) {
-            let abs = nl + search_from + 1; // one past the '\n'
-            if self.pending_nl < 3 {
-                self.pending_nl_pos[self.pending_nl as usize] = abs;
-                self.pending_nl += 1;
-            } else {
-                self.positions.push(Positions {
-                    start: self.record_start,
-                    seq_start: self.pending_nl_pos[0],
-                    sep_start: self.pending_nl_pos[1],
-                    qual_start: self.pending_nl_pos[2],
-                    qual_end: abs - 1,
-                    end: abs,
-                });
-                self.record_start = abs;
-                self.pending_nl = 0;
-                if self.positions.len() >= self.capacity {
-                    return true;
-                }
-            }
-        }
-        false
+        let level = Level::new();
+        let haystack = &self.buffer[search_from..search_to];
+        let mut state = ScanState {
+            pending_nl: &mut self.pending_nl,
+            pending_nl_pos: &mut self.pending_nl_pos,
+            record_start: &mut self.record_start,
+            positions: &mut self.positions,
+        };
+        dispatch!(level, simd => simd_scan_newlines(
+            simd,
+            haystack,
+            search_from,
+            &mut state,
+            self.capacity,
+        ))
     }
 
     /// Main function to fill the record set
@@ -1010,4 +1072,5 @@ mod tests {
             println!("{}", parsed_record.id_str());
         }
     }
+
 }
