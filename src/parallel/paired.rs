@@ -2,7 +2,7 @@ use itertools::Itertools;
 use parking_lot::Mutex;
 
 use crate::fastx::GenericReader;
-use crate::parallel::error::{ProcessError, RecordPair};
+use crate::parallel::error::ProcessError;
 
 use super::single::{BatchCounter, MTGenericReader};
 
@@ -55,7 +55,7 @@ where
             let filled_2 = R::fill(&mut r2, &mut record_set.1)?;
             drop(r2);
             return if filled_2 {
-                Err(ProcessError::PairedRecordMismatch(RecordPair::R1))
+                Err(ProcessError::PairedRecordMismatch("R1"))
             } else {
                 Ok(None)
             };
@@ -74,7 +74,7 @@ where
             // for - a length mismatch, not ordinary EOF. Must error rather
             // than return `Ok(None)`, or that leftover batch is silently
             // dropped with no signal to the caller.
-            return Err(ProcessError::PairedRecordMismatch(RecordPair::R2));
+            return Err(ProcessError::PairedRecordMismatch("R2"));
         }
         Ok(Some(claimed))
     }

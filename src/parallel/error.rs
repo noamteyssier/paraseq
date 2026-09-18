@@ -1,5 +1,4 @@
 use std::error::Error as StdError;
-use std::fmt;
 
 use crossbeam_channel::SendError;
 use thiserror::Error;
@@ -42,7 +41,7 @@ pub enum ProcessError {
 
     /// Record synchronization error between paired files
     #[error("Record synchronization error between paired files. {0} has less records.")]
-    PairedRecordMismatch(RecordPair),
+    PairedRecordMismatch(&'static str),
 
     /// Record synchronization error between paired files
     #[error(
@@ -80,21 +79,6 @@ pub enum ProcessError {
     ParallelHtslibError(#[from] ParallelHtslibError),
 }
 
-/// Enum for identifying record pairs
-#[derive(Debug)]
-pub enum RecordPair {
-    R1,
-    R2,
-}
-impl fmt::Display for RecordPair {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            RecordPair::R1 => write!(f, "R1"),
-            RecordPair::R2 => write!(f, "R2"),
-        }
-    }
-}
-
 /// Trait for converting arbitrary errors into `ProcessError`
 pub trait IntoProcessError {
     fn into_process_error(self) -> ProcessError;
@@ -123,9 +107,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_record_pair_display() {
-        assert_eq!(RecordPair::R1.to_string(), "R1");
-        assert_eq!(RecordPair::R2.to_string(), "R2");
+    fn test_paired_record_mismatch_display() {
+        assert_eq!(
+            ProcessError::PairedRecordMismatch("R1").to_string(),
+            "Record synchronization error between paired files. R1 has less records."
+        );
     }
 
     #[test]
