@@ -895,62 +895,15 @@ pub enum Reader<R: io::Read> {
 #[cfg(feature = "niffler")]
 impl Reader<BoxedReader> {
     pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::from_path(path)?;
-        Self::new(reader)
+        crate::builder::ReaderBuilder::path(path).build()
     }
 
     pub fn from_stdin() -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
-        Self::new(reader)
+        crate::builder::ReaderBuilder::stdin().build()
     }
 
     pub fn from_optional_path<P: AsRef<std::path::Path>>(path: Option<P>) -> Result<Self, Error> {
-        match path {
-            Some(path) => Self::from_path(path),
-            None => Self::from_stdin(),
-        }
-    }
-}
-
-#[cfg(feature = "url")]
-impl Reader<BoxedReader> {
-    pub fn from_url(url: &str) -> Result<Self, Error> {
-        let stream = reqwest::blocking::get(url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
-        Self::new(reader)
-    }
-}
-
-#[cfg(feature = "ssh")]
-impl Reader<BoxedReader> {
-    pub fn from_ssh(ssh_url: &str) -> Result<Self, Error> {
-        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
-        Self::new(reader)
-    }
-}
-
-#[cfg(feature = "gcs")]
-impl Reader<BoxedReader> {
-    /// Create a GCS reader using Application Default Credentials
-    pub fn from_gcs(gcs_url: &str) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new(reader)
-    }
-
-    /// Create a GCS reader using custom gcloud arguments
-    pub fn from_gcs_with_gcloud_args(gcs_url: &str, args: &[&str]) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, args)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new(reader)
-    }
-
-    /// Create a GCS reader using a specific project ID
-    pub fn from_gcs_with_project(gcs_url: &str, project_id: &str) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new(reader)
+        crate::builder::ReaderBuilder::optional_path(path).build()
     }
 }
 

@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
 mod buffer;
+#[cfg(feature = "niffler")]
+mod builder;
 mod error;
 pub mod fasta;
 pub mod fastq;
@@ -24,6 +26,8 @@ pub mod ssh;
 #[cfg(feature = "gcs")]
 pub mod gcs;
 
+#[cfg(feature = "niffler")]
+pub use builder::ReaderBuilder;
 pub use error::Error;
 pub use parallel::{ProcessError, Result};
 pub use record::Record;

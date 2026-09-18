@@ -13,7 +13,7 @@ mod common;
 use anyhow::{bail, Result};
 use clap::Parser;
 use common::{OutputFormat, Writer};
-use paraseq::{fastx, prelude::*};
+use paraseq::{prelude::*, ReaderBuilder};
 
 #[derive(Parser)]
 struct Cli {
@@ -32,12 +32,12 @@ fn main() -> Result<()> {
 
     match args.urls.as_slice() {
         [url] => {
-            let reader = fastx::Reader::from_ssh(url)?;
+            let reader = ReaderBuilder::ssh(url).build()?;
             reader.process_parallel(&mut processor, args.threads)?;
         }
         [url1, url2] => {
-            let r1 = fastx::Reader::from_ssh(url1)?;
-            let r2 = fastx::Reader::from_ssh(url2)?;
+            let r1 = ReaderBuilder::ssh(url1).build()?;
+            let r2 = ReaderBuilder::ssh(url2).build()?;
             r1.process_parallel_paired(r2, &mut processor, args.threads)?;
         }
         _ => bail!("expected 1 or 2 SSH urls"),
