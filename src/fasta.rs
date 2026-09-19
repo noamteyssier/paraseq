@@ -48,6 +48,19 @@ fn simd_find_record_starts<S: Simd>(
     }
 }
 
+/// Copy each line of `seq_region`, dropping the newlines (and `cr` preceding bytes) with no
+/// assumption about line widths.
+fn dewrap_general(seq_region: &[u8], cr: usize) -> Vec<u8> {
+    let mut filtered = Vec::with_capacity(seq_region.len());
+    let mut start = 0;
+    for end in memchr::memchr_iter(b'\n', seq_region) {
+        filtered.extend_from_slice(&seq_region[start..(end - cr).max(start)]);
+        start = end + 1;
+    }
+    filtered.extend_from_slice(&seq_region[start..]);
+    filtered
+}
+
 #[derive(Debug)]
 pub struct RecordSet {
     /// Main buffer for records
@@ -355,17 +368,31 @@ impl<'a> RefRecord<'a> {
             return Cow::Borrowed(&seq_region[..first]);
         }
 
-        // Multiline sequence - copy each line, dropping the newlines
-        let mut filtered = Vec::with_capacity(seq_region.len());
         // Line endings are detected once per record from its first line
         let cr = usize::from(first > 0 && seq_region[first - 1] == b'\r');
-        let mut start = 0;
-        for end in memchr::memchr_iter(b'\n', seq_region) {
-            filtered.extend_from_slice(&seq_region[start..(end - cr).max(start)]);
-            start = end + 1;
+
+        // Wrapped records have fixed-width lines: copy by stride, checking that the newline
+        // sits where expected instead of searching for it
+        let stride = first + 1;
+        let mut filtered = Vec::with_capacity(seq_region.len());
+        let mut regular = true;
+        for line in seq_region.chunks(stride) {
+            if line.len() < stride {
+                filtered.extend_from_slice(line);
+            } else if line[first] == b'\n' && (cr == 0 || line[first - 1] == b'\r') {
+                filtered.extend_from_slice(&line[..first - cr]);
+            } else {
+                regular = false;
+                break;
+            }
         }
-        filtered.extend_from_slice(&seq_region[start..]);
-        Cow::Owned(filtered)
+        // The stride checks plus a newline-free output prove the newlines were exactly the
+        // expected ones (the last, partial line was copied unchecked)
+        if regular && memchr::memchr(b'\n', &filtered).is_none() {
+            return Cow::Owned(filtered);
+        }
+
+        Cow::Owned(dewrap_general(seq_region, cr))
     }
 
     fn seq_raw(&self) -> &[u8] {
@@ -895,6 +922,55 @@ mod tests {
             let parsed_record = record_set.iter().next().unwrap().unwrap();
 
             println!("{}", parsed_record.id_str());
+        }
+    }
+
+    #[test]
+    fn test_seq_dewrap_matches_general() {
+        // Regular, irregular, CRLF and no-trailing-newline layouts must all dewrap
+        // identically to the width-agnostic reference
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let mut rnd = |m: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % m as u64) as usize
+        };
+        for _ in 0..500 {
+            let eol = if rnd(2) == 0 { "\n" } else { "\r\n" };
+            let width = 1 + rnd(100);
+            let irregular = rnd(4) == 0;
+            let mut text = String::new();
+            for r in 0..(1 + rnd(4)) {
+                text.push_str(&format!(">r{r}{eol}"));
+                let mut left = rnd(400);
+                while left > 0 {
+                    let w = if irregular { 1 + rnd(width) } else { width }.min(left);
+                    text.push_str(&"ACGT".repeat(w).chars().take(w).collect::<String>());
+                    text.push_str(eol);
+                    left -= w;
+                }
+                if rnd(5) == 0 {
+                    text.push_str(eol);
+                }
+            }
+            if rnd(3) == 0 {
+                text.truncate(text.trim_end().len());
+            }
+            let mut reader = Reader::new(Cursor::new(text.clone()));
+            let mut rset = reader.new_record_set();
+            while rset.fill(&mut reader).unwrap() {
+                for rec in rset.iter() {
+                    let rec = rec.unwrap();
+                    let raw = rec.seq_raw();
+                    let expect = match memchr::memchr(b'\n', raw) {
+                        None => raw.to_vec(),
+                        Some(f) if f == raw.len() - 1 => raw[..f].to_vec(),
+                        Some(f) => dewrap_general(raw, usize::from(f > 0 && raw[f - 1] == b'\r')),
+                    };
+                    assert_eq!(rec.seq().as_ref(), expect.as_slice(), "{text:?}");
+                }
+            }
         }
     }
 }
