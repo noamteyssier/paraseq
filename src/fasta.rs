@@ -48,31 +48,6 @@ fn simd_find_record_starts<S: Simd>(
     }
 }
 
-/// Find every `\n` in `haystack` with an explicit u8x64 SIMD compare, pushing each
-/// match's offset (relative to `haystack`) into `newlines`. Used to de-wrap multiline
-/// FASTA sequences, which can span many megabases in reference genomes.
-#[inline(always)]
-fn simd_find_newlines<S: Simd>(simd: S, haystack: &[u8], newlines: &mut Vec<usize>) {
-    let needle = u8x64::splat(simd, b'\n');
-    let (chunks, remainder) = haystack.as_chunks::<64>();
-    let mut base = 0usize;
-    for chunk in chunks {
-        let v = u8x64::from_slice(simd, chunk);
-        let mut bits = v.simd_eq(needle).to_bitmask();
-        while bits != 0 {
-            let bit = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            newlines.push(base + bit);
-        }
-        base += 64;
-    }
-    for (i, &b) in remainder.iter().enumerate() {
-        if b == b'\n' {
-            newlines.push(base + i);
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct RecordSet {
     /// Main buffer for records
@@ -371,29 +346,26 @@ impl<'a> RefRecord<'a> {
     pub fn seq(&self) -> Cow<'_, [u8]> {
         let seq_region = self.seq_raw();
 
-        let mut newlines = Vec::new();
-        dispatch!(Level::new(), simd => simd_find_newlines(simd, seq_region, &mut newlines));
-
-        if newlines.is_empty() {
-            // No newlines - can borrow directly
-            Cow::Borrowed(seq_region)
-        } else if newlines.len() == 1 && seq_region.ends_with(b"\n") {
-            // Single line with only trailing newline - can borrow without the newline
-            Cow::Borrowed(&seq_region[..seq_region.len() - 1])
-        } else {
-            // Multiline sequence - need to filter out all newlines
-            let mut filtered = Vec::with_capacity(seq_region.len() - newlines.len());
-            let mut start = 0;
-            // Line endings are detected once per record from its first line
-            let first = newlines[0];
-            let cr = usize::from(first > 0 && seq_region[first - 1] == b'\r');
-            for &end in &newlines {
-                filtered.extend_from_slice(&seq_region[start..(end - cr).max(start)]);
-                start = end + 1;
-            }
-            filtered.extend_from_slice(&seq_region[start..]);
-            Cow::Owned(filtered)
+        // Single-line records (the common case) borrow directly
+        let Some(first) = memchr::memchr(b'\n', seq_region) else {
+            return Cow::Borrowed(seq_region);
+        };
+        // Single line with only a trailing newline - can borrow without the newline
+        if first == seq_region.len() - 1 {
+            return Cow::Borrowed(&seq_region[..first]);
         }
+
+        // Multiline sequence - copy each line, dropping the newlines
+        let mut filtered = Vec::with_capacity(seq_region.len());
+        // Line endings are detected once per record from its first line
+        let cr = usize::from(first > 0 && seq_region[first - 1] == b'\r');
+        let mut start = 0;
+        for end in memchr::memchr_iter(b'\n', seq_region) {
+            filtered.extend_from_slice(&seq_region[start..(end - cr).max(start)]);
+            start = end + 1;
+        }
+        filtered.extend_from_slice(&seq_region[start..]);
+        Cow::Owned(filtered)
     }
 
     fn seq_raw(&self) -> &[u8] {
