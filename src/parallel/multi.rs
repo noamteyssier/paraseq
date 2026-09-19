@@ -1,8 +1,9 @@
-use parking_lot::Mutex;
+use std::sync::Mutex;
+
 use smallvec::SmallVec;
 
 use crate::fastx::GenericReader;
-use crate::parallel::error::ProcessError;
+use crate::Error;
 use crate::MAX_ARITY;
 
 use super::single::{BatchCounter, MTGenericReader};
@@ -24,16 +25,16 @@ impl<R: GenericReader> MultiReader<R> {
 
 impl<R: GenericReader> MTGenericReader for MultiReader<R>
 where
-    ProcessError: From<R::Error>,
+    Error: From<R::Error>,
 {
     type RecordSet = SmallVec<[R::RecordSet; MAX_ARITY]>;
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = SmallVec<[R::RefRecord<'a>; MAX_ARITY]>;
 
     fn new_record_set(&self) -> Self::RecordSet {
         self.readers
             .iter()
-            .map(|r| r.lock().new_record_set())
+            .map(|r| r.lock().unwrap().new_record_set())
             .collect()
     }
 
@@ -41,18 +42,18 @@ where
         &self,
         record_set: &mut Self::RecordSet,
     ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
-        let mut r0 = self.readers[0].lock();
+        let mut r0 = self.readers[0].lock().unwrap();
         let filled_0 = r0.fill(&mut record_set[0])?;
 
         if !filled_0 {
             // readers[0] is exhausted. checks for batch size mismatch
             drop(r0);
             for i in 1..self.readers.len() {
-                let mut r = self.readers[i].lock();
+                let mut r = self.readers[i].lock().unwrap();
                 let filled_i = r.fill(&mut record_set[i])?;
                 drop(r);
                 if filled_i {
-                    return Err(ProcessError::MultiRecordMismatch(0));
+                    return Err(Error::MultiRecordMismatch(0));
                 }
             }
             return Ok(None);
@@ -63,11 +64,11 @@ where
 
         let mut prev_lock = Some(r0);
         for i in 1..self.readers.len() {
-            let mut r = self.readers[i].lock();
+            let mut r = self.readers[i].lock().unwrap();
             drop(prev_lock);
             let filled_i = r.fill(&mut record_set[i])?;
             if filled_i != filled_0 {
-                return Err(ProcessError::MultiRecordMismatch(i));
+                return Err(Error::MultiRecordMismatch(i));
             }
             prev_lock = Some(r);
         }
@@ -81,46 +82,60 @@ where
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         let its: SmallVec<[_; MAX_ARITY]> = record_set.iter().map(|rs| R::iter(rs)).collect();
         if let Some(pos) = its.iter().position(|it| it.len() != its[0].len()) {
-            let err_iter = std::iter::once(Err(ProcessError::MultiRecordMismatch(pos)));
+            let err_iter = std::iter::once(Err(Error::MultiRecordMismatch(pos)));
             return either::Either::Left(err_iter);
         }
         either::Either::Right(SmallVecIt { its })
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
-        self.readers
-            .iter()
-            .try_for_each(|r| r.lock().set_threads(num_threads).map_err(Into::into))
+        self.readers.iter().try_for_each(|r| {
+            r.lock()
+                .unwrap()
+                .set_threads(num_threads)
+                .map_err(Into::into)
+        })
     }
+}
+
+/// Pulls one item from each of `n` sources via `next_item`, collecting them
+/// into a group. `None` from any source early-breaks the whole group; the
+/// first `Err` is kept (subsequent items are still drained to keep sources
+/// in sync) and converted via `Into<Error>`.
+fn collect_group<Item, E: Into<Error>>(
+    n: usize,
+    mut next_item: impl FnMut(usize) -> Option<std::result::Result<Item, E>>,
+) -> Option<std::result::Result<SmallVec<[Item; MAX_ARITY]>, Error>> {
+    let mut out = std::result::Result::Ok(SmallVec::default());
+    for i in 0..n {
+        // None early-breaks everything.
+        let elem = next_item(i)?;
+        // Err proceeds.
+        if out.is_ok() {
+            match elem {
+                Ok(it) => {
+                    out.as_mut().unwrap().push(it);
+                }
+                Err(it) => {
+                    out = std::result::Result::Err(it.into());
+                }
+            }
+        }
+    }
+    Some(out)
 }
 
 struct SmallVecIt<I> {
     its: SmallVec<[I; MAX_ARITY]>,
 }
 
-impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E>>> Iterator
+impl<Item, E: Into<Error>, I: Iterator<Item = std::result::Result<Item, E>>> Iterator
     for SmallVecIt<I>
 {
-    type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, ProcessError>;
+    type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut out = std::result::Result::Ok(SmallVec::default());
-        for it in self.its.iter_mut() {
-            // None early-breaks everything.
-            let elem = it.next()?;
-            // Err proceeds.
-            if out.is_ok() {
-                match elem {
-                    Ok(it) => {
-                        out.as_mut().unwrap().push(it);
-                    }
-                    Err(it) => {
-                        out = std::result::Result::Err(it.into());
-                    }
-                }
-            }
-        }
-        Some(out)
+        collect_group(self.its.len(), |i| self.its[i].next())
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -131,7 +146,7 @@ impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E
     }
 }
 
-impl<Item, E: Into<ProcessError>, I: ExactSizeIterator<Item = std::result::Result<Item, E>>>
+impl<Item, E: Into<Error>, I: ExactSizeIterator<Item = std::result::Result<Item, E>>>
     ExactSizeIterator for SmallVecIt<I>
 {
 }
@@ -155,21 +170,21 @@ impl<R: GenericReader> InterleavedMultiReader<R> {
 
 impl<R: GenericReader> MTGenericReader for InterleavedMultiReader<R>
 where
-    ProcessError: From<R::Error>,
+    Error: From<R::Error>,
 {
     type RecordSet = (R::RecordSet, usize);
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = SmallVec<[R::RefRecord<'a>; MAX_ARITY]>;
 
     fn new_record_set(&self) -> Self::RecordSet {
-        (self.reader.lock().new_record_set(), self.arity)
+        (self.reader.lock().unwrap().new_record_set(), self.arity)
     }
 
     fn fill(
         &self,
         record_set: &mut Self::RecordSet,
     ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
-        let mut r = self.reader.lock();
+        let mut r = self.reader.lock().unwrap();
         if !r.fill(&mut record_set.0)? {
             return Ok(None);
         }
@@ -181,9 +196,7 @@ where
                 // Same variant `iter` below raises for this condition, so
                 // it doesn't matter which of the two catches a given batch
                 // first - callers see one consistent error either way.
-                return Err(ProcessError::MultiRecordSetSizeMismatch(
-                    n_records, self.arity,
-                ));
+                return Err(Error::MultiRecordSetSizeMismatch(n_records, self.arity));
             }
             n_records / self.arity
         };
@@ -206,6 +219,7 @@ where
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
         self.reader
             .lock()
+            .unwrap()
             .set_threads(num_threads)
             .map_err(Into::into)
     }
@@ -216,29 +230,13 @@ struct ChunkedIt<I> {
     arity: usize,
 }
 
-impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E>>> Iterator
+impl<Item, E: Into<Error>, I: Iterator<Item = std::result::Result<Item, E>>> Iterator
     for ChunkedIt<I>
 {
-    type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, ProcessError>;
+    type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut out = std::result::Result::Ok(SmallVec::default());
-        for _ in 0..self.arity {
-            // None early-breaks everything.
-            let elem = self.it.next()?;
-            // Err proceeds.
-            if out.is_ok() {
-                match elem {
-                    Ok(it) => {
-                        out.as_mut().unwrap().push(it);
-                    }
-                    Err(it) => {
-                        out = std::result::Result::Err(it.into());
-                    }
-                }
-            }
-        }
-        Some(out)
+        collect_group(self.arity, |_| self.it.next())
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -247,7 +245,7 @@ impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E
     }
 }
 
-impl<Item, E: Into<ProcessError>, I: ExactSizeIterator<Item = std::result::Result<Item, E>>>
+impl<Item, E: Into<Error>, I: ExactSizeIterator<Item = std::result::Result<Item, E>>>
     ExactSizeIterator for ChunkedIt<I>
 {
 }
@@ -259,7 +257,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::fastq;
-    use crate::parallel::{MultiParallelProcessor, ParallelReader, ProcessError};
+    use crate::parallel::{MultiParallelProcessor, ParallelReader};
+    use crate::Error;
     use crate::Record;
 
     fn make_fastq(n: usize) -> Vec<u8> {
@@ -286,12 +285,12 @@ mod tests {
         }
     }
     impl<Rf: Record> MultiParallelProcessor<Rf> for CountingMultiProcessor {
-        fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), ProcessError> {
+        fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), Error> {
             assert_eq!(records.len(), self.expected_arity);
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_batch_complete(&mut self) -> Result<(), Error> {
             self.global_count
                 .fetch_add(self.local_count, Ordering::Relaxed);
             self.local_count = 0;

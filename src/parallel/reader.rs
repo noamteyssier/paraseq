@@ -1,6 +1,5 @@
 use std::ops::RangeBounds;
-
-use parking_lot::Mutex;
+use std::sync::Mutex;
 
 use crate::{
     fastx::GenericReader,
@@ -12,7 +11,7 @@ use crate::{
         },
         MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
     },
-    ProcessError, Record, Result,
+    Error, Record, Result,
 };
 
 pub trait ParallelReader {
@@ -106,10 +105,8 @@ pub trait ParallelReader {
 
 /// Opt-in parallel processing with a worker count that may change in flight.
 ///
-/// This extension trait is available only with the `pool` feature. Keeping it
-/// separate from [`ParallelReader`] ensures enabling the pool adds a new path
-/// without changing the original fixed-thread interface or implementation.
-#[cfg(feature = "pool")]
+/// Kept separate from [`ParallelReader`] so the resizable-pool API is opt-in
+/// without changing the fixed-thread-count interface.
 pub trait PoolParallelReader: ParallelReader {
     /// As [`ParallelReader::process_parallel`], but the worker count may change
     /// while the run is in flight. See [`crate::parallel::ThreadPool`].
@@ -125,7 +122,7 @@ pub trait PoolParallelReader: ParallelReader {
 impl<S: GenericReader> ParallelReader for S
 where
     for<'a> <S as GenericReader>::RefRecord<'a>: Record,
-    ProcessError: From<S::Error>,
+    Error: From<S::Error>,
 {
     type Rf<'a> = S::RefRecord<'a>;
 
@@ -280,11 +277,10 @@ where
     }
 }
 
-#[cfg(feature = "pool")]
 impl<S: GenericReader> PoolParallelReader for S
 where
     for<'a> <S as GenericReader>::RefRecord<'a>: Record,
-    ProcessError: From<S::Error>,
+    Error: From<S::Error>,
 {
     fn process_parallel_pool<T>(
         self,
@@ -320,21 +316,21 @@ impl<R: GenericReader> SingleReader<R> {
 
 impl<R: GenericReader> MTGenericReader for SingleReader<R>
 where
-    ProcessError: From<R::Error>,
+    Error: From<R::Error>,
 {
     type RecordSet = R::RecordSet;
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = R::RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet {
-        self.reader.lock().new_record_set()
+        self.reader.lock().unwrap().new_record_set()
     }
 
     fn fill(
         &self,
         record_set: &mut Self::RecordSet,
     ) -> std::result::Result<Option<(usize, usize)>, Self::Error> {
-        let mut r1 = self.reader.lock();
+        let mut r1 = self.reader.lock().unwrap();
         if !R::fill(&mut r1, record_set)? {
             return Ok(None);
         }
@@ -351,6 +347,7 @@ where
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
         self.reader
             .lock()
+            .unwrap()
             .set_threads(num_threads)
             .map_err(Into::into)
     }

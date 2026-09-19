@@ -1,265 +1,70 @@
 use std::borrow::Cow;
 use std::io;
 
-#[cfg(feature = "niffler")]
-use crate::BoxedReader;
-#[cfg(feature = "niffler")]
-use std::path::Path;
+use fearless_simd::{dispatch, prelude::*, u8x64, Level};
 
-use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{
+    base::{BatchSet, ReaderBase},
+    fastx::GenericReader,
+    Error, Record, DEFAULT_MAX_RECORDS,
+};
 
-pub struct Reader<R: io::Read> {
-    /// Handle to the underlying reader (byte stream)
-    reader: R,
-    /// Small buffer to hold incomplete records between reads
-    overflow: Vec<u8>,
-    /// Flag to indicate end of file
-    eof: bool,
-    /// Sets the maximum capcity of records in batches for parallel processing
-    ///
-    /// If not set, the default `RecordSet` capacity is used.
-    batch_size: Option<usize>,
-    /// Maximum number of records to process before stopping
-    record_limit: Option<usize>,
-    /// Running count of records already yielded by this reader, used to
-    /// assign each parsed record its stable, global index in the file.
-    total_records: u64,
-}
+pub type Reader<R> = ReaderBase<R, RecordSet>;
 
-#[cfg(feature = "niffler")]
-impl Reader<BoxedReader> {
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::from_path(path)?;
-        Ok(Self::new(reader))
-    }
+/// Bytes scanned per scratch fill in `simd_flatten_newlines` (must be a multiple of 64)
+const FLATTEN_WINDOW: usize = 1024;
 
-    pub fn from_stdin() -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
-        Ok(Self::new(reader))
-    }
-
-    pub fn from_optional_path<P: AsRef<Path>>(path: Option<P>) -> Result<Self, Error> {
-        match path {
-            Some(path) => Self::from_path(path),
-            None => Self::from_stdin(),
+/// Append the absolute offset (one past `\n`) of every `\n` in `haystack` to `out`.
+///
+/// Branch-light: each 64-byte chunk unconditionally writes 4 offsets into a stack scratch
+/// and advances by the popcount, so the trip count doesn't depend on how many newlines the
+/// chunk holds. The scratch is flushed into `out` once per window.
+#[inline(always)]
+fn simd_flatten_newlines<S: Simd>(
+    simd: S,
+    haystack: &[u8],
+    search_from: usize,
+    scratch: &mut [usize; FLATTEN_WINDOW + 4],
+    out: &mut Vec<usize>,
+) {
+    let needle = u8x64::splat(simd, b'\n');
+    // Offsets are one past the '\n'
+    let mut base = search_from + 1;
+    for window in haystack.chunks(FLATTEN_WINDOW) {
+        let (chunks, remainder) = window.as_chunks::<64>();
+        let mut n = 0;
+        for chunk in chunks {
+            let v = u8x64::from_slice(simd, chunk);
+            // Bit i is set iff byte i of the chunk is a '\n'
+            let mut bits = v.simd_eq(needle).to_bitmask();
+            let cnt = bits.count_ones() as usize;
+            // Always write 4 slots (no branch); slots past `cnt` are junk, overwritten next chunk
+            let head: &mut [usize; 4] = (&mut scratch[n..n + 4]).try_into().unwrap();
+            for slot in head {
+                // Lowest set bit = next newline
+                *slot = base + bits.trailing_zeros() as usize;
+                // Clear the lowest set bit
+                bits &= bits.wrapping_sub(1);
+            }
+            // Rare: chunk has more than 4 newlines
+            for k in 4..cnt {
+                scratch[n + k] = base + bits.trailing_zeros() as usize;
+                bits &= bits.wrapping_sub(1);
+            }
+            // Advance by the real count only
+            n += cnt;
+            base += 64;
         }
-    }
-
-    pub fn from_path_with_batch_size<P: AsRef<Path>>(
-        path: P,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::from_path(path)?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    pub fn from_stdin_with_batch_size(batch_size: usize) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    pub fn from_optional_path_with_batch_size<P: AsRef<Path>>(
-        path: Option<P>,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        match path {
-            Some(path) => Self::from_path_with_batch_size(path, batch_size),
-            None => Self::from_stdin_with_batch_size(batch_size),
-        }
-    }
-}
-
-#[cfg(feature = "url")]
-impl Reader<BoxedReader> {
-    pub fn from_url(url: &str) -> Result<Self, Error> {
-        let stream = reqwest::blocking::get(url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
-        Ok(Self::new(reader))
-    }
-
-    pub fn from_url_with_batch_size(url: &str, batch_size: usize) -> Result<Self, Error> {
-        let stream = reqwest::blocking::get(url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-}
-
-#[cfg(feature = "ssh")]
-impl Reader<BoxedReader> {
-    pub fn from_ssh(ssh_url: &str) -> Result<Self, Error> {
-        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
-        Ok(Self::new(reader))
-    }
-
-    pub fn from_ssh_with_batch_size(ssh_url: &str, batch_size: usize) -> Result<Self, Error> {
-        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-}
-
-#[cfg(feature = "gcs")]
-impl Reader<BoxedReader> {
-    /// Create a GCS reader using Application Default Credentials
-    pub fn from_gcs(gcs_url: &str) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Ok(Self::new(reader))
-    }
-
-    /// Create a GCS reader using custom gcloud arguments
-    pub fn from_gcs_with_gcloud_args(gcs_url: &str, args: &[&str]) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, args)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Ok(Self::new(reader))
-    }
-
-    /// Create a GCS reader using a specific project ID
-    pub fn from_gcs_with_project(gcs_url: &str, project_id: &str) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Ok(Self::new(reader))
-    }
-
-    /// Create a GCS reader with custom batch size using Application Default Credentials
-    pub fn from_gcs_with_batch_size(gcs_url: &str, batch_size: usize) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    /// Create a GCS reader with custom batch size using custom gcloud arguments
-    pub fn from_gcs_with_gcloud_args_and_batch_size(
-        gcs_url: &str,
-        gcloud_args: &[&str],
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, gcloud_args)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    /// Create a GCS reader with custom batch size using a specific project ID
-    pub fn from_gcs_with_project_and_batch_size(
-        gcs_url: &str,
-        project_id: &str,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-}
-
-impl<R: io::Read> Reader<R> {
-    pub fn new(reader: R) -> Self {
-        Self {
-            overflow: Vec::with_capacity(1024), // Start small, can tune this
-            reader,
-            eof: false,
-            batch_size: None,
-            record_limit: None,
-            total_records: 0,
-        }
-    }
-    pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
-        if batch_size == 0 {
-            return Err(Error::InvalidBatchSize(batch_size));
-        }
-        let mut reader = Self::new(reader);
-        reader.batch_size = Some(batch_size);
-        Ok(reader)
-    }
-
-    /// Limit processing to the first `n` records.
-    ///
-    /// When used with parallel processing, `fill()` will truncate batches to
-    /// stay within the limit and return `false` once the limit is reached,
-    /// stopping all worker threads cleanly.
-    pub fn set_record_limit(&mut self, n: usize) {
-        self.record_limit = Some(n);
-    }
-
-    /// Use the first record in the input to set the number of records per batch
-    /// so that the expected length per batch is approximately `batch_size_in_bp`.
-    pub fn update_batch_size_in_bp(&mut self, batch_size_in_bp: usize) -> Result<(), Error> {
-        let mut rset = self.new_record_set_with_size(1);
-        rset.fill(self)?;
-        let mut batch_size = 1;
-        if let Some(record) = rset.iter().next() {
-            let len = record?.seq_raw().len();
-            if len > 0 {
-                batch_size = batch_size_in_bp.div_ceil(len);
+        // Scalar tail: the last window's final <64 bytes
+        for (i, &b) in remainder.iter().enumerate() {
+            if b == b'\n' {
+                scratch[n] = base + i;
+                n += 1;
             }
         }
-        // Push the record back at the front of the reader.
-        self.reload(&mut rset);
-        // Update the batch size.
-        self.batch_size = Some(batch_size);
-        Ok(())
-    }
-
-    /// Initialize a new record set with a configured or default batch size
-    pub fn new_record_set(&self) -> RecordSet {
-        if let Some(batch_size) = self.batch_size {
-            RecordSet::new(batch_size)
-        } else {
-            RecordSet::default()
-        }
-    }
-    /// Initialize a new record set with a specified size
-    pub fn new_record_set_with_size(&self, size: usize) -> RecordSet {
-        RecordSet::new(size)
-    }
-    /// Add bytes to the overflow buffer.
-    ///
-    /// Use this method sparingly, it is mainly for internal use.
-    pub fn add_to_overflow(&mut self, buffer: &[u8]) {
-        self.overflow.extend_from_slice(buffer);
-    }
-    pub fn batch_size(&self) -> usize {
-        self.batch_size.unwrap_or(DEFAULT_MAX_RECORDS)
-    }
-    pub fn set_eof(&mut self) {
-        self.eof = true;
-    }
-    pub fn exhausted(&self) -> bool {
-        self.eof && self.overflow.is_empty()
-    }
-    /// Take back all bytes from the record set and prepend them to the overflow buffer
-    ///
-    /// This is an expensive operation and should be used sparingly.
-    pub fn reload(&mut self, rset: &mut RecordSet) {
-        // These records are being unread, so un-count them; they'll be
-        // reassigned the same indices when they're re-parsed.
-        self.total_records = self
-            .total_records
-            .saturating_sub(rset.positions.len() as u64);
-
-        // A complete slice of the record sets buffer
-        let buffer_slice = &rset.buffer;
-
-        // Get buffer lengths of incoming and existing data
-        let num_incoming = buffer_slice.len();
-        let num_existing = self.overflow.len();
-
-        // Allocate space in the overflow buffer for incoming bytes
-        let required_space = num_existing + num_incoming;
-        self.overflow
-            .resize(self.overflow.capacity().max(required_space), 0);
-
-        // Move current bytes to end of overflow buffer
-        self.overflow.copy_within(..num_existing, num_incoming);
-
-        // Copy incoming bytes to the beginning of the overflow buffer
-        self.overflow[..num_incoming].copy_from_slice(buffer_slice);
-
-        // Truncate the overflow buffer at the end of expected bytes (handles cases where unexpected null bytes are introduced)
-        self.overflow.truncate(required_space);
-
-        // Clear the record set
-        rset.clear();
+        base += remainder.len();
+        // Flush the window's real offsets (junk slots excluded)
+        out.extend_from_slice(&scratch[..n]);
     }
 }
 
@@ -273,6 +78,10 @@ pub struct RecordSet {
     pending_nl_pos: [usize; 3],
     /// Byte offset where the current record started
     record_start: usize,
+    /// Scratch: pending newline offsets followed by the newlines of the bytes being scanned
+    nl: Vec<usize>,
+    /// Scratch for `simd_flatten_newlines`; zeroed at start and reused
+    nl_scratch: Box<[usize; FLATTEN_WINDOW + 4]>,
     /// Position tracking for complete records
     positions: Vec<Positions>,
     /// Maximum number of records to store
@@ -296,6 +105,8 @@ impl RecordSet {
             pending_nl: 0,
             pending_nl_pos: [0; 3],
             record_start: 0,
+            nl: Vec::new(),
+            nl_scratch: Box::new([0; FLATTEN_WINDOW + 4]),
             positions: Vec::with_capacity(capacity),
             capacity,
             avg_record_size: 1024, // 1KB default
@@ -328,30 +139,36 @@ impl RecordSet {
         }
     }
 
-    /// Scan bytes `search_from..search_to` in the buffer, building Positions inline.
+    /// Scan bytes `search_from..search_to` in the buffer, building Positions.
     /// Returns true if capacity was reached (caller should stop reading).
     fn scan_for_records(&mut self, search_from: usize, search_to: usize) -> bool {
-        for nl in memchr::memchr_iter(b'\n', &self.buffer[search_from..search_to]) {
-            let abs = nl + search_from + 1; // one past the '\n'
-            if self.pending_nl < 3 {
-                self.pending_nl_pos[self.pending_nl as usize] = abs;
-                self.pending_nl += 1;
-            } else {
-                self.positions.push(Positions {
-                    start: self.record_start,
-                    seq_start: self.pending_nl_pos[0],
-                    sep_start: self.pending_nl_pos[1],
-                    qual_start: self.pending_nl_pos[2],
-                    qual_end: abs - 1,
-                    end: abs,
-                });
-                self.record_start = abs;
-                self.pending_nl = 0;
-                if self.positions.len() >= self.capacity {
-                    return true;
-                }
-            }
+        let level = Level::new();
+        let haystack = &self.buffer[search_from..search_to];
+        self.nl.clear();
+        self.nl
+            .extend_from_slice(&self.pending_nl_pos[..self.pending_nl as usize]);
+        let (scratch, nl) = (&mut self.nl_scratch, &mut self.nl);
+        dispatch!(level, simd => simd_flatten_newlines(simd, haystack, search_from, scratch, nl));
+
+        let n_records = self.nl.len() / 4;
+        let take = n_records.min(self.capacity - self.positions.len());
+        for c in self.nl.as_chunks::<4>().0.iter().take(take) {
+            self.positions.push(Positions {
+                start: self.record_start,
+                seq_start: c[0],
+                sep_start: c[1],
+                qual_start: c[2],
+                end: c[3],
+            });
+            self.record_start = c[3];
         }
+        if self.positions.len() >= self.capacity {
+            self.pending_nl = 0;
+            return true;
+        }
+        let rest = &self.nl[n_records * 4..];
+        self.pending_nl_pos[..rest.len()].copy_from_slice(rest);
+        self.pending_nl = rest.len() as u8;
         false
     }
 
@@ -428,7 +245,6 @@ impl RecordSet {
                 seq_start: self.pending_nl_pos[0],
                 sep_start: self.pending_nl_pos[1],
                 qual_start: self.pending_nl_pos[2],
-                qual_end: abs - 1,
                 end: abs,
             });
             self.record_start = abs;
@@ -464,7 +280,6 @@ struct Positions {
     seq_start: usize,
     sep_start: usize,
     qual_start: usize,
-    qual_end: usize,
     end: usize,
 }
 
@@ -512,14 +327,10 @@ impl<'a> RefRecord<'a> {
             ));
         }
 
-        // Check that sequence and quality lengths match
-        if self.positions.sep_start - self.positions.seq_start - 1
-            != self.positions.qual_end - self.positions.qual_start
-        {
-            return Err(Error::UnequalLengths(
-                self.positions.sep_start - self.positions.seq_start - 1, // subtract 1 for embedded newline
-                self.positions.qual_end - self.positions.qual_start,
-            ));
+        // Check that sequence and quality lengths match (ignoring any '\r' line terminators)
+        let (seq_len, qual_len) = (self.seq_raw().len(), self.qual_raw().len());
+        if seq_len != qual_len {
+            return Err(Error::UnequalLengths(seq_len, qual_len));
         }
 
         Ok(())
@@ -549,12 +360,21 @@ impl<'a> RefRecord<'a> {
         self.index
     }
 
-    /// Performs the actual buffer access
+    #[inline(always)]
+    fn qual_raw(&self) -> &[u8] {
+        self.access_buffer(self.positions.qual_start, self.positions.end)
+    }
+
+    /// Performs the actual buffer access, stripping the '\n' (and a preceding '\r', if any)
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
+        // The byte before `left` is always '@' or '\n', never '\r', so no `end > left` guard
+        let mut end = right - 1;
+        end -= usize::from(self.buffer[end - 1] == b'\r');
         unsafe {
-            // SAFETY: We've checked that left and right are within bounds
-            self.buffer.get_unchecked(left..right - 1)
+            // SAFETY: `left <= end < right`, and `right <= buffer.len()` is checked by
+            // `validate_record` (except for `qual`/`sep`, which are bounded by `end`).
+            self.buffer.get_unchecked(left..end)
         }
     }
 }
@@ -574,14 +394,38 @@ impl Record for RefRecord<'_> {
     }
 
     fn qual(&self) -> Option<&[u8]> {
-        Some(self.access_buffer(
-            self.positions.qual_start,
-            self.positions.qual_end.max(self.positions.end),
-        ))
+        Some(self.qual_raw())
     }
 
     fn index(&self) -> u64 {
         self.index()
+    }
+}
+
+impl BatchSet for RecordSet {
+    fn with_capacity(capacity: usize) -> Self {
+        Self::new(capacity)
+    }
+    fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
+        RecordSet::fill(self, reader)
+    }
+    fn clear(&mut self) {
+        RecordSet::clear(self);
+    }
+    fn n_records(&self) -> usize {
+        RecordSet::n_records(self)
+    }
+    fn truncate(&mut self, n: usize) {
+        RecordSet::truncate(self, n);
+    }
+    fn buffer(&self) -> &[u8] {
+        &self.buffer
+    }
+    fn first_seq_len(&self) -> Result<Option<usize>, Error> {
+        self.iter()
+            .next()
+            .map(|r| r.map(|r| r.seq_raw().len()))
+            .transpose()
     }
 }
 
@@ -594,26 +438,11 @@ where
     type RefRecord<'a> = crate::fastq::RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet {
-        if let Some(batch_size) = self.batch_size {
-            Self::RecordSet::new(batch_size)
-        } else {
-            Self::RecordSet::default()
-        }
+        ReaderBase::new_record_set(self)
     }
 
     fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
-        if let Some(0) = self.record_limit {
-            return Ok(false);
-        }
-        let filled = record.fill(self)?;
-        if filled {
-            if let Some(remaining) = &mut self.record_limit {
-                let n = record.n_records().min(*remaining);
-                record.truncate(n);
-                *remaining -= n;
-            }
-        }
-        Ok(filled)
+        self.fill_limited(record)
     }
 
     fn iter(
@@ -733,7 +562,9 @@ mod tests {
     #[test]
     fn test_from_stdin() {
         if crate::test_util::is_stdin_child() {
-            let mut reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let mut reader = crate::ReaderBuilder::optional_path(None::<&str>)
+                .build_fastq()
+                .unwrap();
             let mut num_records = 0;
             let mut rset = reader.new_record_set();
             while rset.fill(&mut reader).unwrap() {
@@ -783,6 +614,23 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].id_str(), "test1");
         assert_eq!(records[1].id_str(), "test2");
+    }
+
+    #[test]
+    fn test_crlf() {
+        // second record has no trailing newline at EOF
+        let data = "@a\r\nACTG\r\n+\r\nIIII\r\n@b\r\nTG\r\n+\r\nII";
+        let mut reader = Reader::new(Cursor::new(data));
+        let mut record_set = RecordSet::new(2);
+        assert!(record_set.fill(&mut reader).unwrap());
+        let records: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id_str(), "a");
+        assert_eq!(records[0].seq_str(), "ACTG");
+        assert_eq!(records[0].qual_str(), "IIII");
+        assert_eq!(records[1].id_str(), "b");
+        assert_eq!(records[1].seq_str(), "TG");
+        assert_eq!(records[1].qual_str(), "II");
     }
 
     #[test]
@@ -981,7 +829,7 @@ mod tests {
             } else {
                 format!("./data/sample.fastq{}", ext)
             };
-            let mut reader = Reader::from_path(path).unwrap();
+            let mut reader = crate::ReaderBuilder::path(path).build_fastq().unwrap();
             let mut record_set = RecordSet::new(1);
 
             assert!(record_set.fill(&mut reader).unwrap());
@@ -1001,7 +849,8 @@ mod tests {
             } else {
                 format!("./data/sample.fastq{}", ext)
             };
-            let mut reader = Reader::from_path_with_batch_size(path, 2).unwrap();
+            let mut reader = crate::ReaderBuilder::path(path).build_fastq().unwrap();
+            reader.set_batch_size(2).unwrap();
             let mut record_set = RecordSet::new(1);
 
             assert!(record_set.fill(&mut reader).unwrap());

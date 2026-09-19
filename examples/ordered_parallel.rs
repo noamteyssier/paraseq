@@ -28,7 +28,7 @@ use anyhow::Result;
 use clap::Parser;
 use common::{output_handle, OutputFormat, Writer};
 use paraseq::parallel::Ordered;
-use paraseq::{fastx, prelude::*};
+use paraseq::{prelude::*, ReaderBuilder};
 
 #[derive(Parser)]
 struct Cli {
@@ -56,7 +56,7 @@ struct Cli {
 fn main() -> Result<()> {
     let args = Cli::parse();
 
-    let reader = fastx::Reader::from_optional_path(args.input)?;
+    let reader = ReaderBuilder::optional_path(args.input).build()?;
     let writer = Writer::new(output_handle(&args.output)?, args.format);
 
     if args.ordered {

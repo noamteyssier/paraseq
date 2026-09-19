@@ -6,24 +6,14 @@
 //! build it as its own binary.
 
 use std::fs::File;
-use std::io::{stdin, stdout, Read, Write};
-use std::sync::Arc;
+use std::io::{stdout, Write};
+use std::sync::{Arc, Mutex};
 
 use clap::ValueEnum;
 use paraseq::prelude::*;
-use paraseq::{ProcessError, Record};
-use parking_lot::Mutex;
+use paraseq::{Error, Record};
 
-pub type BoxedReader = Box<dyn Read + Send>;
 pub type BoxedWriter = Box<dyn Write + Send>;
-
-/// Opens `path` for reading, or stdin if `None`.
-pub fn input_handle(path: &Option<String>) -> std::io::Result<BoxedReader> {
-    match path {
-        Some(path) => Ok(Box::new(File::open(path)?)),
-        None => Ok(Box::new(stdin())),
-    }
-}
 
 /// Opens `path` for writing (truncating/creating it), or stdout if `None`.
 pub fn output_handle(path: &Option<String>) -> std::io::Result<BoxedWriter> {
@@ -51,11 +41,11 @@ pub struct SeqSum {
 impl SeqSum {
     #[must_use]
     pub fn num_records(&self) -> u64 {
-        *self.total_records.lock()
+        *self.total_records.lock().unwrap()
     }
     #[must_use]
     pub fn byte_sum(&self) -> u64 {
-        *self.total_bytes.lock()
+        *self.total_bytes.lock().unwrap()
     }
     pub fn report(&self) {
         println!("num_records: {}", self.num_records());
@@ -63,42 +53,42 @@ impl SeqSum {
     }
 }
 impl<Rf: Record> ParallelProcessor<Rf> for SeqSum {
-    fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+    fn process_record(&mut self, record: Rf) -> Result<(), Error> {
         self.local_records += 1;
         self.local_bytes += seq_byte_sum(&record);
         Ok(())
     }
-    fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
-        *self.total_records.lock() += self.local_records;
-        *self.total_bytes.lock() += self.local_bytes;
+    fn on_batch_complete(&mut self) -> Result<(), Error> {
+        *self.total_records.lock().unwrap() += self.local_records;
+        *self.total_bytes.lock().unwrap() += self.local_bytes;
         self.local_records = 0;
         self.local_bytes = 0;
         Ok(())
     }
 }
 impl<Rf: Record> PairedParallelProcessor<Rf> for SeqSum {
-    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), ProcessError> {
+    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), Error> {
         self.local_records += 1;
         self.local_bytes += seq_byte_sum(&r1) + seq_byte_sum(&r2);
         Ok(())
     }
-    fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
-        *self.total_records.lock() += self.local_records;
-        *self.total_bytes.lock() += self.local_bytes;
+    fn on_batch_complete(&mut self) -> Result<(), Error> {
+        *self.total_records.lock().unwrap() += self.local_records;
+        *self.total_bytes.lock().unwrap() += self.local_bytes;
         self.local_records = 0;
         self.local_bytes = 0;
         Ok(())
     }
 }
 impl<Rf: Record> MultiParallelProcessor<Rf> for SeqSum {
-    fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), ProcessError> {
+    fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), Error> {
         self.local_records += 1;
         self.local_bytes += records.iter().map(seq_byte_sum).sum::<u64>();
         Ok(())
     }
-    fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
-        *self.total_records.lock() += self.local_records;
-        *self.total_bytes.lock() += self.local_bytes;
+    fn on_batch_complete(&mut self) -> Result<(), Error> {
+        *self.total_records.lock().unwrap() += self.local_records;
+        *self.total_bytes.lock().unwrap() += self.local_bytes;
         self.local_records = 0;
         self.local_bytes = 0;
         Ok(())
@@ -138,7 +128,7 @@ impl Writer {
     }
 
     fn flush_batch(&mut self) -> std::io::Result<()> {
-        let mut writer = self.writer.lock();
+        let mut writer = self.writer.lock().unwrap();
         writer.write_all(&self.local_buf)?;
         writer.flush()?;
         drop(writer);
@@ -147,22 +137,22 @@ impl Writer {
     }
 }
 impl<Rf: Record> ParallelProcessor<Rf> for Writer {
-    fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+    fn process_record(&mut self, record: Rf) -> Result<(), Error> {
         self.write_record(&record)?;
         Ok(())
     }
-    fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+    fn on_batch_complete(&mut self) -> Result<(), Error> {
         self.flush_batch()?;
         Ok(())
     }
 }
 impl<Rf: Record> PairedParallelProcessor<Rf> for Writer {
-    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), ProcessError> {
+    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), Error> {
         self.write_record(&r1)?;
         self.write_record(&r2)?;
         Ok(())
     }
-    fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+    fn on_batch_complete(&mut self) -> Result<(), Error> {
         self.flush_batch()?;
         Ok(())
     }

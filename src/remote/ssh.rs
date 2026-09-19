@@ -1,8 +1,9 @@
 use std::io::{self, Read};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
+
+use super::ProcessReader;
 
 use thiserror::Error;
-use which::which;
 
 #[derive(Error, Debug)]
 pub enum SshError {
@@ -104,53 +105,17 @@ impl SshUrl {
 
 /// Reader that streams file content via SSH cat
 pub struct SshReader {
-    child: Child,
-    stdout: std::process::ChildStdout,
+    inner: ProcessReader,
 }
 
 impl SshReader {
     /// Create a new SSH reader that streams the file via SSH cat
     pub fn new(ssh_url: &str) -> Result<Self, SshError> {
-        // Check if ssh is available
-        which("ssh").map_err(|_| SshError::SshNotFound)?;
-
-        let url = SshUrl::parse(ssh_url)?;
-
-        let mut cmd = Command::new("ssh");
-        cmd.arg("-q") // Quiet mode
-            .arg("-o")
-            .arg("BatchMode=yes") // Non-interactive
-            .arg("-o")
-            .arg("StrictHostKeyChecking=accept-new"); // Accept new host keys
-
-        // Add port if specified
-        if let Some(port) = url.port {
-            cmd.arg("-p").arg(port.to_string());
-        }
-
-        cmd.arg(url.ssh_host())
-            .arg("cat")
-            .arg(&url.path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Spawn SSH command
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| SshError::SshFailed(format!("Failed to spawn SSH: {}", e)))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| SshError::SshFailed("Failed to capture stdout".to_string()))?;
-
-        Ok(SshReader { child, stdout })
+        Self::with_ssh_args(ssh_url, &[])
     }
 
     /// Create SSH reader with custom SSH arguments
     pub fn with_ssh_args(ssh_url: &str, extra_args: &[&str]) -> Result<Self, SshError> {
-        which("ssh").map_err(|_| SshError::SshNotFound)?;
-
         let url = SshUrl::parse(ssh_url)?;
 
         let mut cmd = Command::new("ssh");
@@ -169,35 +134,20 @@ impl SshReader {
             cmd.arg("-p").arg(port.to_string());
         }
 
-        cmd.arg(url.ssh_host())
-            .arg("cat")
-            .arg(&url.path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.arg(url.ssh_host()).arg("cat").arg(&url.path);
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| SshError::SshFailed(format!("Failed to spawn SSH: {}", e)))?;
+        let inner = ProcessReader::spawn(cmd).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => SshError::SshNotFound,
+            _ => SshError::SshFailed(format!("Failed to spawn SSH: {}", e)),
+        })?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| SshError::SshFailed("Failed to capture stdout".to_string()))?;
-
-        Ok(SshReader { child, stdout })
+        Ok(SshReader { inner })
     }
 }
 
 impl Read for SshReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.stdout.read(buf)
-    }
-}
-
-impl Drop for SshReader {
-    fn drop(&mut self) {
-        // Clean up the SSH process
-        let _ = self.child.wait();
+        self.inner.read(buf)
     }
 }
 

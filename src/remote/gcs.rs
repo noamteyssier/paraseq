@@ -1,8 +1,9 @@
 use std::io::{self, Read};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
+
+use super::ProcessReader;
 
 use thiserror::Error;
-use which::which;
 
 #[derive(Error, Debug)]
 pub enum GcsError {
@@ -62,42 +63,14 @@ impl GcsUrl {
 /// - gcloud handles buffering and retries internally
 /// - No per-chunk network overhead
 pub struct GcsReader {
-    child: Child,
-    stdout: std::process::ChildStdout,
+    inner: ProcessReader,
     _url: GcsUrl, // Keep for debugging/logging
 }
 
 impl GcsReader {
     /// Create a new GCS reader that streams the object via gcloud storage cat
     pub fn new(gcs_url: &str) -> Result<Self, GcsError> {
-        // Check if gcloud is available
-        which("gcloud").map_err(|_| GcsError::GcloudNotFound)?;
-
-        let url = GcsUrl::parse(gcs_url)?;
-
-        let mut cmd = Command::new("gcloud");
-        cmd.arg("storage")
-            .arg("cat")
-            .arg(url.gs_path())
-            .arg("--quiet") // Suppress progress/info messages
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Spawn gcloud command
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| GcsError::GcloudFailed(format!("Failed to spawn gcloud: {}", e)))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| GcsError::GcloudFailed("Failed to capture stdout".to_string()))?;
-
-        Ok(GcsReader {
-            child,
-            stdout,
-            _url: url,
-        })
+        Self::with_gcloud_args(gcs_url, &[])
     }
 
     /// Create GCS reader with custom gcloud arguments
@@ -107,8 +80,6 @@ impl GcsReader {
     /// - `--billing-project PROJECT_ID` - for requester pays buckets
     /// - `--impersonate-service-account ACCOUNT` - impersonate service account
     pub fn with_gcloud_args(gcs_url: &str, extra_args: &[&str]) -> Result<Self, GcsError> {
-        which("gcloud").map_err(|_| GcsError::GcloudNotFound)?;
-
         let url = GcsUrl::parse(gcs_url)?;
 
         let mut cmd = Command::new("gcloud");
@@ -119,53 +90,25 @@ impl GcsReader {
             cmd.arg(arg);
         }
 
-        cmd.arg(url.gs_path())
-            .arg("--quiet")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.arg(url.gs_path()).arg("--quiet");
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| GcsError::GcloudFailed(format!("Failed to spawn gcloud: {}", e)))?;
+        let inner = ProcessReader::spawn(cmd).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => GcsError::GcloudNotFound,
+            _ => GcsError::GcloudFailed(format!("Failed to spawn gcloud: {}", e)),
+        })?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| GcsError::GcloudFailed("Failed to capture stdout".to_string()))?;
-
-        Ok(GcsReader {
-            child,
-            stdout,
-            _url: url,
-        })
+        Ok(GcsReader { inner, _url: url })
     }
 
     /// Create GCS reader with specific project (common use case)
     pub fn with_project(gcs_url: &str, project: &str) -> Result<Self, GcsError> {
         Self::with_gcloud_args(gcs_url, &["--project", project])
     }
-
-    /// Create GCS reader for requester pays buckets
-    pub fn with_billing_project(gcs_url: &str, billing_project: &str) -> Result<Self, GcsError> {
-        Self::with_gcloud_args(gcs_url, &["--billing-project", billing_project])
-    }
-
-    /// Create GCS reader with service account impersonation
-    pub fn with_impersonation(gcs_url: &str, service_account: &str) -> Result<Self, GcsError> {
-        Self::with_gcloud_args(gcs_url, &["--impersonate-service-account", service_account])
-    }
 }
 
 impl Read for GcsReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.stdout.read(buf)
-    }
-}
-
-impl Drop for GcsReader {
-    fn drop(&mut self) {
-        // Clean up the gcloud process
-        let _ = self.child.wait();
+        self.inner.read(buf)
     }
 }
 

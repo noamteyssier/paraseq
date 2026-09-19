@@ -15,9 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use clap::Parser;
-use common::input_handle;
 use paraseq::fastx::RefRecord;
-use paraseq::{fastx, prelude::*};
+use paraseq::{prelude::*, ReaderBuilder};
 
 #[derive(Parser)]
 struct Cli {
@@ -55,7 +54,9 @@ fn main() -> Result<()> {
         Ok(())
     };
 
-    let reader = fastx::Reader::new_with_batch_size(input_handle(&args.input)?, args.batch_size)?;
+    let reader = ReaderBuilder::optional_path(args.input)
+        .batch_size(args.batch_size)
+        .build()?;
     reader.process_parallel(&mut processor, args.threads)?;
 
     println!("num_records: {}", num_records.into_inner());

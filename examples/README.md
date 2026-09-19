@@ -1,6 +1,6 @@
 # Examples
 
-Runnable demonstrations of `paraseq`'s API. Every example takes a positional
+Runnable demonstrations of `paraseq`'s API. Every example builds its reader with `ReaderBuilder` and is generic over FASTA/FASTQ (auto-detected) unless noted. Every example takes a positional
 input path (reading stdin if omitted, where supported) and a consistent set
 of flags across the ones that share a concept:
 
@@ -17,9 +17,7 @@ example itself.
 
 | Example | Demonstrates |
 |---|---|
-| [`naive.rs`](naive.rs) | Sequential (single-threaded) record counting with the format-specific `fasta`/`fastq` readers and the auto-detecting `fastx` reader. |
-| [`multiline_fasta.rs`](multiline_fasta.rs) | Multiline FASTA parsing — `Record::seq()` transparently concatenates sequences split across lines. |
-| [`reloading.rs`](reloading.rs) | Peeking at the first few records via `Reader::reload`, then re-reading the whole file from the start. |
+| [`naive.rs`](naive.rs) | Sequential (single-threaded) record counting with the auto-detecting `fastx` reader. |
 
 ## Parallel Processing
 
@@ -45,8 +43,7 @@ example itself.
 
 | Example | Demonstrates |
 |---|---|
-| [`fastx.rs`](fastx.rs) | FASTA/FASTQ conversion via `fastx::Reader::new`, constructed directly from a `Read` handle. |
-| [`read_write.rs`](read_write.rs) | The same conversion via `fastx::Reader::from_optional_path`, with transparent `.gz`/`.zst` decompression. |
+| [`read_write.rs`](read_write.rs) | FASTA/FASTQ conversion via `ReaderBuilder::optional_path`, with transparent `.gz`/`.zst` decompression. |
 | [`htslib.rs`](htslib.rs) | Converting SAM/BAM/CRAM to FASTA/FASTQ, single-end or paired (requires the `htslib` feature). |
 
 ## Remote Sources

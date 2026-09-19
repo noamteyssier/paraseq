@@ -30,6 +30,7 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 - Parallel processing of single-end, paired-end, interleaved, and multi-FASTX files with a consistent API.
 - Simple construction of readers from file paths and handles with optional transparent decompression support with [niffler](https://github.com/luizirber/niffler).
 - Generalized Map-Reduce pattern for processing sequencing data (single-end, paired-end, and interleaved)
+- A resizable `ThreadPool` and `PoolParallelReader` API for a worker count that can change while a run is in flight; the fixed-thread APIs are a `ThreadPool` whose target never moves.
 
 ### Optional Features (Feature Flags)
 
@@ -37,7 +38,6 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 - Supports URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag)
 - Supports SSH paths as inputs respecting system configuration (with `ssh` feature flag)
 - Supports Google Cloud Storage (GCS) URIs (with `gcs` feature flag). _requires [`gcloud`](https://cloud.google.com/sdk/docs/install) to be installed and authenticated_
-- Enables the experimental resizable `ThreadPool` and `PoolParallelReader` APIs (with the non-default `pool` feature flag). The existing fixed-thread APIs are unchanged when this feature is enabled.
 
 ## Usage
 
@@ -57,11 +57,11 @@ It is not recommended to use `paraseq` in this way - it will be more performant 
 
 ```rust
 use std::fs::File;
-use paraseq::{fastq, Record};
+use paraseq::{ReaderBuilder, Record};
 
 fn main() -> Result<(), paraseq::Error> {
     let path = "./data/sample.fastq";
-    let mut reader = fastq::Reader::from_path(path)?;
+    let mut reader = ReaderBuilder::path(path).build_fastq()?;
     let mut record_set = reader.new_record_set();
 
     while record_set.fill(&mut reader)? {
@@ -84,7 +84,7 @@ For an example of a single-end parallel processor see the [parallel example](htt
 
 ```rust
 use std::fs::File;
-use paraseq::{fastx, ProcessError};
+use paraseq::{Error, ReaderBuilder};
 use paraseq::prelude::*;
 
 #[derive(Clone, Default)]
@@ -93,15 +93,15 @@ struct MyProcessor {
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for MyProcessor {
-    fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+    fn process_record(&mut self, record: Rf) -> Result<(), Error> {
         // Process record in parallel
         Ok(())
     }
 }
 
-fn main() -> Result<(), ProcessError> {
+fn main() -> Result<(), Error> {
     let path = "./data/sample.fastq";
-    let reader = fastx::Reader::from_path(path)?;
+    let reader = ReaderBuilder::path(path).build()?;
     let mut processor = MyProcessor::default();
     let num_threads = 8;
 
@@ -120,8 +120,8 @@ For an example of paired parallel processing see the [paired example](https://gi
 ```rust
 use std::fs::File;
 use paraseq::{
-    fastx,
-    ProcessError,
+    Error,
+    ReaderBuilder,
     prelude::*,
 };
 
@@ -131,18 +131,18 @@ struct MyPairedProcessor {
 }
 
 impl<Rf: Record> PairedParallelProcessor<Rf> for MyPairedProcessor {
-    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), ProcessError> {
+    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), Error> {
         // Process paired records in parallel
         Ok(())
     }
 }
 
-fn main() -> Result<(), ProcessError> {
+fn main() -> Result<(), Error> {
     let path1 = "./data/r1.fastq";
     let path2 = "./data/r2.fastq";
 
-    let reader1 = fastx::Reader::from_path(path1)?;
-    let reader2 = fastx::Reader::from_path(path2)?;
+    let reader1 = ReaderBuilder::path(path1).build()?;
+    let reader2 = ReaderBuilder::path(path2).build()?;
     let mut processor = MyPairedProcessor::default();
     let num_threads = 8;
 
@@ -160,8 +160,8 @@ For an example of interleaved parallel processing see the [interleaved example](
 ```rust
 use std::fs::File;
 use paraseq::{
-    fastx,
-    ProcessError,
+    Error,
+    ReaderBuilder,
     prelude::*,
 };
 
@@ -171,15 +171,15 @@ struct MyInterleavedProcessor {
 }
 
 impl<Rf: Record> PairedParallelProcessor<Rf> for MyInterleavedProcessor {
-    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), ProcessError> {
+    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), Error> {
         // Process interleaved paired records in parallel
         Ok(())
     }
 }
 
-fn main() -> Result<(), ProcessError> {
+fn main() -> Result<(), Error> {
     let path = "./data/interleaved.fastq";
-    let reader = fastx::Reader::from_path(path)?;
+    let reader = ReaderBuilder::path(path).build()?;
     let mut processor = MyInterleavedProcessor::default();
     let num_threads = 8;
 

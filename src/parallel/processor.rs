@@ -2,7 +2,7 @@ use smallvec::SmallVec;
 
 use crate::{Record, MAX_ARITY};
 
-use super::error::Result;
+use crate::Result;
 
 /// Trait implemented for a type that processes records in parallel
 pub trait GenericProcessor<Rf>: Send + Clone {

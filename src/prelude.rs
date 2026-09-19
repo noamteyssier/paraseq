@@ -1,10 +1,7 @@
 pub use crate::{
     parallel::{
-        IntoProcessError, MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
-        ParallelReader,
+        MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor, ParallelReader,
+        PoolParallelReader, ThreadPool,
     },
-    Record,
+    IntoParaseqError, Record,
 };
-
-#[cfg(feature = "pool")]
-pub use crate::parallel::{PoolParallelReader, ThreadPool};

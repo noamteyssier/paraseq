@@ -11,7 +11,7 @@ mod common;
 use anyhow::Result;
 use clap::Parser;
 use common::SeqSum;
-use paraseq::{fastx, prelude::*, MAX_ARITY};
+use paraseq::{prelude::*, ReaderBuilder, MAX_ARITY};
 
 #[derive(Parser)]
 struct Cli {
@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     let mut readers = args
         .inputs
         .iter()
-        .map(fastx::Reader::from_path)
+        .map(|p| ReaderBuilder::path(p).build())
         .collect::<Result<Vec<_>, _>>()?;
     let first = readers.remove(0);
     let mut processor = SeqSum::default();

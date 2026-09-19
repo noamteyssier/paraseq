@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 
+mod base;
 mod buffer;
+#[cfg(feature = "niffler")]
+mod builder;
 mod error;
 pub mod fasta;
 pub mod fastq;
@@ -18,14 +21,12 @@ pub mod htslib;
 #[cfg(feature = "htslib")]
 pub extern crate rust_htslib;
 
-#[cfg(feature = "ssh")]
-pub mod ssh;
+#[cfg(any(feature = "ssh", feature = "gcs"))]
+pub mod remote;
 
-#[cfg(feature = "gcs")]
-pub mod gcs;
-
-pub use error::Error;
-pub use parallel::{ProcessError, Result};
+#[cfg(feature = "niffler")]
+pub use builder::ReaderBuilder;
+pub use error::{Error, IntoParaseqError, Result};
 pub use record::Record;
 
 /// Default maximum number of records in a record set.

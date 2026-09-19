@@ -6,11 +6,9 @@ use log::warn;
 
 use crate::parallel::multi::{InterleavedMultiReader, MultiReader};
 use crate::parallel::paired::{InterleavedPairedReader, PairedReader};
-#[cfg(feature = "pool")]
 use crate::parallel::pool::process_parallel_pool_range;
 use crate::parallel::reader::{range_to_offset_limit, SingleReader};
 use crate::parallel::single::{process_parallel_generic, process_parallel_generic_range};
-use crate::ProcessError;
 use crate::{fasta, fastq, Error, Record};
 
 #[cfg(feature = "niffler")]
@@ -50,17 +48,17 @@ impl<R: io::Read> Collection<R> {
 
     fn validate_arity(&self) -> crate::Result<()> {
         if self.inner.is_empty() {
-            return Err(ProcessError::CollectionSizeMismatch { arity: 1, found: 0 });
+            return Err(Error::CollectionSizeMismatch { arity: 1, found: 0 });
         }
         match self.collection_type {
             CollectionType::Paired if !self.inner.len().is_multiple_of(2) => {
-                return Err(ProcessError::CollectionSizeMismatch {
+                return Err(Error::CollectionSizeMismatch {
                     arity: 2,
                     found: self.inner.len(),
                 });
             }
             CollectionType::Multi { arity } if !self.inner.len().is_multiple_of(arity) => {
-                return Err(ProcessError::CollectionSizeMismatch {
+                return Err(Error::CollectionSizeMismatch {
                     arity,
                     found: self.inner.len(),
                 });
@@ -124,284 +122,100 @@ impl Collection<BoxedReader> {
     ) -> crate::Result<Self> {
         let mut inner = Vec::new();
         for path in paths {
-            inner.push(Reader::from_path(path)?);
+            inner.push(crate::ReaderBuilder::path(path).build()?);
         }
         Self::new(inner, collection_type)
     }
 }
 
-impl<R: io::Read + Send> Collection<R> {
-    // Generic handler for single-reader pattern
-    fn handle_single_readers<T, F>(
-        mut self,
-        processor: &mut T,
-        total_threads: usize,
-        threads_per_reader: Option<usize>,
-        scope_fn: F,
-    ) -> crate::Result<()>
-    where
-        T: Clone + Send,
-        F: Fn(Reader<R>, &mut T, usize) -> crate::Result<()> + Send + Sync,
-    {
-        let total_readers = self.inner.len();
+/// How a [`Collection`] run allocates threads: a fixed count (`usize`, 0 means
+/// all cores) or a share of a resizable [`crate::parallel::ThreadPool`].
+trait ThreadBudget {
+    /// What each concurrently running chunk of readers is handed.
+    type Handle: Send;
+    /// Total threads available across the run.
+    fn total(&self) -> usize;
+    /// Handle for one of `ways` chunks running at once, each given `per_chunk` threads.
+    fn handle(&self, per_chunk: usize, ways: usize) -> Self::Handle;
+}
 
-        // Determine the maximum number of threads available (or provided)
-        let total_threads = match total_threads {
+impl ThreadBudget for usize {
+    type Handle = usize;
+    fn total(&self) -> usize {
+        match *self {
             0 => num_cpus::get(),
-            _ => num_cpus::get().min(total_threads),
-        };
-
-        // Calculate the number of threads per reader
-        let threads_per_reader = match threads_per_reader {
-            Some(num) => num.min(total_threads),
-            None => (total_threads / total_readers).max(1),
-        };
-
-        // Find the batch size (i.e. number of readers per batch)
-        let batch_size = total_threads / threads_per_reader;
-
-        // Calculate the number of batches
-        let num_batches = total_readers.div_ceil(batch_size);
-
-        // eprintln!(
-        //     "Processing {} readers; {} threads per reader; {} readers per batch; {} batches",
-        //     total_readers, threads_per_reader, batch_size, num_batches
-        // );
-
-        thread::scope(|scope| -> crate::Result<()> {
-            let scope_fn = &scope_fn;
-
-            for _batch_idx in 0..num_batches {
-                // Pull the readers for the batch
-                let mut batch = Vec::new();
-                let rbound = batch_size.min(self.inner.len());
-                batch.extend(self.inner.drain(..rbound));
-
-                // create threads for all readers in this batch
-                let mut subhandles = Vec::new();
-                for reader in batch {
-                    let mut thread_proc = processor.clone();
-                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
-                        scope_fn(reader, &mut thread_proc, threads_per_reader)?;
-                        Ok(())
-                    }));
-                }
-
-                // join all threads in this batch
-                // eprintln!(
-                //     "Joining threads in batch {_batch_idx}; # readers: {}",
-                //     rbound,
-                // );
-                for handle in subhandles {
-                    handle
-                        .join()
-                        .map_err(|_| crate::ProcessError::JoinError)??;
-                }
-            }
-
-            Ok(())
-        })
+            n => num_cpus::get().min(n),
+        }
     }
+    fn handle(&self, per_chunk: usize, _ways: usize) -> usize {
+        per_chunk
+    }
+}
 
-    /// As [`Self::handle_single_readers`], but every reader running at the same
-    /// time gets a share of one resizable pool.
-    ///
-    /// Readers within a batch run concurrently, so the pool is split
-    /// `batch_size` ways: the target the caller sets stays a *total* across the
-    /// run rather than a per-reader figure, matching what `total_threads` means
-    /// on the fixed path.
-    #[cfg(feature = "pool")]
-    fn handle_single_readers_pool<T, F>(
+/// The pool's target is split across the chunks running concurrently, so it
+/// stays a *total* across the run rather than a per-reader figure, matching what
+/// `total_threads` means on the fixed path.
+impl ThreadBudget for &crate::parallel::ThreadPool {
+    type Handle = crate::parallel::ThreadPool;
+    fn total(&self) -> usize {
+        num_cpus::get().min(self.threads().max(1))
+    }
+    fn handle(&self, _per_chunk: usize, ways: usize) -> Self::Handle {
+        self.share(ways)
+    }
+}
+
+impl<R: io::Read + Send> Collection<R> {
+    /// Run `scope_fn` over the collection in chunks of `chunk_size` readers (1
+    /// for single, the arity for grouped), batching as many chunks concurrently
+    /// as `budget` allows and joining each batch before starting the next.
+    fn handle_readers<B, T, F>(
         mut self,
         processor: &mut T,
-        pool: &crate::parallel::ThreadPool,
-        threads_per_reader: Option<usize>,
+        budget: B,
+        threads_per_chunk: Option<usize>,
+        chunk_size: usize,
         scope_fn: F,
     ) -> crate::Result<()>
     where
+        B: ThreadBudget,
         T: Clone + Send,
-        F: Fn(Reader<R>, &mut T, &crate::parallel::ThreadPool) -> crate::Result<()> + Send + Sync,
+        F: Fn(Vec<Reader<R>>, &mut T, B::Handle) -> crate::Result<()> + Send + Sync,
     {
-        let total_readers = self.inner.len().max(1);
-        let total_threads = num_cpus::get().min(pool.threads().max(1));
-        let threads_per_reader = match threads_per_reader {
+        let total_chunks = (self.inner.len() / chunk_size).max(1);
+        let total_threads = budget.total();
+        let threads_per_chunk = match threads_per_chunk {
             Some(num) => num.min(total_threads).max(1),
-            None => (total_threads / total_readers).max(1),
+            None if total_threads >= chunk_size => (total_threads / total_chunks).max(chunk_size),
+            None => (total_threads / total_chunks).max(1),
         };
-        let batch_size = (total_threads / threads_per_reader).max(1);
-        let num_batches = total_readers.div_ceil(batch_size);
+        let batch_size = (total_threads / threads_per_chunk).max(1);
+        let num_batches = total_chunks.div_ceil(batch_size);
 
         thread::scope(|scope| -> crate::Result<()> {
             let scope_fn = &scope_fn;
 
-            for _batch_idx in 0..num_batches {
-                let mut batch = Vec::new();
-                let rbound = batch_size.min(self.inner.len());
-                batch.extend(self.inner.drain(..rbound));
-                // Split across the readers actually in this batch, not the
+            for batch_idx in 0..num_batches {
+                let chunks_in_batch =
+                    batch_size.min(total_chunks.saturating_sub(batch_idx * batch_size));
+                let batch: Vec<Vec<_>> = (0..chunks_in_batch)
+                    .map(|_| self.inner.drain(..chunk_size).collect())
+                    .collect();
+                // Split across the chunks actually in this batch, not the
                 // nominal batch size, or the last short batch would under-use
                 // the pool.
                 let ways = batch.len().max(1);
 
                 let mut subhandles = Vec::new();
-                for reader in batch {
+                for chunk in batch {
                     let mut thread_proc = processor.clone();
-                    let share = pool.share(ways);
-                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
-                        scope_fn(reader, &mut thread_proc, &share)?;
-                        Ok(())
-                    }));
+                    let handle = budget.handle(threads_per_chunk, ways);
+                    subhandles.push(scope.spawn(move || scope_fn(chunk, &mut thread_proc, handle)));
                 }
                 for handle in subhandles {
-                    handle
-                        .join()
-                        .map_err(|_| crate::ProcessError::JoinError)??;
+                    handle.join().map_err(|_| crate::Error::JoinError)??;
                 }
             }
-            Ok(())
-        })
-    }
-
-    /// As [`Self::handle_grouped_readers`], but every group running at the same
-    /// time gets a share of one resizable pool.
-    #[cfg(feature = "pool")]
-    fn handle_grouped_readers_pool<T, F>(
-        mut self,
-        processor: &mut T,
-        pool: &crate::parallel::ThreadPool,
-        threads_per_group: Option<usize>,
-        arity: usize,
-        scope_fn: F,
-    ) -> crate::Result<()>
-    where
-        T: Clone + Send,
-        F: Fn(Vec<Reader<R>>, &mut T, &crate::parallel::ThreadPool) -> crate::Result<()>
-            + Send
-            + Sync,
-    {
-        let total_groups = (self.inner.len() / arity).max(1);
-        let total_threads = num_cpus::get().min(pool.threads().max(1));
-        let threads_per_group = match threads_per_group {
-            Some(num) => num.min(total_threads).max(1),
-            None => {
-                if total_threads >= arity {
-                    (total_threads / total_groups).max(arity)
-                } else {
-                    (total_threads / total_groups).max(1)
-                }
-            }
-        };
-        let batch_size = (total_threads / threads_per_group).max(1);
-        let num_batches = total_groups.div_ceil(batch_size);
-
-        thread::scope(|scope| -> crate::Result<()> {
-            let scope_fn = &scope_fn;
-
-            for _batch_idx in 0..num_batches {
-                let mut batch = Vec::new();
-                let groups_in_batch =
-                    batch_size.min(total_groups.saturating_sub(_batch_idx * batch_size));
-                for _ in 0..groups_in_batch {
-                    let group: Vec<_> = self.inner.drain(..arity).collect();
-                    batch.push(group);
-                }
-                let ways = batch.len().max(1);
-
-                let mut subhandles = Vec::new();
-                for group in batch {
-                    let mut thread_proc = processor.clone();
-                    let share = pool.share(ways);
-                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
-                        scope_fn(group, &mut thread_proc, &share)?;
-                        Ok(())
-                    }));
-                }
-                for handle in subhandles {
-                    handle
-                        .join()
-                        .map_err(|_| crate::ProcessError::JoinError)??;
-                }
-            }
-            Ok(())
-        })
-    }
-
-    /// Generic handler for arity-based (grouped readers) pattern
-    fn handle_grouped_readers<T, F>(
-        mut self,
-        processor: &mut T,
-        total_threads: usize,
-        threads_per_group: Option<usize>,
-        arity: usize,
-        scope_fn: F,
-    ) -> crate::Result<()>
-    where
-        T: Clone + Send,
-        F: Fn(Vec<Reader<R>>, &mut T, usize) -> crate::Result<()> + Send + Sync,
-    {
-        let total_groups = self.inner.len() / arity;
-
-        // Determine the maximum number of threads available (or provided)
-        let total_threads = match total_threads {
-            0 => num_cpus::get(),
-            _ => num_cpus::get().min(total_threads),
-        };
-
-        // Calculate the number of threads per group
-        let threads_per_group = match threads_per_group {
-            Some(num) => num.min(total_threads),
-            None => {
-                if total_threads >= arity {
-                    (total_threads / total_groups).max(arity)
-                } else {
-                    (total_threads / total_groups).max(1)
-                }
-            }
-        };
-
-        // Find the batch size (i.e. number of groups per batch)
-        let batch_size = total_threads / threads_per_group;
-
-        // Calculate the number of batches
-        let num_batches = total_groups.div_ceil(batch_size);
-
-        // eprintln!("Total groups: {}, Total threads: {}, Threads per group: {}, Batch size: {}, Number of batches: {}", total_groups, total_threads, threads_per_group, batch_size, num_batches);
-
-        thread::scope(|scope| -> crate::Result<()> {
-            let scope_fn = &scope_fn;
-
-            for _batch_idx in 0..num_batches {
-                // Pull the groups for the batch
-                let mut batch = Vec::new();
-                let groups_in_batch = batch_size.min(total_groups - (_batch_idx * batch_size));
-
-                for _ in 0..groups_in_batch {
-                    let group: Vec<_> = self.inner.drain(..arity).collect();
-                    batch.push(group);
-                }
-
-                // Create threads for all groups in this batch
-                let mut subhandles = Vec::new();
-                for group in batch {
-                    let mut thread_proc = processor.clone();
-                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
-                        scope_fn(group, &mut thread_proc, threads_per_group)?;
-                        Ok(())
-                    }));
-                }
-
-                // Join all threads in this batch
-                // eprintln!(
-                //     "Joining batch {}; number of groups: {}",
-                //     _batch_idx, groups_in_batch
-                // );
-                for handle in subhandles {
-                    handle
-                        .join()
-                        .map_err(|_| crate::ProcessError::JoinError)??;
-                }
-            }
-
             Ok(())
         })
     }
@@ -508,11 +322,13 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Single);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            |reader, proc, threads| {
+            1,
+            |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic(SingleReader::new(reader), proc, threads)
             },
         )
@@ -531,11 +347,13 @@ impl<R: io::Read + Send> Collection<R> {
     {
         self.warn_if_mismatch(CollectionType::Single);
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            |reader, proc, threads| {
+            1,
+            |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic_range(
                     SingleReader::new(reader),
                     proc,
@@ -557,7 +375,7 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Paired);
-        self.handle_grouped_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
@@ -583,7 +401,7 @@ impl<R: io::Read + Send> Collection<R> {
     {
         self.warn_if_mismatch(CollectionType::Paired);
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_grouped_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
@@ -612,11 +430,13 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Interleaved);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            |reader, proc, threads| {
+            1,
+            |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic(InterleavedPairedReader::new(reader), proc, threads)
             },
         )
@@ -635,11 +455,13 @@ impl<R: io::Read + Send> Collection<R> {
     {
         self.warn_if_mismatch(CollectionType::Interleaved);
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            |reader, proc, threads| {
+            1,
+            |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic_range(
                     InterleavedPairedReader::new(reader),
                     proc,
@@ -662,7 +484,7 @@ impl<R: io::Read + Send> Collection<R> {
         Self: Sized,
     {
         let arity = self.get_arity_for_multi();
-        self.handle_grouped_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
@@ -687,7 +509,7 @@ impl<R: io::Read + Send> Collection<R> {
     {
         let arity = self.get_arity_for_multi();
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_grouped_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
@@ -714,11 +536,13 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
     {
         let arity = self.get_arity_for_interleaved_multi();
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            move |reader, proc, threads| {
+            1,
+            move |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic(InterleavedMultiReader::new(reader, arity), proc, threads)
             },
         )
@@ -737,11 +561,13 @@ impl<R: io::Read + Send> Collection<R> {
     {
         let arity = self.get_arity_for_interleaved_multi();
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            move |reader, proc, threads| {
+            1,
+            move |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic_range(
                     InterleavedMultiReader::new(reader, arity),
                     proc,
@@ -758,7 +584,6 @@ impl<R: io::Read + Send> Collection<R> {
     ///
     /// The pool's target is a total across every reader running concurrently,
     /// not a per-reader count.
-    #[cfg(feature = "pool")]
     pub fn process_parallel_pool<T>(
         self,
         processor: &mut T,
@@ -769,18 +594,19 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Single);
-        self.handle_single_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
-            |reader, proc, share| {
-                process_parallel_pool_range(SingleReader::new(reader), proc, share, 0, None)
+            1,
+            |mut readers, proc, share| {
+                let reader = readers.remove(0);
+                process_parallel_pool_range(SingleReader::new(reader), proc, &share, 0, None)
             },
         )
     }
 
     /// As [`Self::process_parallel_paired`], with a resizable worker count.
-    #[cfg(feature = "pool")]
     pub fn process_parallel_paired_pool<T>(
         self,
         processor: &mut T,
@@ -791,7 +617,7 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Paired);
-        self.handle_grouped_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
@@ -799,13 +625,12 @@ impl<R: io::Read + Send> Collection<R> {
             |mut readers, proc, share| {
                 let r1 = readers.remove(0);
                 let r2 = readers.remove(0);
-                process_parallel_pool_range(PairedReader::new(r1, r2), proc, share, 0, None)
+                process_parallel_pool_range(PairedReader::new(r1, r2), proc, &share, 0, None)
             },
         )
     }
 
     /// As [`Self::process_parallel_interleaved`], with a resizable worker count.
-    #[cfg(feature = "pool")]
     pub fn process_parallel_interleaved_pool<T>(
         self,
         processor: &mut T,
@@ -816,15 +641,17 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Interleaved);
-        self.handle_single_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
-            |reader, proc, share| {
+            1,
+            |mut readers, proc, share| {
+                let reader = readers.remove(0);
                 process_parallel_pool_range(
                     InterleavedPairedReader::new(reader),
                     proc,
-                    share,
+                    &share,
                     0,
                     None,
                 )
@@ -833,7 +660,6 @@ impl<R: io::Read + Send> Collection<R> {
     }
 
     /// As [`Self::process_parallel_multi`], with a resizable worker count.
-    #[cfg(feature = "pool")]
     pub fn process_parallel_multi_pool<T>(
         self,
         processor: &mut T,
@@ -845,20 +671,19 @@ impl<R: io::Read + Send> Collection<R> {
         Self: Sized,
     {
         let arity = self.get_arity_for_multi();
-        self.handle_grouped_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
             arity,
             |readers, proc, share| {
-                process_parallel_pool_range(MultiReader::new(readers), proc, share, 0, None)
+                process_parallel_pool_range(MultiReader::new(readers), proc, &share, 0, None)
             },
         )
     }
 
     /// As [`Self::process_parallel_multi_interleaved`], with a resizable worker
     /// count.
-    #[cfg(feature = "pool")]
     pub fn process_parallel_multi_interleaved_pool<T>(
         self,
         processor: &mut T,
@@ -870,15 +695,17 @@ impl<R: io::Read + Send> Collection<R> {
         Self: Sized,
     {
         let arity = self.get_arity_for_interleaved_multi();
-        self.handle_single_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
-            move |reader, proc, share| {
+            1,
+            move |mut readers, proc, share| {
+                let reader = readers.remove(0);
                 process_parallel_pool_range(
                     InterleavedMultiReader::new(reader, arity),
                     proc,
-                    share,
+                    &share,
                     0,
                     None,
                 )
@@ -890,132 +717,6 @@ impl<R: io::Read + Send> Collection<R> {
 pub enum Reader<R: io::Read> {
     Fasta(fasta::Reader<R>),
     Fastq(fastq::Reader<R>),
-}
-
-#[cfg(feature = "niffler")]
-impl Reader<BoxedReader> {
-    pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::from_path(path)?;
-        Self::new(reader)
-    }
-
-    pub fn from_stdin() -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
-        Self::new(reader)
-    }
-
-    pub fn from_optional_path<P: AsRef<std::path::Path>>(path: Option<P>) -> Result<Self, Error> {
-        match path {
-            Some(path) => Self::from_path(path),
-            None => Self::from_stdin(),
-        }
-    }
-
-    pub fn from_path_with_batch_size<P: AsRef<std::path::Path>>(
-        path: P,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::from_path(path)?;
-        Self::new_with_batch_size(reader, batch_size)
-    }
-
-    pub fn from_stdin_with_batch_size(batch_size: usize) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
-        Self::new_with_batch_size(reader, batch_size)
-    }
-
-    pub fn from_optional_path_with_batch_size<P: AsRef<std::path::Path>>(
-        path: Option<P>,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        match path {
-            Some(path) => Self::from_path_with_batch_size(path, batch_size),
-            None => Self::from_stdin_with_batch_size(batch_size),
-        }
-    }
-}
-
-#[cfg(feature = "url")]
-impl Reader<BoxedReader> {
-    pub fn from_url(url: &str) -> Result<Self, Error> {
-        let stream = reqwest::blocking::get(url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
-        Self::new(reader)
-    }
-
-    pub fn from_url_with_batch_size(url: &str, batch_size: usize) -> Result<Self, Error> {
-        let stream = reqwest::blocking::get(url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
-        Self::new_with_batch_size(reader, batch_size)
-    }
-}
-
-#[cfg(feature = "ssh")]
-impl Reader<BoxedReader> {
-    pub fn from_ssh(ssh_url: &str) -> Result<Self, Error> {
-        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
-        Self::new(reader)
-    }
-
-    pub fn from_ssh_with_batch_size(ssh_url: &str, batch_size: usize) -> Result<Self, Error> {
-        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
-        Self::new_with_batch_size(reader, batch_size)
-    }
-}
-
-#[cfg(feature = "gcs")]
-impl Reader<BoxedReader> {
-    /// Create a GCS reader using Application Default Credentials
-    pub fn from_gcs(gcs_url: &str) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new(reader)
-    }
-
-    /// Create a GCS reader using custom gcloud arguments
-    pub fn from_gcs_with_gcloud_args(gcs_url: &str, args: &[&str]) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, args)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new(reader)
-    }
-
-    /// Create a GCS reader using a specific project ID
-    pub fn from_gcs_with_project(gcs_url: &str, project_id: &str) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new(reader)
-    }
-
-    /// Create a GCS reader with custom batch size using Application Default Credentials
-    pub fn from_gcs_with_batch_size(gcs_url: &str, batch_size: usize) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new_with_batch_size(reader, batch_size)
-    }
-
-    /// Create a GCS reader with custom batch size using custom gcloud arguments
-    pub fn from_gcs_with_gcloud_args_and_batch_size(
-        gcs_url: &str,
-        gcloud_args: &[&str],
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, gcloud_args)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new_with_batch_size(reader, batch_size)
-    }
-
-    /// Create a GCS reader with custom batch size using a specific project ID
-    pub fn from_gcs_with_project_and_batch_size(
-        gcs_url: &str,
-        project_id: &str,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::new_with_batch_size(reader, batch_size)
-    }
 }
 
 impl<R: io::Read> Reader<R> {
@@ -1037,21 +738,17 @@ impl<R: io::Read> Reader<R> {
         }
     }
 
-    pub fn new_with_batch_size(mut reader: R, batch_size: usize) -> Result<Self, Error> {
-        let mut buffer = [0; 1];
-        reader.read_exact(&mut buffer)?;
-        match buffer {
-            [b'@'] => {
-                let mut rdr = fastq::Reader::with_batch_size(reader, batch_size)?;
-                rdr.add_to_overflow(&buffer);
-                Ok(Self::Fastq(rdr))
-            }
-            [b'>'] => {
-                let mut rdr = fasta::Reader::with_batch_size(reader, batch_size)?;
-                rdr.add_to_overflow(&buffer);
-                Ok(Self::Fasta(rdr))
-            }
-            _ => Err(Error::InvalidStartCharacter(buffer[0].into())),
+    pub fn new_with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
+        let mut reader = Self::new(reader)?;
+        reader.set_batch_size(batch_size)?;
+        Ok(reader)
+    }
+
+    /// Sets the maximum number of records per batch for parallel processing.
+    pub fn set_batch_size(&mut self, batch_size: usize) -> Result<(), Error> {
+        match self {
+            Self::Fasta(inner) => inner.set_batch_size(batch_size),
+            Self::Fastq(inner) => inner.set_batch_size(batch_size),
         }
     }
 
@@ -1264,8 +961,7 @@ where
 mod testing {
 
     use crate::prelude::{ParallelProcessor, ParallelReader};
-    use parking_lot::Mutex;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
@@ -1279,16 +975,16 @@ mod testing {
     }
     impl Processor {
         pub fn n_records(&self) -> usize {
-            *self.global_count.lock()
+            *self.global_count.lock().unwrap()
         }
     }
     impl<Rf: crate::Record> ParallelProcessor<Rf> for Processor {
-        fn process_record(&mut self, _record: Rf) -> crate::parallel::Result<()> {
+        fn process_record(&mut self, _record: Rf) -> crate::Result<()> {
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            *self.global_count.lock() += self.local_count;
+        fn on_batch_complete(&mut self) -> crate::Result<()> {
+            *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
         }
@@ -1301,7 +997,7 @@ mod testing {
             for compression_ext in COMPRESSION_EXTENSIONS {
                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
                 dbg!(&path);
-                let reader = Reader::from_path(path).unwrap();
+                let reader = crate::ReaderBuilder::path(path).build().unwrap();
                 let mut proc = Processor::default();
                 reader.process_parallel(&mut proc, 1).unwrap();
                 assert_eq!(proc.n_records(), 100);
@@ -1316,7 +1012,8 @@ mod testing {
             for compression_ext in COMPRESSION_EXTENSIONS {
                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
                 dbg!(&path);
-                let reader = Reader::from_path_with_batch_size(path, 10).unwrap();
+                let mut reader = crate::ReaderBuilder::path(path).build().unwrap();
+                reader.set_batch_size(10).unwrap();
                 let mut proc = Processor::default();
                 reader.process_parallel(&mut proc, 1).unwrap();
                 assert_eq!(proc.n_records(), 100);
@@ -1327,7 +1024,7 @@ mod testing {
     #[test]
     fn test_fastx_reload() {
         let path = "./data/sample.fastq";
-        let mut reader = Reader::from_path(path).unwrap();
+        let mut reader = crate::ReaderBuilder::path(path).build().unwrap();
         let mut rset = reader.new_record_set_with_size(7);
 
         assert!(rset.fill(&mut reader).unwrap());
@@ -1354,15 +1051,18 @@ mod testing {
         Fastq,
     }
     impl<Rf: crate::Record> ParallelProcessor<Rf> for WriteProcessor {
-        fn process_record(&mut self, record: Rf) -> crate::parallel::Result<()> {
+        fn process_record(&mut self, record: Rf) -> crate::Result<()> {
             match self.out_format {
                 FormatKind::Fasta => record.write_fasta(&mut self.local_buf)?,
                 FormatKind::Fastq => record.write_fastq(&mut self.local_buf)?,
             }
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            self.global_buf.lock().extend_from_slice(&self.local_buf);
+        fn on_batch_complete(&mut self) -> crate::Result<()> {
+            self.global_buf
+                .lock()
+                .unwrap()
+                .extend_from_slice(&self.local_buf);
             self.local_buf.clear();
             Ok(())
         }
@@ -1377,13 +1077,13 @@ mod testing {
                     let path = format!("{}{}{}", basename, format_ext, compression_ext);
                     dbg!(&path, out_format as u8);
 
-                    let reader = Reader::from_path(&path).unwrap();
+                    let reader = crate::ReaderBuilder::path(&path).build().unwrap();
                     let mut writer = WriteProcessor {
                         out_format,
                         ..Default::default()
                     };
                     reader.process_parallel(&mut writer, 1).unwrap();
-                    let written = writer.global_buf.lock().clone();
+                    let written = writer.global_buf.lock().unwrap().clone();
 
                     let reparsed = Reader::new(std::io::Cursor::new(written)).unwrap();
                     let mut proc = Processor::default();
@@ -1401,27 +1101,27 @@ mod testing {
     }
     impl PairProcessor {
         fn n_pairs(&self) -> usize {
-            *self.global_count.lock()
+            *self.global_count.lock().unwrap()
         }
     }
     impl<Rf: crate::Record> crate::prelude::PairedParallelProcessor<Rf> for PairProcessor {
-        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> crate::parallel::Result<()> {
+        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> crate::Result<()> {
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            *self.global_count.lock() += self.local_count;
+        fn on_batch_complete(&mut self) -> crate::Result<()> {
+            *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
         }
     }
     impl<Rf: crate::Record> crate::prelude::MultiParallelProcessor<Rf> for PairProcessor {
-        fn process_multi_record(&mut self, _records: &[Rf]) -> crate::parallel::Result<()> {
+        fn process_multi_record(&mut self, _records: &[Rf]) -> crate::Result<()> {
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            *self.global_count.lock() += self.local_count;
+        fn on_batch_complete(&mut self) -> crate::Result<()> {
+            *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
         }
@@ -1557,32 +1257,44 @@ mod testing {
 
     #[test]
     fn test_format() {
-        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        let fasta_reader = crate::ReaderBuilder::path("./data/sample.fasta")
+            .build()
+            .unwrap();
         assert_eq!(fasta_reader.format(), Format::Fasta);
 
-        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let fastq_reader = crate::ReaderBuilder::path("./data/sample.fastq")
+            .build()
+            .unwrap();
         assert_eq!(fastq_reader.format(), Format::Fastq);
     }
 
     #[test]
     fn test_into_fasta_reader_and_into_fastq_reader() {
-        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        let fasta_reader = crate::ReaderBuilder::path("./data/sample.fasta")
+            .build()
+            .unwrap();
         assert!(fasta_reader.into_fasta_reader().is_ok());
 
-        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        let fasta_reader = crate::ReaderBuilder::path("./data/sample.fasta")
+            .build()
+            .unwrap();
         assert!(fasta_reader.into_fastq_reader().is_err());
 
-        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let fastq_reader = crate::ReaderBuilder::path("./data/sample.fastq")
+            .build()
+            .unwrap();
         assert!(fastq_reader.into_fastq_reader().is_ok());
 
-        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let fastq_reader = crate::ReaderBuilder::path("./data/sample.fastq")
+            .build()
+            .unwrap();
         assert!(fastq_reader.into_fasta_reader().is_err());
     }
 
     #[test]
     fn test_update_batch_size_in_bp() {
         for path in ["./data/sample.fasta", "./data/sample.fastq"] {
-            let mut reader = Reader::from_path(path).unwrap();
+            let mut reader = crate::ReaderBuilder::path(path).build().unwrap();
             reader.update_batch_size_in_bp(1000).unwrap();
 
             let mut proc = Processor::default();
@@ -1594,7 +1306,9 @@ mod testing {
     #[test]
     fn test_from_stdin() {
         if crate::test_util::is_stdin_child() {
-            let reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let reader = crate::ReaderBuilder::optional_path(None::<&str>)
+                .build()
+                .unwrap();
             let mut proc = Processor::default();
             reader.process_parallel(&mut proc, 1).unwrap();
             eprintln!("STDIN_COUNT={}", proc.n_records());
@@ -1615,7 +1329,9 @@ mod testing {
 
     #[test]
     fn test_ref_record_seq_raw() {
-        let mut reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let mut reader = crate::ReaderBuilder::path("./data/sample.fastq")
+            .build()
+            .unwrap();
         let mut rset = reader.new_record_set();
         assert!(rset.fill(&mut reader).unwrap());
         for record in rset.iter() {

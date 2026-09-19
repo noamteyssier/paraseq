@@ -1,269 +1,64 @@
 use std::borrow::Cow;
 use std::io;
 
-#[cfg(feature = "niffler")]
-use crate::BoxedReader;
-#[cfg(feature = "niffler")]
-use std::path::Path;
+use fearless_simd::{dispatch, prelude::*, u8x64, Level};
 
-use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{
+    base::{BatchSet, ReaderBase},
+    fastx::GenericReader,
+    Error, Record,
+};
 
-pub struct Reader<R: io::Read> {
-    /// Handle to the underlying reader (byte stream)
-    reader: R,
-    /// Small buffer to hold incomplete records between reads
-    overflow: Vec<u8>,
-    /// Flag to indicate end of file
-    eof: bool,
-    /// Sets the maximum capcity of records in batches for parallel processing
-    ///
-    /// If not set, the default `RecordSet` capacity is used.
-    batch_size: Option<usize>,
-    /// Maximum number of records to process before stopping
-    record_limit: Option<usize>,
-    /// Running count of records already yielded by this reader, used to
-    /// assign each parsed record its stable, global index in the file.
-    total_records: u64,
-}
+pub type Reader<R> = ReaderBase<R, RecordSet>;
 
-#[cfg(feature = "niffler")]
-impl Reader<BoxedReader> {
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::from_path(path)?;
-        Ok(Self::new(reader))
-    }
-
-    pub fn from_stdin() -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
-        Ok(Self::new(reader))
-    }
-
-    pub fn from_optional_path<P: AsRef<Path>>(path: Option<P>) -> Result<Self, Error> {
-        match path {
-            Some(path) => Self::from_path(path),
-            None => Self::from_stdin(),
+/// Find every `>` in `buffer_prefix[search_from..]` with an explicit u8x64 SIMD compare,
+/// pushing the absolute offset of each match that starts a line (position 0 of the whole
+/// buffer, or immediately preceded by `\n`) into `record_starts`. Mirrors
+/// `RecordSet::find_record_starts`.
+#[inline(always)]
+fn simd_find_record_starts<S: Simd>(
+    simd: S,
+    buffer_prefix: &[u8],
+    search_from: usize,
+    record_starts: &mut Vec<usize>,
+) {
+    let mut push_if_line_start = |abs_pos: usize| {
+        if abs_pos == 0 || buffer_prefix[abs_pos - 1] == b'\n' {
+            record_starts.push(abs_pos);
         }
-    }
+    };
 
-    pub fn from_path_with_batch_size<P: AsRef<Path>>(
-        path: P,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::from_path(path)?;
-        Self::with_batch_size(reader, batch_size)
+    let needle = u8x64::splat(simd, b'>');
+    let (chunks, remainder) = buffer_prefix[search_from..].as_chunks::<64>();
+    let mut base = search_from;
+    for chunk in chunks {
+        let v = u8x64::from_slice(simd, chunk);
+        let mut bits = v.simd_eq(needle).to_bitmask();
+        while bits != 0 {
+            let bit = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            push_if_line_start(base + bit);
+        }
+        base += 64;
     }
-
-    pub fn from_stdin_with_batch_size(batch_size: usize) -> Result<Self, Error> {
-        let (reader, _format) = niffler::send::get_reader(Box::new(io::stdin()))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    pub fn from_optional_path_with_batch_size<P: AsRef<Path>>(
-        path: Option<P>,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        match path {
-            Some(path) => Self::from_path_with_batch_size(path, batch_size),
-            None => Self::from_stdin_with_batch_size(batch_size),
+    for (i, &b) in remainder.iter().enumerate() {
+        if b == b'>' {
+            push_if_line_start(base + i);
         }
     }
 }
 
-#[cfg(feature = "url")]
-impl Reader<BoxedReader> {
-    pub fn from_url(url: &str) -> Result<Self, Error> {
-        let stream = reqwest::blocking::get(url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
-        Ok(Self::new(reader))
+/// Copy each line of `seq_region`, dropping the newlines (and `cr` preceding bytes) with no
+/// assumption about line widths.
+fn dewrap_general(seq_region: &[u8], cr: usize) -> Vec<u8> {
+    let mut filtered = Vec::with_capacity(seq_region.len());
+    let mut start = 0;
+    for end in memchr::memchr_iter(b'\n', seq_region) {
+        filtered.extend_from_slice(&seq_region[start..(end - cr).max(start)]);
+        start = end + 1;
     }
-
-    pub fn from_url_with_batch_size(url: &str, batch_size: usize) -> Result<Self, Error> {
-        let stream = reqwest::blocking::get(url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(stream))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-}
-
-impl<R: io::Read> Reader<R> {
-    pub fn new(reader: R) -> Self {
-        Self {
-            overflow: Vec::with_capacity(1024),
-            reader,
-            eof: false,
-            batch_size: None,
-            record_limit: None,
-            total_records: 0,
-        }
-    }
-    pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
-        if batch_size == 0 {
-            return Err(Error::InvalidBatchSize(batch_size));
-        }
-        let mut reader = Self::new(reader);
-        reader.batch_size = Some(batch_size);
-        Ok(reader)
-    }
-
-    /// Limit processing to the first `n` records.
-    ///
-    /// When used with parallel processing, `fill()` will truncate batches to
-    /// stay within the limit and return `false` once the limit is reached,
-    /// stopping all worker threads cleanly.
-    pub fn set_record_limit(&mut self, n: usize) {
-        self.record_limit = Some(n);
-    }
-
-    /// Use the first record in the input to set the number of records per batch
-    /// so that the expected length per batch is approximately `batch_size_in_bp`.
-    pub fn update_batch_size_in_bp(&mut self, batch_size_in_bp: usize) -> Result<(), Error> {
-        let mut rset = self.new_record_set_with_size(1);
-        rset.fill(self)?;
-        let mut batch_size = 1;
-        if let Some(record) = rset.iter().next() {
-            let len = record?.seq_raw().len();
-            if len > 0 {
-                batch_size = batch_size_in_bp.div_ceil(len);
-            }
-        }
-        // Push the record back at the front of the reader.
-        self.reload(&mut rset);
-        // Update the batch size.
-        self.batch_size = Some(batch_size);
-        Ok(())
-    }
-
-    /// Initialize a new record set with a configured or default batch size
-    pub fn new_record_set(&self) -> RecordSet {
-        if let Some(batch_size) = self.batch_size {
-            RecordSet::new(batch_size)
-        } else {
-            RecordSet::default()
-        }
-    }
-
-    /// Initialize a new record set with a specified size
-    pub fn new_record_set_with_size(&self, size: usize) -> RecordSet {
-        RecordSet::new(size)
-    }
-
-    /// Add bytes to the overflow buffer.
-    ///
-    /// Use this method sparingly, it is mainly for internal use.
-    pub fn add_to_overflow(&mut self, buffer: &[u8]) {
-        self.overflow.extend_from_slice(buffer);
-    }
-    pub fn batch_size(&self) -> usize {
-        self.batch_size.unwrap_or(DEFAULT_MAX_RECORDS)
-    }
-    pub fn set_eof(&mut self) {
-        self.eof = true;
-    }
-    pub fn exhausted(&self) -> bool {
-        self.eof && self.overflow.is_empty()
-    }
-
-    /// Take back all bytes from the record set and prepend them to the overflow buffer
-    ///
-    /// This is an expensive operation and should be used sparingly.
-    pub fn reload(&mut self, rset: &mut RecordSet) {
-        // These records are being unread, so un-count them; they'll be
-        // reassigned the same indices when they're re-parsed.
-        self.total_records = self
-            .total_records
-            .saturating_sub(rset.positions.len() as u64);
-
-        // A complete slice of the record sets buffer
-        let buffer_slice = &rset.buffer;
-
-        // Get buffer lengths of incoming and existing data
-        let num_incoming = buffer_slice.len();
-        let num_existing = self.overflow.len();
-
-        // Allocate space in the overflow buffer for incoming bytes
-        let required_space = num_existing + num_incoming;
-        self.overflow
-            .resize(self.overflow.capacity().max(required_space), 0);
-
-        // Move current bytes to end of overflow buffer
-        self.overflow.copy_within(..num_existing, num_incoming);
-
-        // Copy incoming bytes to the beginning of the overflow buffer
-        self.overflow[..num_incoming].copy_from_slice(buffer_slice);
-
-        // Truncate the overflow buffer at the end of expected bytes (handles cases where unexpected null bytes are introduced)
-        self.overflow.truncate(required_space);
-
-        // Clear the record set
-        rset.clear();
-    }
-}
-
-#[cfg(feature = "ssh")]
-impl Reader<BoxedReader> {
-    pub fn from_ssh(ssh_url: &str) -> Result<Self, Error> {
-        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
-        Ok(Self::new(reader))
-    }
-
-    pub fn from_ssh_with_batch_size(ssh_url: &str, batch_size: usize) -> Result<Self, Error> {
-        let ssh_reader = crate::ssh::SshReader::new(ssh_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-}
-
-#[cfg(feature = "gcs")]
-impl Reader<BoxedReader> {
-    /// Create a GCS reader using Application Default Credentials
-    pub fn from_gcs(gcs_url: &str) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Ok(Self::new(reader))
-    }
-
-    /// Create a GCS reader using custom gcloud arguments
-    pub fn from_gcs_with_gcloud_args(gcs_url: &str, args: &[&str]) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, args)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Ok(Self::new(reader))
-    }
-
-    /// Create a GCS reader using a specific project ID
-    pub fn from_gcs_with_project(gcs_url: &str, project_id: &str) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Ok(Self::new(reader))
-    }
-
-    /// Create a GCS reader with custom batch size using Application Default Credentials
-    pub fn from_gcs_with_batch_size(gcs_url: &str, batch_size: usize) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::new(gcs_url)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    /// Create a GCS reader with custom batch size using custom gcloud arguments
-    pub fn from_gcs_with_gcloud_args_and_batch_size(
-        gcs_url: &str,
-        gcloud_args: &[&str],
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(gcs_url, gcloud_args)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
-
-    /// Create a GCS reader with custom batch size using a specific project ID
-    pub fn from_gcs_with_project_and_batch_size(
-        gcs_url: &str,
-        project_id: &str,
-        batch_size: usize,
-    ) -> Result<Self, Error> {
-        let gcs_reader = crate::gcs::GcsReader::with_project(gcs_url, project_id)?;
-        let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
-        Self::with_batch_size(reader, batch_size)
-    }
+    filtered.extend_from_slice(&seq_region[start..]);
+    filtered
 }
 
 #[derive(Debug)]
@@ -325,14 +120,15 @@ impl RecordSet {
     /// and ending at the effective end of the buffer
     /// Only considers '>' characters that are at the beginning of lines
     fn find_record_starts(&mut self, current_pos: usize) {
-        let search_buffer = &self.buffer[self.last_searched_pos..current_pos];
-        memchr::memchr_iter(b'>', search_buffer).for_each(|i| {
-            let abs_pos = i + self.last_searched_pos;
-            // Check if this '>' is at the start of a line (position 0 or after newline)
-            if abs_pos == 0 || self.buffer[abs_pos - 1] == b'\n' {
-                self.record_starts.push(abs_pos);
-            }
-        });
+        let level = Level::new();
+        let buffer_prefix = &self.buffer[..current_pos];
+        let search_from = self.last_searched_pos;
+        dispatch!(level, simd => simd_find_record_starts(
+            simd,
+            buffer_prefix,
+            search_from,
+            &mut self.record_starts,
+        ));
         self.last_searched_pos = current_pos;
     }
 
@@ -563,29 +359,41 @@ impl<'a> RefRecord<'a> {
     pub fn seq(&self) -> Cow<'_, [u8]> {
         let seq_region = self.seq_raw();
 
-        // // Count newlines in the sequence region
-        // let newline_count = memchr::memchr_iter(b'\n', seq_region).count();
-        let newlines = memchr::memchr_iter(b'\n', seq_region).collect::<Vec<_>>();
-
-        if newlines.is_empty() {
-            // No newlines - can borrow directly
-            Cow::Borrowed(seq_region)
-        } else if newlines.len() == 1 && seq_region.ends_with(b"\n") {
-            // Single line with only trailing newline - can borrow without the newline
-            Cow::Borrowed(&seq_region[..seq_region.len() - 1])
-        } else {
-            // Multiline sequence - need to filter out all newlines
-            let mut filtered = Vec::with_capacity(seq_region.len() - newlines.len());
-            let mut start = 0;
-            for &end in &newlines {
-                filtered.extend_from_slice(&seq_region[start..end]);
-                start = end + 1;
-            }
-            if start < seq_region.len() {
-                filtered.extend_from_slice(&seq_region[start..]);
-            }
-            Cow::Owned(filtered)
+        // Single-line records (the common case) borrow directly
+        let Some(first) = memchr::memchr(b'\n', seq_region) else {
+            return Cow::Borrowed(seq_region);
+        };
+        // Single line with only a trailing newline - can borrow without the newline
+        if first == seq_region.len() - 1 {
+            return Cow::Borrowed(&seq_region[..first]);
         }
+
+        // Line endings are detected once per record from its first line
+        let cr = usize::from(first > 0 && seq_region[first - 1] == b'\r');
+
+        // Wrapped records have fixed-width lines: copy by stride, checking that the newline
+        // sits where expected instead of searching for it
+        let stride = first + 1;
+        let mut filtered = Vec::with_capacity(seq_region.len());
+        let mut regular = true;
+        for line in seq_region.chunks(stride) {
+            if line.len() < stride {
+                filtered.extend_from_slice(line);
+            } else if line[first] == b'\n' && (cr == 0 || line[first - 1] == b'\r') {
+                filtered.extend_from_slice(&line[..first - cr]);
+            } else {
+                regular = false;
+                break;
+            }
+        }
+        // The stride checks plus a newline-free output prove the newlines were exactly the
+        // expected ones (the last, partial line was copied unchecked)
+        if regular && memchr::memchr(b'\n', &filtered).is_none() {
+            return Cow::Owned(filtered);
+        }
+
+        // generic fallback for non-regular layouts
+        Cow::Owned(dewrap_general(seq_region, cr))
     }
 
     fn seq_raw(&self) -> &[u8] {
@@ -594,10 +402,10 @@ impl<'a> RefRecord<'a> {
         // line. That newline is a delimiter, not sequence data, so strip it
         // -- unless the last record in the file has none (no trailing '\n').
         let region = &self.buffer[self.positions.seq_start..self.positions.end];
-        match region.last() {
-            Some(b'\n') => &region[..region.len() - 1],
-            _ => region,
-        }
+        let mut end = region.len();
+        end -= usize::from(end > 0 && region[end - 1] == b'\n');
+        end -= usize::from(end > 0 && region[end - 1] == b'\r');
+        &region[..end]
     }
 
     /// Performs the actual buffer access
@@ -609,11 +417,9 @@ impl<'a> RefRecord<'a> {
     /// and there is nothing to strip.
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
-        let end = if right > left && self.buffer[right - 1] == b'\n' {
-            right - 1
-        } else {
-            right
-        };
+        // The byte before `left` is always '>', so no `right > left` / `end > left` guards
+        let mut end = right - usize::from(self.buffer[right - 1] == b'\n');
+        end -= usize::from(self.buffer[end - 1] == b'\r');
         unsafe {
             // SAFETY: `left <= end <= right <= buffer.len()`, guaranteed by
             // `validate_record` and the check above.
@@ -644,6 +450,33 @@ impl Record for RefRecord<'_> {
     }
 }
 
+impl BatchSet for RecordSet {
+    fn with_capacity(capacity: usize) -> Self {
+        Self::new(capacity)
+    }
+    fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
+        RecordSet::fill(self, reader)
+    }
+    fn clear(&mut self) {
+        RecordSet::clear(self);
+    }
+    fn n_records(&self) -> usize {
+        RecordSet::n_records(self)
+    }
+    fn truncate(&mut self, n: usize) {
+        RecordSet::truncate(self, n);
+    }
+    fn buffer(&self) -> &[u8] {
+        &self.buffer
+    }
+    fn first_seq_len(&self) -> Result<Option<usize>, Error> {
+        self.iter()
+            .next()
+            .map(|r| r.map(|r| r.seq_raw().len()))
+            .transpose()
+    }
+}
+
 impl<R> GenericReader for crate::fasta::Reader<R>
 where
     R: io::Read + Send,
@@ -653,26 +486,11 @@ where
     type RefRecord<'a> = crate::fasta::RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet {
-        if let Some(batch_size) = self.batch_size {
-            Self::RecordSet::new(batch_size)
-        } else {
-            Self::RecordSet::default()
-        }
+        ReaderBase::new_record_set(self)
     }
 
-    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error> {
-        if let Some(0) = self.record_limit {
-            return Ok(false);
-        }
-        let filled = record.fill(self)?;
-        if filled {
-            if let Some(remaining) = &mut self.record_limit {
-                let n = record.n_records().min(*remaining);
-                record.truncate(n);
-                *remaining -= n;
-            }
-        }
-        Ok(filled)
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+        self.fill_limited(record)
     }
 
     fn iter(
@@ -792,7 +610,9 @@ mod tests {
     #[test]
     fn test_from_stdin() {
         if crate::test_util::is_stdin_child() {
-            let mut reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let mut reader = crate::ReaderBuilder::optional_path(None::<&str>)
+                .build_fasta()
+                .unwrap();
             let mut num_records = 0;
             let mut rset = reader.new_record_set();
             while rset.fill(&mut reader).unwrap() {
@@ -927,6 +747,20 @@ mod tests {
     }
 
     #[test]
+    fn test_crlf() {
+        let data = ">a\r\nAC\r\nTG\r\n>b\r\nGG\r\n>c\r\nTT\r";
+        let mut reader = Reader::new(Cursor::new(data));
+        let mut record_set = RecordSet::new(3);
+        assert!(record_set.fill(&mut reader).unwrap());
+        let records: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+        let got: Vec<_> = records.iter().map(|r| (r.id_str(), r.seq_str())).collect();
+        assert_eq!(
+            got,
+            [("a", "ACTG".into()), ("b", "GG".into()), ("c", "TT".into())]
+        );
+    }
+
+    #[test]
     fn test_multiline_fasta() {
         let multiline_record = ">test_multiline\nACTG\nTGCA\nGGCC\n";
         let mut reader = Reader::new(Cursor::new(multiline_record));
@@ -1012,6 +846,26 @@ mod tests {
     }
 
     #[test]
+    fn test_multiline_fasta_across_simd_chunk_boundary() {
+        // `simd_find_newlines` scans in 64-byte SIMD chunks. A short line
+        // length packs several newlines into a single chunk's bitmask, and
+        // enough lines push the sequence past multiple chunk boundaries plus
+        // a scalar remainder -- none of which the other multiline tests
+        // (all well under 64 bytes) actually exercise.
+        let line = "ACGTACGTAC"; // 10 bytes
+        let lines: Vec<&str> = std::iter::repeat_n(line, 100).collect();
+        let record = format!(">long_multiline\n{}\n", lines.join("\n"));
+        let expected: String = lines.concat();
+
+        let mut reader = Reader::new(Cursor::new(record));
+        let mut record_set = RecordSet::new(1);
+
+        assert!(record_set.fill(&mut reader).unwrap());
+        let parsed = record_set.iter().next().unwrap().unwrap();
+        assert_eq!(parsed.seq_str(), expected);
+    }
+
+    #[test]
     fn test_mixed_single_and_multiline() {
         let mixed_records = ">single\nACTG\n>multiline\nTGCA\nGGCC\nAAAA\n>another_single\nTTTT\n";
         let mut reader = Reader::new(Cursor::new(mixed_records));
@@ -1041,7 +895,7 @@ mod tests {
             } else {
                 format!("./data/sample.fasta{}", ext)
             };
-            let mut reader = Reader::from_path(path).unwrap();
+            let mut reader = crate::ReaderBuilder::path(path).build_fasta().unwrap();
             let mut record_set = RecordSet::new(1);
 
             assert!(record_set.fill(&mut reader).unwrap());
@@ -1061,13 +915,63 @@ mod tests {
             } else {
                 format!("./data/sample.fasta{}", ext)
             };
-            let mut reader = Reader::from_path_with_batch_size(path, 2).unwrap();
+            let mut reader = crate::ReaderBuilder::path(path).build_fasta().unwrap();
+            reader.set_batch_size(2).unwrap();
             let mut record_set = RecordSet::new(1);
 
             assert!(record_set.fill(&mut reader).unwrap());
             let parsed_record = record_set.iter().next().unwrap().unwrap();
 
             println!("{}", parsed_record.id_str());
+        }
+    }
+
+    #[test]
+    fn test_seq_dewrap_matches_general() {
+        // Regular, irregular, CRLF and no-trailing-newline layouts must all dewrap
+        // identically to the width-agnostic reference
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let mut rnd = |m: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % m as u64) as usize
+        };
+        for _ in 0..500 {
+            let eol = if rnd(2) == 0 { "\n" } else { "\r\n" };
+            let width = 1 + rnd(100);
+            let irregular = rnd(4) == 0;
+            let mut text = String::new();
+            for r in 0..(1 + rnd(4)) {
+                text.push_str(&format!(">r{r}{eol}"));
+                let mut left = rnd(400);
+                while left > 0 {
+                    let w = if irregular { 1 + rnd(width) } else { width }.min(left);
+                    text.push_str(&"ACGT".repeat(w).chars().take(w).collect::<String>());
+                    text.push_str(eol);
+                    left -= w;
+                }
+                if rnd(5) == 0 {
+                    text.push_str(eol);
+                }
+            }
+            if rnd(3) == 0 {
+                text.truncate(text.trim_end().len());
+            }
+            let mut reader = Reader::new(Cursor::new(text.clone()));
+            let mut rset = reader.new_record_set();
+            while rset.fill(&mut reader).unwrap() {
+                for rec in rset.iter() {
+                    let rec = rec.unwrap();
+                    let raw = rec.seq_raw();
+                    let expect = match memchr::memchr(b'\n', raw) {
+                        None => raw.to_vec(),
+                        Some(f) if f == raw.len() - 1 => raw[..f].to_vec(),
+                        Some(f) => dewrap_general(raw, usize::from(f > 0 && raw[f - 1] == b'\r')),
+                    };
+                    assert_eq!(rec.seq().as_ref(), expect.as_slice(), "{text:?}");
+                }
+            }
         }
     }
 }
