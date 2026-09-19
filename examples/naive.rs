@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use paraseq::{fasta, fastq, fastx};
+use paraseq::{fasta, fastq, ReaderBuilder};
 
 #[derive(Parser)]
 struct Cli {
@@ -17,7 +17,7 @@ struct Cli {
 }
 
 fn naive_fastq(path: &str) -> Result<()> {
-    let mut reader = fastq::Reader::from_path(path)?;
+    let mut reader = ReaderBuilder::path(path).build_fastq()?;
     let mut rset = fastq::RecordSet::default();
 
     let mut num_records = 0;
@@ -33,7 +33,7 @@ fn naive_fastq(path: &str) -> Result<()> {
 }
 
 fn naive_fasta(path: &str) -> Result<()> {
-    let mut reader = fasta::Reader::from_path(path)?;
+    let mut reader = ReaderBuilder::path(path).build_fasta()?;
     let mut rset = fasta::RecordSet::default();
 
     let mut num_records = 0;
@@ -49,7 +49,7 @@ fn naive_fasta(path: &str) -> Result<()> {
 }
 
 fn naive_fastx(path: &str) -> Result<()> {
-    let mut reader = fastx::Reader::from_path(path)?;
+    let mut reader = ReaderBuilder::path(path).build()?;
     let mut rset = reader.new_record_set();
 
     let mut num_records = 0;

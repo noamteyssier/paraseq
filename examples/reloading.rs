@@ -7,7 +7,7 @@
 
 use anyhow::{bail, Result};
 use clap::Parser;
-use paraseq::{fasta, fastq, fastx};
+use paraseq::ReaderBuilder;
 
 #[derive(Parser)]
 struct Cli {
@@ -20,7 +20,7 @@ struct Cli {
 }
 
 fn reload_fasta(path: &str, prefill: usize) -> Result<()> {
-    let mut reader = fasta::Reader::from_path(path)?;
+    let mut reader = ReaderBuilder::path(path).build_fasta()?;
     let mut rset = reader.new_record_set_with_size(prefill);
     if !rset.fill(&mut reader)? {
         bail!("No records in input file")
@@ -42,7 +42,7 @@ fn reload_fasta(path: &str, prefill: usize) -> Result<()> {
 }
 
 fn reload_fastq(path: &str, prefill: usize) -> Result<()> {
-    let mut reader = fastq::Reader::from_path(path)?;
+    let mut reader = ReaderBuilder::path(path).build_fastq()?;
     let mut rset = reader.new_record_set_with_size(prefill);
     if !rset.fill(&mut reader)? {
         bail!("No records in input file")
@@ -64,7 +64,7 @@ fn reload_fastq(path: &str, prefill: usize) -> Result<()> {
 }
 
 fn reload_fastx(path: &str, prefill: usize) -> Result<()> {
-    let mut reader = fastx::Reader::from_path(path)?;
+    let mut reader = ReaderBuilder::path(path).build()?;
     let mut rset = reader.new_record_set_with_size(prefill);
     if !rset.fill(&mut reader)? {
         bail!("No records in input file")

@@ -122,7 +122,7 @@ impl Collection<BoxedReader> {
     ) -> crate::Result<Self> {
         let mut inner = Vec::new();
         for path in paths {
-            inner.push(Reader::from_path(path)?);
+            inner.push(crate::ReaderBuilder::path(path).build()?);
         }
         Self::new(inner, collection_type)
     }
@@ -859,21 +859,6 @@ pub enum Reader<R: io::Read> {
     Fastq(fastq::Reader<R>),
 }
 
-#[cfg(feature = "niffler")]
-impl Reader<BoxedReader> {
-    pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
-        crate::builder::ReaderBuilder::path(path).build()
-    }
-
-    pub fn from_stdin() -> Result<Self, Error> {
-        crate::builder::ReaderBuilder::stdin().build()
-    }
-
-    pub fn from_optional_path<P: AsRef<std::path::Path>>(path: Option<P>) -> Result<Self, Error> {
-        crate::builder::ReaderBuilder::optional_path(path).build()
-    }
-}
-
 impl<R: io::Read> Reader<R> {
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let mut buffer = [0; 1];
@@ -1152,7 +1137,7 @@ mod testing {
             for compression_ext in COMPRESSION_EXTENSIONS {
                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
                 dbg!(&path);
-                let reader = Reader::from_path(path).unwrap();
+                let reader = crate::ReaderBuilder::path(path).build().unwrap();
                 let mut proc = Processor::default();
                 reader.process_parallel(&mut proc, 1).unwrap();
                 assert_eq!(proc.n_records(), 100);
@@ -1167,7 +1152,7 @@ mod testing {
             for compression_ext in COMPRESSION_EXTENSIONS {
                 let path = format!("{}{}{}", basename, format_ext, compression_ext);
                 dbg!(&path);
-                let mut reader = Reader::from_path(path).unwrap();
+                let mut reader = crate::ReaderBuilder::path(path).build().unwrap();
                 reader.set_batch_size(10).unwrap();
                 let mut proc = Processor::default();
                 reader.process_parallel(&mut proc, 1).unwrap();
@@ -1179,7 +1164,7 @@ mod testing {
     #[test]
     fn test_fastx_reload() {
         let path = "./data/sample.fastq";
-        let mut reader = Reader::from_path(path).unwrap();
+        let mut reader = crate::ReaderBuilder::path(path).build().unwrap();
         let mut rset = reader.new_record_set_with_size(7);
 
         assert!(rset.fill(&mut reader).unwrap());
@@ -1232,7 +1217,7 @@ mod testing {
                     let path = format!("{}{}{}", basename, format_ext, compression_ext);
                     dbg!(&path, out_format as u8);
 
-                    let reader = Reader::from_path(&path).unwrap();
+                    let reader = crate::ReaderBuilder::path(&path).build().unwrap();
                     let mut writer = WriteProcessor {
                         out_format,
                         ..Default::default()
@@ -1412,32 +1397,44 @@ mod testing {
 
     #[test]
     fn test_format() {
-        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        let fasta_reader = crate::ReaderBuilder::path("./data/sample.fasta")
+            .build()
+            .unwrap();
         assert_eq!(fasta_reader.format(), Format::Fasta);
 
-        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let fastq_reader = crate::ReaderBuilder::path("./data/sample.fastq")
+            .build()
+            .unwrap();
         assert_eq!(fastq_reader.format(), Format::Fastq);
     }
 
     #[test]
     fn test_into_fasta_reader_and_into_fastq_reader() {
-        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        let fasta_reader = crate::ReaderBuilder::path("./data/sample.fasta")
+            .build()
+            .unwrap();
         assert!(fasta_reader.into_fasta_reader().is_ok());
 
-        let fasta_reader = Reader::from_path("./data/sample.fasta").unwrap();
+        let fasta_reader = crate::ReaderBuilder::path("./data/sample.fasta")
+            .build()
+            .unwrap();
         assert!(fasta_reader.into_fastq_reader().is_err());
 
-        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let fastq_reader = crate::ReaderBuilder::path("./data/sample.fastq")
+            .build()
+            .unwrap();
         assert!(fastq_reader.into_fastq_reader().is_ok());
 
-        let fastq_reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let fastq_reader = crate::ReaderBuilder::path("./data/sample.fastq")
+            .build()
+            .unwrap();
         assert!(fastq_reader.into_fasta_reader().is_err());
     }
 
     #[test]
     fn test_update_batch_size_in_bp() {
         for path in ["./data/sample.fasta", "./data/sample.fastq"] {
-            let mut reader = Reader::from_path(path).unwrap();
+            let mut reader = crate::ReaderBuilder::path(path).build().unwrap();
             reader.update_batch_size_in_bp(1000).unwrap();
 
             let mut proc = Processor::default();
@@ -1449,7 +1446,9 @@ mod testing {
     #[test]
     fn test_from_stdin() {
         if crate::test_util::is_stdin_child() {
-            let reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let reader = crate::ReaderBuilder::optional_path(None::<&str>)
+                .build()
+                .unwrap();
             let mut proc = Processor::default();
             reader.process_parallel(&mut proc, 1).unwrap();
             eprintln!("STDIN_COUNT={}", proc.n_records());
@@ -1470,7 +1469,9 @@ mod testing {
 
     #[test]
     fn test_ref_record_seq_raw() {
-        let mut reader = Reader::from_path("./data/sample.fastq").unwrap();
+        let mut reader = crate::ReaderBuilder::path("./data/sample.fastq")
+            .build()
+            .unwrap();
         let mut rset = reader.new_record_set();
         assert!(rset.fill(&mut reader).unwrap());
         for record in rset.iter() {

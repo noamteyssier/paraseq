@@ -6,7 +6,7 @@
 //! ```
 
 use clap::Parser;
-use paraseq::fasta::{Reader, RecordSet};
+use paraseq::fasta::RecordSet;
 use paraseq::prelude::*;
 
 #[derive(Parser)]
@@ -19,7 +19,7 @@ struct Cli {
 fn main() -> Result<(), paraseq::Error> {
     let args = Cli::parse();
 
-    let mut reader = Reader::from_path(&args.input)?;
+    let mut reader = paraseq::ReaderBuilder::path(&args.input).build_fasta()?;
     let mut record_set = RecordSet::new(1024);
     let mut record_count = 0;
 

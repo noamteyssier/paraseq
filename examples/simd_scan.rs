@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::Parser;
-use paraseq::fastq::{Reader, RecordSet};
+use paraseq::fastq::RecordSet;
 use paraseq::Record;
 
 #[derive(Parser)]
@@ -34,7 +34,7 @@ fn main() -> Result<()> {
 
     let start = Instant::now();
     while start.elapsed() < budget {
-        let mut reader = Reader::from_path(&args.input)?;
+        let mut reader = paraseq::ReaderBuilder::path(&args.input).build_fastq()?;
         let mut rset = RecordSet::default();
         while rset.fill(&mut reader)? {
             for record in rset.iter() {

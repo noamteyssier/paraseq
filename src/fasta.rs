@@ -2,10 +2,7 @@ use std::borrow::Cow;
 use std::io;
 
 #[cfg(feature = "niffler")]
-use crate::BoxedReader;
 #[cfg(feature = "niffler")]
-use std::path::Path;
-
 use fearless_simd::{dispatch, prelude::*, u8x64, Level};
 
 use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
@@ -26,21 +23,6 @@ pub struct Reader<R: io::Read> {
     /// Running count of records already yielded by this reader, used to
     /// assign each parsed record its stable, global index in the file.
     total_records: u64,
-}
-
-#[cfg(feature = "niffler")]
-impl Reader<BoxedReader> {
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        crate::builder::ReaderBuilder::path(path).build_fasta()
-    }
-
-    pub fn from_stdin() -> Result<Self, Error> {
-        crate::builder::ReaderBuilder::stdin().build_fasta()
-    }
-
-    pub fn from_optional_path<P: AsRef<Path>>(path: Option<P>) -> Result<Self, Error> {
-        crate::builder::ReaderBuilder::optional_path(path).build_fasta()
-    }
 }
 
 impl<R: io::Read> Reader<R> {
@@ -751,7 +733,9 @@ mod tests {
     #[test]
     fn test_from_stdin() {
         if crate::test_util::is_stdin_child() {
-            let mut reader = Reader::from_optional_path(None::<&str>).unwrap();
+            let mut reader = crate::ReaderBuilder::optional_path(None::<&str>)
+                .build_fasta()
+                .unwrap();
             let mut num_records = 0;
             let mut rset = reader.new_record_set();
             while rset.fill(&mut reader).unwrap() {
@@ -1020,7 +1004,7 @@ mod tests {
             } else {
                 format!("./data/sample.fasta{}", ext)
             };
-            let mut reader = Reader::from_path(path).unwrap();
+            let mut reader = crate::ReaderBuilder::path(path).build_fasta().unwrap();
             let mut record_set = RecordSet::new(1);
 
             assert!(record_set.fill(&mut reader).unwrap());
@@ -1040,7 +1024,7 @@ mod tests {
             } else {
                 format!("./data/sample.fasta{}", ext)
             };
-            let mut reader = Reader::from_path(path).unwrap();
+            let mut reader = crate::ReaderBuilder::path(path).build_fasta().unwrap();
             reader.set_batch_size(2).unwrap();
             let mut record_set = RecordSet::new(1);
 

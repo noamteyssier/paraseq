@@ -46,7 +46,7 @@ example itself.
 | Example | Demonstrates |
 |---|---|
 | [`fastx.rs`](fastx.rs) | FASTA/FASTQ conversion via `fastx::Reader::new`, constructed directly from a `Read` handle. |
-| [`read_write.rs`](read_write.rs) | The same conversion via `fastx::Reader::from_optional_path`, with transparent `.gz`/`.zst` decompression. |
+| [`read_write.rs`](read_write.rs) | The same conversion via `ReaderBuilder::optional_path`, with transparent `.gz`/`.zst` decompression. |
 | [`htslib.rs`](htslib.rs) | Converting SAM/BAM/CRAM to FASTA/FASTQ, single-end or paired (requires the `htslib` feature). |
 
 ## Remote Sources

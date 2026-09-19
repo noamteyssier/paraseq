@@ -11,7 +11,7 @@ mod common;
 use anyhow::Result;
 use clap::Parser;
 use common::SeqSum;
-use paraseq::{fastx, prelude::*};
+use paraseq::{prelude::*, ReaderBuilder};
 
 #[derive(Parser)]
 struct Cli {
@@ -28,8 +28,8 @@ struct Cli {
 
 fn main() -> Result<()> {
     let args = Cli::parse();
-    let r1 = fastx::Reader::from_path(&args.input1)?;
-    let r2 = fastx::Reader::from_path(&args.input2)?;
+    let r1 = ReaderBuilder::path(&args.input1).build()?;
+    let r2 = ReaderBuilder::path(&args.input2).build()?;
     let mut processor = SeqSum::default();
 
     r1.process_parallel_paired(r2, &mut processor, args.threads)?;

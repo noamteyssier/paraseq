@@ -19,7 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Removed
 
-- `from_url`, `from_ssh`, `from_gcs`, `from_gcs_with_gcloud_args`, and `from_gcs_with_project` on `fasta::Reader`, `fastq::Reader`, and `fastx::Reader` — use `ReaderBuilder::url(..)`/`::ssh(..)`/`::gcs(..)` with `.build_fasta()`/`.build_fastq()`/`.build()` instead. `from_path`/`from_stdin`/`from_optional_path` are unaffected.
+- `from_url`, `from_ssh`, `from_gcs`, `from_gcs_with_gcloud_args`, and `from_gcs_with_project` on `fasta::Reader`, `fastq::Reader`, and `fastx::Reader` — use `ReaderBuilder::url(..)`/`::ssh(..)`/`::gcs(..)` with `.build_fasta()`/`.build_fastq()`/`.build()` instead. Likewise `from_path`, `from_stdin`, and `from_optional_path` on those readers — use `ReaderBuilder::path(..)`/`::stdin()`/`::optional_path(..)` (`Reader::new` is unchanged). The `htslib::Reader` constructors are unaffected.
 - `parking_lot` dependency — all internal `Mutex`/`Condvar` usage now uses `std::sync`. Benchmarking on real FASTQ workloads showed no measurable difference, since these locks aren't contended enough to matter.
 - `pool` feature flag — see Changed.
 
