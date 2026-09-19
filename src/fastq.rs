@@ -11,70 +11,61 @@ use crate::{
 
 pub type Reader<R> = ReaderBase<R, RecordSet>;
 
-/// Mutable pending-newline state threaded through `simd_scan_newlines`, bundled to keep
-/// its argument count clippy-friendly.
-struct ScanState<'a> {
-    pending_nl: &'a mut u8,
-    pending_nl_pos: &'a mut [usize; 3],
-    record_start: &'a mut usize,
-    positions: &'a mut Vec<Positions>,
-}
+/// Bytes scanned per scratch fill in `simd_flatten_newlines` (must be a multiple of 64)
+const FLATTEN_WINDOW: usize = 1024;
 
-/// Find every `\n` in `haystack` with an explicit u8x64 SIMD compare, folding each match
-/// directly into the pending-newline state machine (mirrors `RecordSet::scan_for_records`).
-/// Returns true as soon as `positions.len() >= capacity` (caller should stop reading).
+/// Append the absolute offset (one past `\n`) of every `\n` in `haystack` to `out`.
+///
+/// Branch-light: each 64-byte chunk unconditionally writes 4 offsets into a stack scratch
+/// and advances by the popcount, so the trip count doesn't depend on how many newlines the
+/// chunk holds. The scratch is flushed into `out` once per window.
 #[inline(always)]
-fn simd_scan_newlines<S: Simd>(
+fn simd_flatten_newlines<S: Simd>(
     simd: S,
     haystack: &[u8],
     search_from: usize,
-    state: &mut ScanState,
-    capacity: usize,
-) -> bool {
-    let mut record_nl = |abs: usize| -> bool {
-        if *state.pending_nl < 3 {
-            state.pending_nl_pos[*state.pending_nl as usize] = abs;
-            *state.pending_nl += 1;
-            false
-        } else {
-            state.positions.push(Positions {
-                start: *state.record_start,
-                seq_start: state.pending_nl_pos[0],
-                sep_start: state.pending_nl_pos[1],
-                qual_start: state.pending_nl_pos[2],
-                end: abs,
-            });
-            *state.record_start = abs;
-            *state.pending_nl = 0;
-            state.positions.len() >= capacity
-        }
-    };
-
+    scratch: &mut [usize; FLATTEN_WINDOW + 4],
+    out: &mut Vec<usize>,
+) {
     let needle = u8x64::splat(simd, b'\n');
-    let (chunks, remainder) = haystack.as_chunks::<64>();
-    let mut base = 0usize;
-    for chunk in chunks {
-        let v = u8x64::from_slice(simd, chunk);
-        let mut bits = v.simd_eq(needle).to_bitmask();
-        while bits != 0 {
-            let bit = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let abs = base + bit + search_from + 1;
-            if record_nl(abs) {
-                return true;
+    // Offsets are one past the '\n'
+    let mut base = search_from + 1;
+    for window in haystack.chunks(FLATTEN_WINDOW) {
+        let (chunks, remainder) = window.as_chunks::<64>();
+        let mut n = 0;
+        for chunk in chunks {
+            let v = u8x64::from_slice(simd, chunk);
+            // Bit i is set iff byte i of the chunk is a '\n'
+            let mut bits = v.simd_eq(needle).to_bitmask();
+            let cnt = bits.count_ones() as usize;
+            // Always write 4 slots (no branch); slots past `cnt` are junk, overwritten next chunk
+            let head: &mut [usize; 4] = (&mut scratch[n..n + 4]).try_into().unwrap();
+            for slot in head {
+                // Lowest set bit = next newline
+                *slot = base + bits.trailing_zeros() as usize;
+                // Clear the lowest set bit
+                bits &= bits.wrapping_sub(1);
+            }
+            // Rare: chunk has more than 4 newlines
+            for k in 4..cnt {
+                scratch[n + k] = base + bits.trailing_zeros() as usize;
+                bits &= bits.wrapping_sub(1);
+            }
+            // Advance by the real count only
+            n += cnt;
+            base += 64;
+        }
+        // Scalar tail: the last window's final <64 bytes
+        for (i, &b) in remainder.iter().enumerate() {
+            if b == b'\n' {
+                scratch[n] = base + i;
+                n += 1;
             }
         }
-        base += 64;
+        base += remainder.len();
+        // Flush the window's real offsets (junk slots excluded)
+        out.extend_from_slice(&scratch[..n]);
     }
-    for (i, &b) in remainder.iter().enumerate() {
-        if b == b'\n' {
-            let abs = base + i + search_from + 1;
-            if record_nl(abs) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 #[derive(Debug)]
@@ -87,6 +78,10 @@ pub struct RecordSet {
     pending_nl_pos: [usize; 3],
     /// Byte offset where the current record started
     record_start: usize,
+    /// Scratch: pending newline offsets followed by the newlines of the bytes being scanned
+    nl: Vec<usize>,
+    /// Scratch for `simd_flatten_newlines`; zeroed at start and reused
+    nl_scratch: Box<[usize; FLATTEN_WINDOW + 4]>,
     /// Position tracking for complete records
     positions: Vec<Positions>,
     /// Maximum number of records to store
@@ -110,6 +105,8 @@ impl RecordSet {
             pending_nl: 0,
             pending_nl_pos: [0; 3],
             record_start: 0,
+            nl: Vec::new(),
+            nl_scratch: Box::new([0; FLATTEN_WINDOW + 4]),
             positions: Vec::with_capacity(capacity),
             capacity,
             avg_record_size: 1024, // 1KB default
@@ -142,24 +139,37 @@ impl RecordSet {
         }
     }
 
-    /// Scan bytes `search_from..search_to` in the buffer, building Positions inline.
+    /// Scan bytes `search_from..search_to` in the buffer, building Positions.
     /// Returns true if capacity was reached (caller should stop reading).
     fn scan_for_records(&mut self, search_from: usize, search_to: usize) -> bool {
         let level = Level::new();
         let haystack = &self.buffer[search_from..search_to];
-        let mut state = ScanState {
-            pending_nl: &mut self.pending_nl,
-            pending_nl_pos: &mut self.pending_nl_pos,
-            record_start: &mut self.record_start,
-            positions: &mut self.positions,
-        };
-        dispatch!(level, simd => simd_scan_newlines(
-            simd,
-            haystack,
-            search_from,
-            &mut state,
-            self.capacity,
-        ))
+        self.nl.clear();
+        self.nl
+            .extend_from_slice(&self.pending_nl_pos[..self.pending_nl as usize]);
+        let (scratch, nl) = (&mut self.nl_scratch, &mut self.nl);
+        dispatch!(level, simd => simd_flatten_newlines(simd, haystack, search_from, scratch, nl));
+
+        let n_records = self.nl.len() / 4;
+        let take = n_records.min(self.capacity - self.positions.len());
+        for c in self.nl.as_chunks::<4>().0.iter().take(take) {
+            self.positions.push(Positions {
+                start: self.record_start,
+                seq_start: c[0],
+                sep_start: c[1],
+                qual_start: c[2],
+                end: c[3],
+            });
+            self.record_start = c[3];
+        }
+        if self.positions.len() >= self.capacity {
+            self.pending_nl = 0;
+            return true;
+        }
+        let rest = &self.nl[n_records * 4..];
+        self.pending_nl_pos[..rest.len()].copy_from_slice(rest);
+        self.pending_nl = rest.len() as u8;
+        false
     }
 
     /// Main function to fill the record set
@@ -358,10 +368,9 @@ impl<'a> RefRecord<'a> {
     /// Performs the actual buffer access, stripping the '\n' (and a preceding '\r', if any)
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
+        // The byte before `left` is always '@' or '\n', never '\r', so no `end > left` guard
         let mut end = right - 1;
-        if end > left && self.buffer[end - 1] == b'\r' {
-            end -= 1;
-        }
+        end -= usize::from(self.buffer[end - 1] == b'\r');
         unsafe {
             // SAFETY: `left <= end < right`, and `right <= buffer.len()` is checked by
             // `validate_record` (except for `qual`/`sep`, which are bounded by `end`).
