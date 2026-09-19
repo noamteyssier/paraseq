@@ -160,12 +160,6 @@ impl<R: io::Read + Send> Collection<R> {
 
         // Calculate the number of batches
         let num_batches = total_readers.div_ceil(batch_size);
-
-        // eprintln!(
-        //     "Processing {} readers; {} threads per reader; {} readers per batch; {} batches",
-        //     total_readers, threads_per_reader, batch_size, num_batches
-        // );
-
         thread::scope(|scope| -> crate::Result<()> {
             let scope_fn = &scope_fn;
 
@@ -186,10 +180,6 @@ impl<R: io::Read + Send> Collection<R> {
                 }
 
                 // join all threads in this batch
-                // eprintln!(
-                //     "Joining threads in batch {_batch_idx}; # readers: {}",
-                //     rbound,
-                // );
                 for handle in subhandles {
                     handle.join().map_err(|_| crate::Error::JoinError)??;
                 }
@@ -355,8 +345,6 @@ impl<R: io::Read + Send> Collection<R> {
         // Calculate the number of batches
         let num_batches = total_groups.div_ceil(batch_size);
 
-        // eprintln!("Total groups: {}, Total threads: {}, Threads per group: {}, Batch size: {}, Number of batches: {}", total_groups, total_threads, threads_per_group, batch_size, num_batches);
-
         thread::scope(|scope| -> crate::Result<()> {
             let scope_fn = &scope_fn;
 
@@ -381,10 +369,6 @@ impl<R: io::Read + Send> Collection<R> {
                 }
 
                 // Join all threads in this batch
-                // eprintln!(
-                //     "Joining batch {}; number of groups: {}",
-                //     _batch_idx, groups_in_batch
-                // );
                 for handle in subhandles {
                     handle.join().map_err(|_| crate::Error::JoinError)??;
                 }
