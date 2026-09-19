@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::io;
 
-#[cfg(feature = "niffler")]
-#[cfg(feature = "niffler")]
 use fearless_simd::{dispatch, prelude::*, u8x64, Level};
 
 use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
