@@ -3,145 +3,13 @@ use std::io;
 
 use fearless_simd::{dispatch, prelude::*, u8x64, Level};
 
-use crate::{fastx::GenericReader, Error, Record, DEFAULT_MAX_RECORDS};
+use crate::{
+    base::{BatchSet, ReaderBase},
+    fastx::GenericReader,
+    Error, Record,
+};
 
-pub struct Reader<R: io::Read> {
-    /// Handle to the underlying reader (byte stream)
-    reader: R,
-    /// Small buffer to hold incomplete records between reads
-    overflow: Vec<u8>,
-    /// Flag to indicate end of file
-    eof: bool,
-    /// Sets the maximum capcity of records in batches for parallel processing
-    ///
-    /// If not set, the default `RecordSet` capacity is used.
-    batch_size: Option<usize>,
-    /// Maximum number of records to process before stopping
-    record_limit: Option<usize>,
-    /// Running count of records already yielded by this reader, used to
-    /// assign each parsed record its stable, global index in the file.
-    total_records: u64,
-}
-
-impl<R: io::Read> Reader<R> {
-    pub fn new(reader: R) -> Self {
-        Self {
-            overflow: Vec::with_capacity(1024),
-            reader,
-            eof: false,
-            batch_size: None,
-            record_limit: None,
-            total_records: 0,
-        }
-    }
-    pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
-        let mut reader = Self::new(reader);
-        reader.set_batch_size(batch_size)?;
-        Ok(reader)
-    }
-
-    /// Sets the maximum number of records per batch for parallel processing.
-    pub fn set_batch_size(&mut self, batch_size: usize) -> Result<(), Error> {
-        if batch_size == 0 {
-            return Err(Error::InvalidBatchSize(batch_size));
-        }
-        self.batch_size = Some(batch_size);
-        Ok(())
-    }
-
-    /// Limit processing to the first `n` records.
-    ///
-    /// When used with parallel processing, `fill()` will truncate batches to
-    /// stay within the limit and return `false` once the limit is reached,
-    /// stopping all worker threads cleanly.
-    pub fn set_record_limit(&mut self, n: usize) {
-        self.record_limit = Some(n);
-    }
-
-    /// Use the first record in the input to set the number of records per batch
-    /// so that the expected length per batch is approximately `batch_size_in_bp`.
-    pub fn update_batch_size_in_bp(&mut self, batch_size_in_bp: usize) -> Result<(), Error> {
-        let mut rset = self.new_record_set_with_size(1);
-        rset.fill(self)?;
-        let mut batch_size = 1;
-        if let Some(record) = rset.iter().next() {
-            let len = record?.seq_raw().len();
-            if len > 0 {
-                batch_size = batch_size_in_bp.div_ceil(len);
-            }
-        }
-        // Push the record back at the front of the reader.
-        self.reload(&mut rset);
-        // Update the batch size.
-        self.batch_size = Some(batch_size);
-        Ok(())
-    }
-
-    /// Initialize a new record set with a configured or default batch size
-    pub fn new_record_set(&self) -> RecordSet {
-        if let Some(batch_size) = self.batch_size {
-            RecordSet::new(batch_size)
-        } else {
-            RecordSet::default()
-        }
-    }
-
-    /// Initialize a new record set with a specified size
-    pub fn new_record_set_with_size(&self, size: usize) -> RecordSet {
-        RecordSet::new(size)
-    }
-
-    /// Add bytes to the overflow buffer.
-    ///
-    /// Use this method sparingly, it is mainly for internal use.
-    pub fn add_to_overflow(&mut self, buffer: &[u8]) {
-        self.overflow.extend_from_slice(buffer);
-    }
-    pub fn batch_size(&self) -> usize {
-        self.batch_size.unwrap_or(DEFAULT_MAX_RECORDS)
-    }
-    pub fn set_eof(&mut self) {
-        self.eof = true;
-    }
-    pub fn exhausted(&self) -> bool {
-        self.eof && self.overflow.is_empty()
-    }
-
-    /// Take back all bytes from the record set and prepend them to the overflow buffer
-    ///
-    /// This is an expensive operation and should be used sparingly.
-    pub fn reload(&mut self, rset: &mut RecordSet) {
-        // These records are being unread, so un-count them; they'll be
-        // reassigned the same indices when they're re-parsed.
-        self.total_records = self
-            .total_records
-            .saturating_sub(rset.positions.len() as u64);
-
-        // A complete slice of the record sets buffer
-        let buffer_slice = &rset.buffer;
-
-        // Get buffer lengths of incoming and existing data
-        let num_incoming = buffer_slice.len();
-        let num_existing = self.overflow.len();
-
-        // Allocate space in the overflow buffer for incoming bytes
-        let required_space = num_existing + num_incoming;
-        self.overflow
-            .resize(self.overflow.capacity().max(required_space), 0);
-
-        // Move current bytes to end of overflow buffer
-        self.overflow.copy_within(..num_existing, num_incoming);
-
-        // Copy incoming bytes to the beginning of the overflow buffer
-        self.overflow[..num_incoming].copy_from_slice(buffer_slice);
-
-        // Truncate the overflow buffer at the end of expected bytes (handles cases where unexpected null bytes are introduced)
-        self.overflow.truncate(required_space);
-
-        // Clear the record set
-        rset.clear();
-    }
-}
+pub type Reader<R> = ReaderBase<R, RecordSet>;
 
 /// Find every `>` in `buffer_prefix[search_from..]` with an explicit u8x64 SIMD compare,
 /// pushing the absolute offset of each match that starts a line (position 0 of the whole
@@ -583,6 +451,33 @@ impl Record for RefRecord<'_> {
     }
 }
 
+impl BatchSet for RecordSet {
+    fn with_capacity(capacity: usize) -> Self {
+        Self::new(capacity)
+    }
+    fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
+        RecordSet::fill(self, reader)
+    }
+    fn clear(&mut self) {
+        RecordSet::clear(self);
+    }
+    fn n_records(&self) -> usize {
+        RecordSet::n_records(self)
+    }
+    fn truncate(&mut self, n: usize) {
+        RecordSet::truncate(self, n);
+    }
+    fn buffer(&self) -> &[u8] {
+        &self.buffer
+    }
+    fn first_seq_len(&self) -> Result<Option<usize>, Error> {
+        self.iter()
+            .next()
+            .map(|r| r.map(|r| r.seq_raw().len()))
+            .transpose()
+    }
+}
+
 impl<R> GenericReader for crate::fasta::Reader<R>
 where
     R: io::Read + Send,
@@ -592,26 +487,11 @@ where
     type RefRecord<'a> = crate::fasta::RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet {
-        if let Some(batch_size) = self.batch_size {
-            Self::RecordSet::new(batch_size)
-        } else {
-            Self::RecordSet::default()
-        }
+        ReaderBase::new_record_set(self)
     }
 
-    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, crate::Error> {
-        if let Some(0) = self.record_limit {
-            return Ok(false);
-        }
-        let filled = record.fill(self)?;
-        if filled {
-            if let Some(remaining) = &mut self.record_limit {
-                let n = record.n_records().min(*remaining);
-                record.truncate(n);
-                *remaining -= n;
-            }
-        }
-        Ok(filled)
+    fn fill(&mut self, record: &mut Self::RecordSet) -> std::result::Result<bool, Self::Error> {
+        self.fill_limited(record)
     }
 
     fn iter(

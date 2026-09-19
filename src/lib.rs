@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod base;
 mod buffer;
 #[cfg(feature = "niffler")]
 mod builder;
