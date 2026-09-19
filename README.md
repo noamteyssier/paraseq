@@ -57,11 +57,11 @@ It is not recommended to use `paraseq` in this way - it will be more performant 
 
 ```rust
 use std::fs::File;
-use paraseq::{fastq, Record};
+use paraseq::{ReaderBuilder, Record};
 
 fn main() -> Result<(), paraseq::Error> {
     let path = "./data/sample.fastq";
-    let mut reader = fastq::Reader::from_path(path)?;
+    let mut reader = ReaderBuilder::path(path).build_fastq()?;
     let mut record_set = reader.new_record_set();
 
     while record_set.fill(&mut reader)? {
@@ -84,7 +84,7 @@ For an example of a single-end parallel processor see the [parallel example](htt
 
 ```rust
 use std::fs::File;
-use paraseq::{fastx, Error};
+use paraseq::{Error, ReaderBuilder};
 use paraseq::prelude::*;
 
 #[derive(Clone, Default)]
@@ -101,7 +101,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for MyProcessor {
 
 fn main() -> Result<(), Error> {
     let path = "./data/sample.fastq";
-    let reader = fastx::Reader::from_path(path)?;
+    let reader = ReaderBuilder::path(path).build()?;
     let mut processor = MyProcessor::default();
     let num_threads = 8;
 
@@ -120,8 +120,8 @@ For an example of paired parallel processing see the [paired example](https://gi
 ```rust
 use std::fs::File;
 use paraseq::{
-    fastx,
     Error,
+    ReaderBuilder,
     prelude::*,
 };
 
@@ -141,8 +141,8 @@ fn main() -> Result<(), Error> {
     let path1 = "./data/r1.fastq";
     let path2 = "./data/r2.fastq";
 
-    let reader1 = fastx::Reader::from_path(path1)?;
-    let reader2 = fastx::Reader::from_path(path2)?;
+    let reader1 = ReaderBuilder::path(path1).build()?;
+    let reader2 = ReaderBuilder::path(path2).build()?;
     let mut processor = MyPairedProcessor::default();
     let num_threads = 8;
 
@@ -160,8 +160,8 @@ For an example of interleaved parallel processing see the [interleaved example](
 ```rust
 use std::fs::File;
 use paraseq::{
-    fastx,
     Error,
+    ReaderBuilder,
     prelude::*,
 };
 
@@ -179,7 +179,7 @@ impl<Rf: Record> PairedParallelProcessor<Rf> for MyInterleavedProcessor {
 
 fn main() -> Result<(), Error> {
     let path = "./data/interleaved.fastq";
-    let reader = fastx::Reader::from_path(path)?;
+    let reader = ReaderBuilder::path(path).build()?;
     let mut processor = MyInterleavedProcessor::default();
     let num_threads = 8;
 
