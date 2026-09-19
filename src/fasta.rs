@@ -384,8 +384,11 @@ impl<'a> RefRecord<'a> {
             // Multiline sequence - need to filter out all newlines
             let mut filtered = Vec::with_capacity(seq_region.len() - newlines.len());
             let mut start = 0;
+            // Line endings are detected once per record from its first line
+            let first = newlines[0];
+            let cr = usize::from(first > 0 && seq_region[first - 1] == b'\r');
             for &end in &newlines {
-                filtered.extend_from_slice(&seq_region[start..end]);
+                filtered.extend_from_slice(&seq_region[start..(end - cr).max(start)]);
                 start = end + 1;
             }
             if start < seq_region.len() {
@@ -401,10 +404,10 @@ impl<'a> RefRecord<'a> {
         // line. That newline is a delimiter, not sequence data, so strip it
         // -- unless the last record in the file has none (no trailing '\n').
         let region = &self.buffer[self.positions.seq_start..self.positions.end];
-        match region.last() {
-            Some(b'\n') => &region[..region.len() - 1],
-            _ => region,
-        }
+        let mut end = region.len();
+        end -= usize::from(end > 0 && region[end - 1] == b'\n');
+        end -= usize::from(end > 0 && region[end - 1] == b'\r');
+        &region[..end]
     }
 
     /// Performs the actual buffer access
@@ -416,11 +419,14 @@ impl<'a> RefRecord<'a> {
     /// and there is nothing to strip.
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
-        let end = if right > left && self.buffer[right - 1] == b'\n' {
+        let mut end = if right > left && self.buffer[right - 1] == b'\n' {
             right - 1
         } else {
             right
         };
+        if end > left && self.buffer[end - 1] == b'\r' {
+            end -= 1;
+        }
         unsafe {
             // SAFETY: `left <= end <= right <= buffer.len()`, guaranteed by
             // `validate_record` and the check above.
@@ -745,6 +751,20 @@ mod tests {
         assert_eq!(parsed_record.seq_str(), "ACTG");
 
         assert!(!record_set.fill(&mut reader).unwrap());
+    }
+
+    #[test]
+    fn test_crlf() {
+        let data = ">a\r\nAC\r\nTG\r\n>b\r\nGG\r\n>c\r\nTT\r";
+        let mut reader = Reader::new(Cursor::new(data));
+        let mut record_set = RecordSet::new(3);
+        assert!(record_set.fill(&mut reader).unwrap());
+        let records: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+        let got: Vec<_> = records.iter().map(|r| (r.id_str(), r.seq_str())).collect();
+        assert_eq!(
+            got,
+            [("a", "ACTG".into()), ("b", "GG".into()), ("c", "TT".into())]
+        );
     }
 
     #[test]
