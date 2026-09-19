@@ -3,6 +3,7 @@ pub(crate) mod multi;
 mod ordered;
 pub(crate) mod paired;
 pub mod pool;
+mod pool_worker;
 mod processor;
 pub(crate) mod reader;
 pub(crate) mod single;

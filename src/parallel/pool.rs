@@ -32,9 +32,7 @@
 //! An active worker checks one relaxed atomic once per *batch* — not per
 //! record — and touches the mutex only when parking or being woken.
 
-mod processor;
-
-pub(crate) use processor::process_parallel_pool_range;
+pub(crate) use super::pool_worker::process_parallel_pool_range;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
