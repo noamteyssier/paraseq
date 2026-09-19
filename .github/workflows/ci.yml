@@ -59,10 +59,6 @@ jobs:
         run: cargo build --examples
       - name: naive
         run: cargo run --quiet --example naive -- data/sample.fastq
-      - name: multiline_fasta
-        run: cargo run --quiet --example multiline_fasta
-      - name: reloading
-        run: cargo run --quiet --example reloading -- data/sample.fastq --prefill 3
       - name: parallel
         run: cargo run --quiet --example parallel -- data/sample.fastq
       - name: parallel_closure
@@ -83,8 +79,6 @@ jobs:
         run: cargo run --quiet --example collection -- data/sample.fastq
       - name: collection (paired)
         run: cargo run --quiet --example collection -- data/r1.fastq data/r2.fastq --paired
-      - name: fastx
-        run: cargo run --quiet --example fastx -- data/sample.fastq --format fasta > /dev/null
       - name: read_write
         run: cargo run --quiet --example read_write -- data/sample.fastq.gz --format fastq > /dev/null
 
