@@ -6,23 +6,14 @@
 //! build it as its own binary.
 
 use std::fs::File;
-use std::io::{stdin, stdout, Read, Write};
+use std::io::{stdout, Write};
 use std::sync::{Arc, Mutex};
 
 use clap::ValueEnum;
 use paraseq::prelude::*;
 use paraseq::{Error, Record};
 
-pub type BoxedReader = Box<dyn Read + Send>;
 pub type BoxedWriter = Box<dyn Write + Send>;
-
-/// Opens `path` for reading, or stdin if `None`.
-pub fn input_handle(path: &Option<String>) -> std::io::Result<BoxedReader> {
-    match path {
-        Some(path) => Ok(Box::new(File::open(path)?)),
-        None => Ok(Box::new(stdin())),
-    }
-}
 
 /// Opens `path` for writing (truncating/creating it), or stdout if `None`.
 pub fn output_handle(path: &Option<String>) -> std::io::Result<BoxedWriter> {

@@ -16,8 +16,8 @@ use paraseq::{prelude::*, ReaderBuilder};
 
 #[derive(Parser)]
 struct Cli {
-    /// Input file path
-    input: String,
+    /// Input file path (reads stdin if omitted)
+    input: Option<String>,
 
     /// Number of records to prefill (peek at) before reloading
     #[clap(short, long, default_value_t = 3)]
@@ -28,76 +28,18 @@ struct Cli {
     threads: usize,
 }
 
-fn reload_fastq(path: &str, prefill: usize, threads: usize) -> Result<()> {
-    let mut reader = ReaderBuilder::path(path).build_fastq()?;
-    let mut rset = reader.new_record_set_with_size(prefill);
+fn main() -> Result<()> {
+    let args = Cli::parse();
+    let mut reader = ReaderBuilder::optional_path(args.input).build()?;
+    let mut rset = reader.new_record_set_with_size(args.prefill);
     if !rset.fill(&mut reader)? {
-        bail!("No sequences in input")
+        bail!("No records in input")
     }
-    eprintln!(
-        "(fastq) prefilled {} records",
-        rset.iter().collect::<Result<Vec<_>, _>>()?.len()
-    );
-
-    reader.reload(&mut rset);
-
-    let mut processor = SeqSum::default();
-    reader.process_parallel(&mut processor, threads)?;
-    eprintln!("(fastq) num_records: {}", processor.num_records());
-    eprintln!("(fastq) byte_sum: {}", processor.byte_sum());
-    Ok(())
-}
-
-fn reload_fasta(path: &str, prefill: usize, threads: usize) -> Result<()> {
-    let mut reader = ReaderBuilder::path(path).build_fasta()?;
-    let mut rset = reader.new_record_set_with_size(prefill);
-    if !rset.fill(&mut reader)? {
-        bail!("No sequences in input")
-    }
-    eprintln!(
-        "(fasta) prefilled {} records",
-        rset.iter().collect::<Result<Vec<_>, _>>()?.len()
-    );
-
-    reader.reload(&mut rset);
-
-    let mut processor = SeqSum::default();
-    reader.process_parallel(&mut processor, threads)?;
-    eprintln!("(fasta) num_records: {}", processor.num_records());
-    eprintln!("(fasta) byte_sum: {}", processor.byte_sum());
-    Ok(())
-}
-
-fn reload_fastx(path: &str, prefill: usize, threads: usize) -> Result<()> {
-    let mut reader = ReaderBuilder::path(path).build()?;
-    let mut rset = reader.new_record_set_with_size(prefill);
-    if !rset.fill(&mut reader)? {
-        bail!("No sequences in input")
-    }
-    eprintln!(
-        "(fastx) prefilled {} records",
-        rset.iter().collect::<Result<Vec<_>, _>>()?.len()
-    );
-
+    eprintln!("prefilled {} records", rset.iter().count());
     reader.reload(&mut rset)?;
 
     let mut processor = SeqSum::default();
-    reader.process_parallel(&mut processor, threads)?;
-    eprintln!("(fastx) num_records: {}", processor.num_records());
-    eprintln!("(fastx) byte_sum: {}", processor.byte_sum());
-    Ok(())
-}
-
-fn main() -> Result<()> {
-    let args = Cli::parse();
-
-    // Format-specific readers, side by side with the auto-detecting `fastx` reader.
-    if args.input.ends_with(".fasta") {
-        reload_fasta(&args.input, args.prefill, args.threads)?;
-    } else {
-        reload_fastq(&args.input, args.prefill, args.threads)?;
-    }
-    reload_fastx(&args.input, args.prefill, args.threads)?;
-
+    reader.process_parallel(&mut processor, args.threads)?;
+    processor.report();
     Ok(())
 }
