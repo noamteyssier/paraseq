@@ -11,51 +11,52 @@ use crate::{
 
 pub type Reader<R> = ReaderBase<R, RecordSet>;
 
+/// Bytes scanned per scratch fill in `simd_flatten_newlines` (must be a multiple of 64)
+const FLATTEN_WINDOW: usize = 1024;
+
 /// Append the absolute offset (one past `\n`) of every `\n` in `haystack` to `out`.
 ///
-/// Branch-light: each 64-byte chunk unconditionally writes 4 offsets and advances by the
-/// popcount, so the trip count doesn't depend on how many newlines the chunk holds.
+/// Branch-light: each 64-byte chunk unconditionally writes 4 offsets into a stack scratch
+/// and advances by the popcount, so the trip count doesn't depend on how many newlines the
+/// chunk holds. The scratch is flushed into `out` once per window.
 #[inline(always)]
 fn simd_flatten_newlines<S: Simd>(
     simd: S,
     haystack: &[u8],
     search_from: usize,
+    scratch: &mut [usize; FLATTEN_WINDOW + 4],
     out: &mut Vec<usize>,
 ) {
-    out.reserve(haystack.len() + 64);
     let needle = u8x64::splat(simd, b'\n');
-    let (chunks, remainder) = haystack.as_chunks::<64>();
-    let mut len = out.len();
-    let ptr = out.as_mut_ptr();
     let mut base = search_from + 1;
-    for chunk in chunks {
-        let v = u8x64::from_slice(simd, chunk);
-        let mut bits = v.simd_eq(needle).to_bitmask();
-        let cnt = bits.count_ones() as usize;
-        // SAFETY: `reserve` above leaves room for `len + max(4, cnt)` writes, since at
-        // most `haystack.len()` offsets are pushed and we overshoot by at most 4.
-        unsafe {
-            for k in 0..4 {
-                *ptr.add(len + k) = base + bits.trailing_zeros() as usize;
+    for window in haystack.chunks(FLATTEN_WINDOW) {
+        let (chunks, remainder) = window.as_chunks::<64>();
+        let mut n = 0;
+        for chunk in chunks {
+            let v = u8x64::from_slice(simd, chunk);
+            let mut bits = v.simd_eq(needle).to_bitmask();
+            let cnt = bits.count_ones() as usize;
+            let head: &mut [usize; 4] = (&mut scratch[n..n + 4]).try_into().unwrap();
+            for slot in head {
+                *slot = base + bits.trailing_zeros() as usize;
                 bits &= bits.wrapping_sub(1);
             }
             for k in 4..cnt {
-                *ptr.add(len + k) = base + bits.trailing_zeros() as usize;
+                scratch[n + k] = base + bits.trailing_zeros() as usize;
                 bits &= bits.wrapping_sub(1);
             }
+            n += cnt;
+            base += 64;
         }
-        len += cnt;
-        base += 64;
-    }
-    for (i, &b) in remainder.iter().enumerate() {
-        if b == b'\n' {
-            // SAFETY: as above
-            unsafe { *ptr.add(len) = base + i };
-            len += 1;
+        for (i, &b) in remainder.iter().enumerate() {
+            if b == b'\n' {
+                scratch[n] = base + i;
+                n += 1;
+            }
         }
+        base += remainder.len();
+        out.extend_from_slice(&scratch[..n]);
     }
-    // SAFETY: `len` slots were initialized above
-    unsafe { out.set_len(len) };
 }
 
 #[derive(Debug)]
@@ -70,6 +71,8 @@ pub struct RecordSet {
     record_start: usize,
     /// Scratch: pending newline offsets followed by the newlines of the bytes being scanned
     nl: Vec<usize>,
+    /// Scratch for `simd_flatten_newlines`, kept here so it is zeroed once, not per scan
+    nl_scratch: Box<[usize; FLATTEN_WINDOW + 4]>,
     /// Position tracking for complete records
     positions: Vec<Positions>,
     /// Maximum number of records to store
@@ -94,6 +97,7 @@ impl RecordSet {
             pending_nl_pos: [0; 3],
             record_start: 0,
             nl: Vec::new(),
+            nl_scratch: Box::new([0; FLATTEN_WINDOW + 4]),
             positions: Vec::with_capacity(capacity),
             capacity,
             avg_record_size: 1024, // 1KB default
@@ -134,8 +138,8 @@ impl RecordSet {
         self.nl.clear();
         self.nl
             .extend_from_slice(&self.pending_nl_pos[..self.pending_nl as usize]);
-        let nl = &mut self.nl;
-        dispatch!(level, simd => simd_flatten_newlines(simd, haystack, search_from, nl));
+        let (scratch, nl) = (&mut self.nl_scratch, &mut self.nl);
+        dispatch!(level, simd => simd_flatten_newlines(simd, haystack, search_from, scratch, nl));
 
         let n_records = self.nl.len() / 4;
         let take = n_records.min(self.capacity - self.positions.len());
