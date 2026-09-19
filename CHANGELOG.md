@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - `ReaderBuilder`, a single entry point for constructing `fasta`/`fastq`/`fastx` readers from a path, stdin, url, ssh, or gcs source, with chainable `.batch_size()`, `.record_limit()`, `.ssh_args()`, `.gcloud_args()`, and `.project()` config.
+- Windows (`\r\n`) line endings in `fasta` and `fastq`: a `\r` before the terminating `\n` is no longer treated as part of the id, sequence, or quality. Previously it was counted as a base, or caused a spurious sequence/quality length mismatch. No measurable throughput change on FASTQ; ~1% on FASTA. For multi-line FASTA, the line ending is detected from each record's first line, and `seq_raw()` still returns the raw bytes including line endings.
 
 ### Changed
 
