@@ -11,70 +11,51 @@ use crate::{
 
 pub type Reader<R> = ReaderBase<R, RecordSet>;
 
-/// Mutable pending-newline state threaded through `simd_scan_newlines`, bundled to keep
-/// its argument count clippy-friendly.
-struct ScanState<'a> {
-    pending_nl: &'a mut u8,
-    pending_nl_pos: &'a mut [usize; 3],
-    record_start: &'a mut usize,
-    positions: &'a mut Vec<Positions>,
-}
-
-/// Find every `\n` in `haystack` with an explicit u8x64 SIMD compare, folding each match
-/// directly into the pending-newline state machine (mirrors `RecordSet::scan_for_records`).
-/// Returns true as soon as `positions.len() >= capacity` (caller should stop reading).
+/// Append the absolute offset (one past `\n`) of every `\n` in `haystack` to `out`.
+///
+/// Branch-light: each 64-byte chunk unconditionally writes 4 offsets and advances by the
+/// popcount, so the trip count doesn't depend on how many newlines the chunk holds.
 #[inline(always)]
-fn simd_scan_newlines<S: Simd>(
+fn simd_flatten_newlines<S: Simd>(
     simd: S,
     haystack: &[u8],
     search_from: usize,
-    state: &mut ScanState,
-    capacity: usize,
-) -> bool {
-    let mut record_nl = |abs: usize| -> bool {
-        if *state.pending_nl < 3 {
-            state.pending_nl_pos[*state.pending_nl as usize] = abs;
-            *state.pending_nl += 1;
-            false
-        } else {
-            state.positions.push(Positions {
-                start: *state.record_start,
-                seq_start: state.pending_nl_pos[0],
-                sep_start: state.pending_nl_pos[1],
-                qual_start: state.pending_nl_pos[2],
-                end: abs,
-            });
-            *state.record_start = abs;
-            *state.pending_nl = 0;
-            state.positions.len() >= capacity
-        }
-    };
-
+    out: &mut Vec<usize>,
+) {
+    out.reserve(haystack.len() + 64);
     let needle = u8x64::splat(simd, b'\n');
     let (chunks, remainder) = haystack.as_chunks::<64>();
-    let mut base = 0usize;
+    let mut len = out.len();
+    let ptr = out.as_mut_ptr();
+    let mut base = search_from + 1;
     for chunk in chunks {
         let v = u8x64::from_slice(simd, chunk);
         let mut bits = v.simd_eq(needle).to_bitmask();
-        while bits != 0 {
-            let bit = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let abs = base + bit + search_from + 1;
-            if record_nl(abs) {
-                return true;
+        let cnt = bits.count_ones() as usize;
+        // SAFETY: `reserve` above leaves room for `len + max(4, cnt)` writes, since at
+        // most `haystack.len()` offsets are pushed and we overshoot by at most 4.
+        unsafe {
+            for k in 0..4 {
+                *ptr.add(len + k) = base + bits.trailing_zeros() as usize;
+                bits &= bits.wrapping_sub(1);
+            }
+            for k in 4..cnt {
+                *ptr.add(len + k) = base + bits.trailing_zeros() as usize;
+                bits &= bits.wrapping_sub(1);
             }
         }
+        len += cnt;
         base += 64;
     }
     for (i, &b) in remainder.iter().enumerate() {
         if b == b'\n' {
-            let abs = base + i + search_from + 1;
-            if record_nl(abs) {
-                return true;
-            }
+            // SAFETY: as above
+            unsafe { *ptr.add(len) = base + i };
+            len += 1;
         }
     }
-    false
+    // SAFETY: `len` slots were initialized above
+    unsafe { out.set_len(len) };
 }
 
 #[derive(Debug)]
@@ -87,6 +68,8 @@ pub struct RecordSet {
     pending_nl_pos: [usize; 3],
     /// Byte offset where the current record started
     record_start: usize,
+    /// Scratch: pending newline offsets followed by the newlines of the bytes being scanned
+    nl: Vec<usize>,
     /// Position tracking for complete records
     positions: Vec<Positions>,
     /// Maximum number of records to store
@@ -110,6 +93,7 @@ impl RecordSet {
             pending_nl: 0,
             pending_nl_pos: [0; 3],
             record_start: 0,
+            nl: Vec::new(),
             positions: Vec::with_capacity(capacity),
             capacity,
             avg_record_size: 1024, // 1KB default
@@ -142,24 +126,37 @@ impl RecordSet {
         }
     }
 
-    /// Scan bytes `search_from..search_to` in the buffer, building Positions inline.
+    /// Scan bytes `search_from..search_to` in the buffer, building Positions.
     /// Returns true if capacity was reached (caller should stop reading).
     fn scan_for_records(&mut self, search_from: usize, search_to: usize) -> bool {
         let level = Level::new();
         let haystack = &self.buffer[search_from..search_to];
-        let mut state = ScanState {
-            pending_nl: &mut self.pending_nl,
-            pending_nl_pos: &mut self.pending_nl_pos,
-            record_start: &mut self.record_start,
-            positions: &mut self.positions,
-        };
-        dispatch!(level, simd => simd_scan_newlines(
-            simd,
-            haystack,
-            search_from,
-            &mut state,
-            self.capacity,
-        ))
+        self.nl.clear();
+        self.nl
+            .extend_from_slice(&self.pending_nl_pos[..self.pending_nl as usize]);
+        let nl = &mut self.nl;
+        dispatch!(level, simd => simd_flatten_newlines(simd, haystack, search_from, nl));
+
+        let n_records = self.nl.len() / 4;
+        let take = n_records.min(self.capacity - self.positions.len());
+        for c in self.nl.chunks_exact(4).take(take) {
+            self.positions.push(Positions {
+                start: self.record_start,
+                seq_start: c[0],
+                sep_start: c[1],
+                qual_start: c[2],
+                end: c[3],
+            });
+            self.record_start = c[3];
+        }
+        if self.positions.len() >= self.capacity {
+            self.pending_nl = 0;
+            return true;
+        }
+        let rest = &self.nl[n_records * 4..];
+        self.pending_nl_pos[..rest.len()].copy_from_slice(rest);
+        self.pending_nl = rest.len() as u8;
+        false
     }
 
     /// Main function to fill the record set
