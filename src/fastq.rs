@@ -28,26 +28,34 @@ fn simd_flatten_newlines<S: Simd>(
     out: &mut Vec<usize>,
 ) {
     let needle = u8x64::splat(simd, b'\n');
+    // Offsets are one past the '\n'
     let mut base = search_from + 1;
     for window in haystack.chunks(FLATTEN_WINDOW) {
         let (chunks, remainder) = window.as_chunks::<64>();
         let mut n = 0;
         for chunk in chunks {
             let v = u8x64::from_slice(simd, chunk);
+            // Bit i is set iff byte i of the chunk is a '\n'
             let mut bits = v.simd_eq(needle).to_bitmask();
             let cnt = bits.count_ones() as usize;
+            // Always write 4 slots (no branch); slots past `cnt` are junk, overwritten next chunk
             let head: &mut [usize; 4] = (&mut scratch[n..n + 4]).try_into().unwrap();
             for slot in head {
+                // Lowest set bit = next newline
                 *slot = base + bits.trailing_zeros() as usize;
+                // Clear the lowest set bit
                 bits &= bits.wrapping_sub(1);
             }
+            // Rare: chunk has more than 4 newlines
             for k in 4..cnt {
                 scratch[n + k] = base + bits.trailing_zeros() as usize;
                 bits &= bits.wrapping_sub(1);
             }
+            // Advance by the real count only
             n += cnt;
             base += 64;
         }
+        // Scalar tail: the last window's final <64 bytes
         for (i, &b) in remainder.iter().enumerate() {
             if b == b'\n' {
                 scratch[n] = base + i;
@@ -55,6 +63,7 @@ fn simd_flatten_newlines<S: Simd>(
             }
         }
         base += remainder.len();
+        // Flush the window's real offsets (junk slots excluded)
         out.extend_from_slice(&scratch[..n]);
     }
 }
@@ -71,7 +80,7 @@ pub struct RecordSet {
     record_start: usize,
     /// Scratch: pending newline offsets followed by the newlines of the bytes being scanned
     nl: Vec<usize>,
-    /// Scratch for `simd_flatten_newlines`, kept here so it is zeroed once, not per scan
+    /// Scratch for `simd_flatten_newlines`; zeroed at start and reused
     nl_scratch: Box<[usize; FLATTEN_WINDOW + 4]>,
     /// Position tracking for complete records
     positions: Vec<Positions>,
