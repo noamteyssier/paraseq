@@ -11,7 +11,7 @@ use crate::{
         },
         MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor,
     },
-    ProcessError, Record, Result,
+    Error, Record, Result,
 };
 
 pub trait ParallelReader {
@@ -122,7 +122,7 @@ pub trait PoolParallelReader: ParallelReader {
 impl<S: GenericReader> ParallelReader for S
 where
     for<'a> <S as GenericReader>::RefRecord<'a>: Record,
-    ProcessError: From<S::Error>,
+    Error: From<S::Error>,
 {
     type Rf<'a> = S::RefRecord<'a>;
 
@@ -280,7 +280,7 @@ where
 impl<S: GenericReader> PoolParallelReader for S
 where
     for<'a> <S as GenericReader>::RefRecord<'a>: Record,
-    ProcessError: From<S::Error>,
+    Error: From<S::Error>,
 {
     fn process_parallel_pool<T>(
         self,
@@ -316,10 +316,10 @@ impl<R: GenericReader> SingleReader<R> {
 
 impl<R: GenericReader> MTGenericReader for SingleReader<R>
 where
-    ProcessError: From<R::Error>,
+    Error: From<R::Error>,
 {
     type RecordSet = R::RecordSet;
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = R::RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet {

@@ -25,8 +25,7 @@ pub mod remote;
 
 #[cfg(feature = "niffler")]
 pub use builder::ReaderBuilder;
-pub use error::Error;
-pub use parallel::{ProcessError, Result};
+pub use error::{Error, IntoParaseqError, Result};
 pub use record::Record;
 
 /// Default maximum number of records in a record set.

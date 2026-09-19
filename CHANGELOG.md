@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - The resizable `ThreadPool`/`PoolParallelReader` API is now always available (no longer gated behind the `pool` feature flag), and is the sole implementation behind every parallel entry point: a fixed thread count is now a `ThreadPool` whose target never moves. Benchmarked against the previous fixed-thread implementation on a 50M-record FASTQ across 1/2/4/8/10 threads with no measurable overhead (within ~1% noise).
 - `paraseq::gcs` and `paraseq::ssh` moved to `paraseq::remote::gcs` and `paraseq::remote::ssh`, grouping the remote-transport backends under one module instead of the crate root. Most callers go through `ReaderBuilder` and are unaffected.
+- `ProcessError` merged into `Error`, and `paraseq::Result<T>` now aliases `Result<T, Error>`, so the crate has one error type instead of two with a wrapping relationship between them. `IntoProcessError`/`into_process_error` renamed to `IntoParaseqError`/`into_paraseq_error` to match.
 
 ### Removed
 

@@ -84,7 +84,7 @@ For an example of a single-end parallel processor see the [parallel example](htt
 
 ```rust
 use std::fs::File;
-use paraseq::{fastx, ProcessError};
+use paraseq::{fastx, Error};
 use paraseq::prelude::*;
 
 #[derive(Clone, Default)]
@@ -93,13 +93,13 @@ struct MyProcessor {
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for MyProcessor {
-    fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+    fn process_record(&mut self, record: Rf) -> Result<(), Error> {
         // Process record in parallel
         Ok(())
     }
 }
 
-fn main() -> Result<(), ProcessError> {
+fn main() -> Result<(), Error> {
     let path = "./data/sample.fastq";
     let reader = fastx::Reader::from_path(path)?;
     let mut processor = MyProcessor::default();
@@ -121,7 +121,7 @@ For an example of paired parallel processing see the [paired example](https://gi
 use std::fs::File;
 use paraseq::{
     fastx,
-    ProcessError,
+    Error,
     prelude::*,
 };
 
@@ -131,13 +131,13 @@ struct MyPairedProcessor {
 }
 
 impl<Rf: Record> PairedParallelProcessor<Rf> for MyPairedProcessor {
-    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), ProcessError> {
+    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), Error> {
         // Process paired records in parallel
         Ok(())
     }
 }
 
-fn main() -> Result<(), ProcessError> {
+fn main() -> Result<(), Error> {
     let path1 = "./data/r1.fastq";
     let path2 = "./data/r2.fastq";
 
@@ -161,7 +161,7 @@ For an example of interleaved parallel processing see the [interleaved example](
 use std::fs::File;
 use paraseq::{
     fastx,
-    ProcessError,
+    Error,
     prelude::*,
 };
 
@@ -171,13 +171,13 @@ struct MyInterleavedProcessor {
 }
 
 impl<Rf: Record> PairedParallelProcessor<Rf> for MyInterleavedProcessor {
-    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), ProcessError> {
+    fn process_record_pair(&mut self, r1: Rf, r2: Rf) -> Result<(), Error> {
         // Process interleaved paired records in parallel
         Ok(())
     }
 }
 
-fn main() -> Result<(), ProcessError> {
+fn main() -> Result<(), Error> {
     let path = "./data/interleaved.fastq";
     let reader = fastx::Reader::from_path(path)?;
     let mut processor = MyInterleavedProcessor::default();

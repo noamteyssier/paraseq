@@ -3,14 +3,11 @@ use std::sync::OnceLock;
 use std::{io, path::Path};
 
 use rust_htslib::bam::{self, Read as BamRead};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 use crate::fastx::GenericReader;
 use crate::DEFAULT_MAX_RECORDS;
-use crate::{
-    parallel::{IntoProcessError, Result},
-    ProcessError, Record,
-};
+use crate::{Error, Record, Result};
 
 /// Type alias for the internal reader type used by htslib
 pub type HtslibReader = Box<dyn io::Read + Send>;
@@ -19,7 +16,7 @@ pub type HtslibReader = Box<dyn io::Read + Send>;
 pub const BATCH_SIZE: usize = 1024;
 
 /// Error type for parallel htslib operations.
-#[derive(Error, Debug)]
+#[derive(ThisError, Debug)]
 pub enum ParallelHtslibError {
     #[error("Record synchronization error for htslib files.")]
     PairedRecordMismatch,
@@ -157,7 +154,7 @@ impl RecordSet {
 
 impl GenericReader for Reader {
     type RecordSet = RecordSet;
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet {
@@ -200,11 +197,11 @@ impl GenericReader for Reader {
         let rec2 = rec2.inner;
         if !rec1.is_paired() {
             let qname = std::str::from_utf8(rec1.qname()).unwrap().to_string();
-            return Err(ParallelHtslibError::UnpairedRecord(qname).into_process_error());
+            return Err(ParallelHtslibError::UnpairedRecord(qname).into());
         }
         if !rec2.is_paired() {
             let qname = std::str::from_utf8(rec2.qname()).unwrap().to_string();
-            return Err(ParallelHtslibError::UnpairedRecord(qname).into_process_error());
+            return Err(ParallelHtslibError::UnpairedRecord(qname).into());
         }
 
         if rec1.qname() != rec2.qname() {
@@ -212,22 +209,18 @@ impl GenericReader for Reader {
                 std::str::from_utf8(rec1.qname()).unwrap().to_string(),
                 std::str::from_utf8(rec2.qname()).unwrap().to_string(),
             )
-            .into_process_error());
+            .into());
         }
 
         if rec1.is_first_in_template() && rec2.is_first_in_template() {
-            return Err(
-                ParallelHtslibError::PairedRecordsWithSameTemplatePosition.into_process_error()
-            );
+            return Err(ParallelHtslibError::PairedRecordsWithSameTemplatePosition.into());
         }
 
         Ok(())
     }
 
     fn set_threads(&mut self, threads: usize) -> std::result::Result<(), Self::Error> {
-        self.reader
-            .set_threads(threads)
-            .map_err(IntoProcessError::into_process_error)
+        self.reader.set_threads(threads).map_err(Into::into)
     }
 }
 

@@ -1,13 +1,14 @@
 use itertools::Itertools;
 
 use crate::parallel::processor::GenericProcessor;
-use crate::parallel::{error::Result, pool::process_parallel_pool_range, ProcessError, ThreadPool};
+use crate::parallel::{pool::process_parallel_pool_range, ThreadPool};
+use crate::{Error, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A Sync version of GenericReader, i.e. for types with internal mutexes that can be shared between threads.
 pub(crate) trait MTGenericReader: Send + Sync {
     type RecordSet: Send + 'static;
-    type Error: Into<ProcessError>;
+    type Error: Into<Error>;
     type RefRecord<'a>;
 
     fn new_record_set(&self) -> Self::RecordSet;
@@ -140,9 +141,8 @@ mod tests {
     use crate::fastq;
     use crate::parallel::{
         MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor, ParallelReader,
-        ProcessError,
     };
-    use crate::Record;
+    use crate::{Error, Record};
 
     fn make_fastq(n: usize) -> Vec<u8> {
         (0..n)
@@ -163,12 +163,12 @@ mod tests {
     }
 
     impl<Rf: Record> ParallelProcessor<Rf> for CountingProcessor {
-        fn process_record(&mut self, _record: Rf) -> Result<(), ProcessError> {
+        fn process_record(&mut self, _record: Rf) -> Result<(), Error> {
             self.local_count += 1;
             Ok(())
         }
 
-        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_batch_complete(&mut self) -> Result<(), Error> {
             self.global_count
                 .fetch_add(self.local_count, Ordering::Relaxed);
             self.local_count = 0;
@@ -183,12 +183,12 @@ mod tests {
     }
 
     impl<Rf: Record> ParallelProcessor<Rf> for IndexCollectingProcessor {
-        fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+        fn process_record(&mut self, record: Rf) -> Result<(), Error> {
             self.local_indices.push(record.index());
             Ok(())
         }
 
-        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_batch_complete(&mut self) -> Result<(), Error> {
             self.global_indices
                 .lock()
                 .unwrap()
@@ -382,7 +382,7 @@ mod tests {
         }
 
         impl<Rf: Record> ParallelProcessor<Rf> for IdCollector {
-            fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+            fn process_record(&mut self, record: Rf) -> Result<(), Error> {
                 let idx: usize = record
                     .id_str()
                     .strip_prefix("seq")
@@ -502,12 +502,12 @@ mod tests {
     }
 
     impl<Rf: Record> PairedParallelProcessor<Rf> for PairedCountingProcessor {
-        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), ProcessError> {
+        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), Error> {
             self.local_count += 1;
             Ok(())
         }
 
-        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_batch_complete(&mut self) -> Result<(), Error> {
             self.global_count
                 .fetch_add(self.local_count, Ordering::Relaxed);
             self.local_count = 0;
@@ -583,12 +583,12 @@ mod tests {
     }
 
     impl<Rf: Record> MultiParallelProcessor<Rf> for MultiCountingProcessor {
-        fn process_multi_record(&mut self, _records: &[Rf]) -> Result<(), ProcessError> {
+        fn process_multi_record(&mut self, _records: &[Rf]) -> Result<(), Error> {
             self.local_count += 1;
             Ok(())
         }
 
-        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_batch_complete(&mut self) -> Result<(), Error> {
             self.global_count
                 .fetch_add(self.local_count, Ordering::Relaxed);
             self.local_count = 0;

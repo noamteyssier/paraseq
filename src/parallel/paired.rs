@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use itertools::Itertools;
 
 use crate::fastx::GenericReader;
-use crate::parallel::error::ProcessError;
+use crate::Error;
 
 use super::single::{BatchCounter, MTGenericReader};
 
@@ -25,10 +25,10 @@ impl<R: GenericReader> PairedReader<R> {
 
 impl<R: GenericReader> MTGenericReader for PairedReader<R>
 where
-    ProcessError: From<R::Error>,
+    Error: From<R::Error>,
 {
     type RecordSet = (R::RecordSet, R::RecordSet);
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = (R::RefRecord<'a>, R::RefRecord<'a>);
 
     fn new_record_set(&self) -> Self::RecordSet {
@@ -56,7 +56,7 @@ where
             let filled_2 = R::fill(&mut r2, &mut record_set.1)?;
             drop(r2);
             return if filled_2 {
-                Err(ProcessError::PairedRecordMismatch("R1"))
+                Err(Error::PairedRecordMismatch("R1"))
             } else {
                 Ok(None)
             };
@@ -75,7 +75,7 @@ where
             // for - a length mismatch, not ordinary EOF. Must error rather
             // than return `Ok(None)`, or that leftover batch is silently
             // dropped with no signal to the caller.
-            return Err(ProcessError::PairedRecordMismatch("R2"));
+            return Err(Error::PairedRecordMismatch("R2"));
         }
         Ok(Some(claimed))
     }
@@ -88,10 +88,8 @@ where
 
         // incompatible record set sizes
         if it1.len() != it2.len() {
-            let error_iter = std::iter::once(Err(ProcessError::IncompatibleRecordSetSizes(
-                it1.len(),
-                it2.len(),
-            )));
+            let error_iter =
+                std::iter::once(Err(Error::IncompatibleRecordSetSizes(it1.len(), it2.len())));
             return either::Either::Left(error_iter);
         }
 
@@ -129,10 +127,10 @@ impl<R: GenericReader> InterleavedPairedReader<R> {
 
 impl<R: GenericReader> MTGenericReader for InterleavedPairedReader<R>
 where
-    ProcessError: From<R::Error>,
+    Error: From<R::Error>,
 {
     type RecordSet = R::RecordSet;
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = (R::RefRecord<'a>, R::RefRecord<'a>);
 
     fn new_record_set(&self) -> Self::RecordSet {
@@ -152,7 +150,7 @@ where
         let batch_size = {
             let n_records = R::iter(record_set).len();
             if !n_records.is_multiple_of(2) {
-                return Err(ProcessError::IncompatibleInterleavedSetSize(n_records));
+                return Err(Error::IncompatibleInterleavedSetSize(n_records));
             }
             n_records / 2
         };
@@ -188,7 +186,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::fastq;
-    use crate::parallel::{PairedParallelProcessor, ParallelReader, ProcessError};
+    use crate::parallel::{PairedParallelProcessor, ParallelReader};
+    use crate::Error;
     use crate::Record;
 
     fn make_fastq(n: usize) -> Vec<u8> {
@@ -208,11 +207,11 @@ mod tests {
         }
     }
     impl<Rf: Record> PairedParallelProcessor<Rf> for CountingPairProcessor {
-        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), ProcessError> {
+        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), Error> {
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_batch_complete(&mut self) -> Result<(), Error> {
             self.global_count
                 .fetch_add(self.local_count, Ordering::Relaxed);
             self.local_count = 0;

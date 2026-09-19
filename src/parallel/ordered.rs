@@ -5,8 +5,8 @@ use smallvec::SmallVec;
 
 use crate::{Record, MAX_ARITY};
 
-use super::error::Result;
 use super::processor::{MultiParallelProcessor, PairedParallelProcessor, ParallelProcessor};
+use crate::Result;
 
 /// Coordinates worker threads so a per-batch side effect (in practice,
 /// `on_batch_complete`) runs in the same order batches were claimed from the
@@ -187,7 +187,8 @@ mod tests {
 
     use super::Ordered;
     use crate::fastq;
-    use crate::parallel::{ParallelProcessor, ParallelReader, ProcessError};
+    use crate::parallel::{ParallelProcessor, ParallelReader};
+    use crate::Error;
     use crate::Record;
 
     fn make_fastq(n: usize) -> Vec<u8> {
@@ -216,7 +217,7 @@ mod tests {
     }
 
     impl<Rf: Record> ParallelProcessor<Rf> for RecordingProcessor {
-        fn process_record(&mut self, record: Rf) -> Result<(), ProcessError> {
+        fn process_record(&mut self, record: Rf) -> Result<(), Error> {
             let idx = record_index(&record);
             // Bias early-stream records to be slower to process than later
             // ones, to actively encourage out-of-order batch completion in
@@ -228,7 +229,7 @@ mod tests {
             Ok(())
         }
 
-        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_batch_complete(&mut self) -> Result<(), Error> {
             self.emitted
                 .lock()
                 .unwrap()

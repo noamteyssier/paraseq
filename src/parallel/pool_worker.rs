@@ -3,7 +3,7 @@ use itertools::Itertools;
 use crate::parallel::ordered::OrderGate;
 use crate::parallel::processor::GenericProcessor;
 use crate::parallel::single::{process_sequential_generic_range, MTGenericReader};
-use crate::parallel::{error::Result, ProcessError};
+use crate::{Error, Result};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -38,7 +38,7 @@ where
     let order_gate = Arc::new(OrderGate::new());
     let ordered = processor.requires_ordering();
 
-    let first_error: Mutex<Option<ProcessError>> = Mutex::new(None);
+    let first_error: Mutex<Option<Error>> = Mutex::new(None);
     // Set at end of input (or when the record limit is reached). Parked
     // workers wait on the pool's gate with this in their predicate, so setting
     // it must be paired with `pool.wake_all()` or they would sleep forever.
@@ -87,7 +87,7 @@ where
 struct WorkerCtx<'env, S> {
     reader: &'env S,
     pool: &'env crate::parallel::ThreadPool,
-    first_error: &'env Mutex<Option<ProcessError>>,
+    first_error: &'env Mutex<Option<Error>>,
     finished: &'env AtomicBool,
     order_gate: &'env Arc<OrderGate>,
     ordered: bool,
@@ -246,7 +246,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::fastq;
-    use crate::parallel::{ParallelProcessor, PoolParallelReader, ProcessError, ThreadPool};
+    use crate::parallel::{ParallelProcessor, PoolParallelReader, ThreadPool};
+    use crate::Error;
     use crate::Record;
 
     fn make_fastq(n: usize) -> Vec<u8> {
@@ -266,11 +267,11 @@ mod tests {
     }
 
     impl<Rf: Record> ParallelProcessor<Rf> for TallyProcessor {
-        fn process_record(&mut self, _record: Rf) -> Result<(), ProcessError> {
+        fn process_record(&mut self, _record: Rf) -> Result<(), Error> {
             self.local += 1;
             Ok(())
         }
-        fn on_thread_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_thread_complete(&mut self) -> Result<(), Error> {
             self.total.fetch_add(self.local, Ordering::Relaxed);
             self.threads_completed.fetch_add(1, Ordering::Relaxed);
             self.local = 0;
@@ -315,7 +316,7 @@ mod tests {
             total: Arc<AtomicUsize>,
         }
         impl<Rf: crate::Record> crate::parallel::ParallelProcessor<Rf> for ConcurrencyProbe {
-            fn process_record(&mut self, _r: Rf) -> Result<(), ProcessError> {
+            fn process_record(&mut self, _r: Rf) -> Result<(), Error> {
                 let now = self.current.fetch_add(1, Ordering::AcqRel) + 1;
                 self.peak.fetch_max(now, Ordering::AcqRel);
                 self.total.fetch_add(1, Ordering::Relaxed);
@@ -545,11 +546,11 @@ mod tests {
             local: usize,
         }
         impl<Rf: Record> crate::parallel::PairedParallelProcessor<Rf> for PairTally {
-            fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), ProcessError> {
+            fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> Result<(), Error> {
                 self.local += 1;
                 Ok(())
             }
-            fn on_thread_complete(&mut self) -> Result<(), ProcessError> {
+            fn on_thread_complete(&mut self) -> Result<(), Error> {
                 self.total.fetch_add(self.local, Ordering::Relaxed);
                 self.local = 0;
                 Ok(())

@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use smallvec::SmallVec;
 
 use crate::fastx::GenericReader;
-use crate::parallel::error::ProcessError;
+use crate::Error;
 use crate::MAX_ARITY;
 
 use super::single::{BatchCounter, MTGenericReader};
@@ -25,10 +25,10 @@ impl<R: GenericReader> MultiReader<R> {
 
 impl<R: GenericReader> MTGenericReader for MultiReader<R>
 where
-    ProcessError: From<R::Error>,
+    Error: From<R::Error>,
 {
     type RecordSet = SmallVec<[R::RecordSet; MAX_ARITY]>;
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = SmallVec<[R::RefRecord<'a>; MAX_ARITY]>;
 
     fn new_record_set(&self) -> Self::RecordSet {
@@ -53,7 +53,7 @@ where
                 let filled_i = r.fill(&mut record_set[i])?;
                 drop(r);
                 if filled_i {
-                    return Err(ProcessError::MultiRecordMismatch(0));
+                    return Err(Error::MultiRecordMismatch(0));
                 }
             }
             return Ok(None);
@@ -68,7 +68,7 @@ where
             drop(prev_lock);
             let filled_i = r.fill(&mut record_set[i])?;
             if filled_i != filled_0 {
-                return Err(ProcessError::MultiRecordMismatch(i));
+                return Err(Error::MultiRecordMismatch(i));
             }
             prev_lock = Some(r);
         }
@@ -82,7 +82,7 @@ where
     ) -> impl ExactSizeIterator<Item = std::result::Result<Self::RefRecord<'_>, Self::Error>> {
         let its: SmallVec<[_; MAX_ARITY]> = record_set.iter().map(|rs| R::iter(rs)).collect();
         if let Some(pos) = its.iter().position(|it| it.len() != its[0].len()) {
-            let err_iter = std::iter::once(Err(ProcessError::MultiRecordMismatch(pos)));
+            let err_iter = std::iter::once(Err(Error::MultiRecordMismatch(pos)));
             return either::Either::Left(err_iter);
         }
         either::Either::Right(SmallVecIt { its })
@@ -101,11 +101,11 @@ where
 /// Pulls one item from each of `n` sources via `next_item`, collecting them
 /// into a group. `None` from any source early-breaks the whole group; the
 /// first `Err` is kept (subsequent items are still drained to keep sources
-/// in sync) and converted via `Into<ProcessError>`.
-fn collect_group<Item, E: Into<ProcessError>>(
+/// in sync) and converted via `Into<Error>`.
+fn collect_group<Item, E: Into<Error>>(
     n: usize,
     mut next_item: impl FnMut(usize) -> Option<std::result::Result<Item, E>>,
-) -> Option<std::result::Result<SmallVec<[Item; MAX_ARITY]>, ProcessError>> {
+) -> Option<std::result::Result<SmallVec<[Item; MAX_ARITY]>, Error>> {
     let mut out = std::result::Result::Ok(SmallVec::default());
     for i in 0..n {
         // None early-breaks everything.
@@ -129,10 +129,10 @@ struct SmallVecIt<I> {
     its: SmallVec<[I; MAX_ARITY]>,
 }
 
-impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E>>> Iterator
+impl<Item, E: Into<Error>, I: Iterator<Item = std::result::Result<Item, E>>> Iterator
     for SmallVecIt<I>
 {
-    type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, ProcessError>;
+    type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         collect_group(self.its.len(), |i| self.its[i].next())
@@ -146,7 +146,7 @@ impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E
     }
 }
 
-impl<Item, E: Into<ProcessError>, I: ExactSizeIterator<Item = std::result::Result<Item, E>>>
+impl<Item, E: Into<Error>, I: ExactSizeIterator<Item = std::result::Result<Item, E>>>
     ExactSizeIterator for SmallVecIt<I>
 {
 }
@@ -170,10 +170,10 @@ impl<R: GenericReader> InterleavedMultiReader<R> {
 
 impl<R: GenericReader> MTGenericReader for InterleavedMultiReader<R>
 where
-    ProcessError: From<R::Error>,
+    Error: From<R::Error>,
 {
     type RecordSet = (R::RecordSet, usize);
-    type Error = ProcessError;
+    type Error = Error;
     type RefRecord<'a> = SmallVec<[R::RefRecord<'a>; MAX_ARITY]>;
 
     fn new_record_set(&self) -> Self::RecordSet {
@@ -196,9 +196,7 @@ where
                 // Same variant `iter` below raises for this condition, so
                 // it doesn't matter which of the two catches a given batch
                 // first - callers see one consistent error either way.
-                return Err(ProcessError::MultiRecordSetSizeMismatch(
-                    n_records, self.arity,
-                ));
+                return Err(Error::MultiRecordSetSizeMismatch(n_records, self.arity));
             }
             n_records / self.arity
         };
@@ -232,10 +230,10 @@ struct ChunkedIt<I> {
     arity: usize,
 }
 
-impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E>>> Iterator
+impl<Item, E: Into<Error>, I: Iterator<Item = std::result::Result<Item, E>>> Iterator
     for ChunkedIt<I>
 {
-    type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, ProcessError>;
+    type Item = std::result::Result<SmallVec<[Item; MAX_ARITY]>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         collect_group(self.arity, |_| self.it.next())
@@ -247,7 +245,7 @@ impl<Item, E: Into<ProcessError>, I: Iterator<Item = std::result::Result<Item, E
     }
 }
 
-impl<Item, E: Into<ProcessError>, I: ExactSizeIterator<Item = std::result::Result<Item, E>>>
+impl<Item, E: Into<Error>, I: ExactSizeIterator<Item = std::result::Result<Item, E>>>
     ExactSizeIterator for ChunkedIt<I>
 {
 }
@@ -259,7 +257,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::fastq;
-    use crate::parallel::{MultiParallelProcessor, ParallelReader, ProcessError};
+    use crate::parallel::{MultiParallelProcessor, ParallelReader};
+    use crate::Error;
     use crate::Record;
 
     fn make_fastq(n: usize) -> Vec<u8> {
@@ -286,12 +285,12 @@ mod tests {
         }
     }
     impl<Rf: Record> MultiParallelProcessor<Rf> for CountingMultiProcessor {
-        fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), ProcessError> {
+        fn process_multi_record(&mut self, records: &[Rf]) -> Result<(), Error> {
             assert_eq!(records.len(), self.expected_arity);
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
+        fn on_batch_complete(&mut self) -> Result<(), Error> {
             self.global_count
                 .fetch_add(self.local_count, Ordering::Relaxed);
             self.local_count = 0;

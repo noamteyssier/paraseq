@@ -9,7 +9,6 @@ use crate::parallel::paired::{InterleavedPairedReader, PairedReader};
 use crate::parallel::pool::process_parallel_pool_range;
 use crate::parallel::reader::{range_to_offset_limit, SingleReader};
 use crate::parallel::single::{process_parallel_generic, process_parallel_generic_range};
-use crate::ProcessError;
 use crate::{fasta, fastq, Error, Record};
 
 #[cfg(feature = "niffler")]
@@ -49,17 +48,17 @@ impl<R: io::Read> Collection<R> {
 
     fn validate_arity(&self) -> crate::Result<()> {
         if self.inner.is_empty() {
-            return Err(ProcessError::CollectionSizeMismatch { arity: 1, found: 0 });
+            return Err(Error::CollectionSizeMismatch { arity: 1, found: 0 });
         }
         match self.collection_type {
             CollectionType::Paired if !self.inner.len().is_multiple_of(2) => {
-                return Err(ProcessError::CollectionSizeMismatch {
+                return Err(Error::CollectionSizeMismatch {
                     arity: 2,
                     found: self.inner.len(),
                 });
             }
             CollectionType::Multi { arity } if !self.inner.len().is_multiple_of(arity) => {
-                return Err(ProcessError::CollectionSizeMismatch {
+                return Err(Error::CollectionSizeMismatch {
                     arity,
                     found: self.inner.len(),
                 });
@@ -192,9 +191,7 @@ impl<R: io::Read + Send> Collection<R> {
                 //     rbound,
                 // );
                 for handle in subhandles {
-                    handle
-                        .join()
-                        .map_err(|_| crate::ProcessError::JoinError)??;
+                    handle.join().map_err(|_| crate::Error::JoinError)??;
                 }
             }
 
@@ -251,9 +248,7 @@ impl<R: io::Read + Send> Collection<R> {
                     }));
                 }
                 for handle in subhandles {
-                    handle
-                        .join()
-                        .map_err(|_| crate::ProcessError::JoinError)??;
+                    handle.join().map_err(|_| crate::Error::JoinError)??;
                 }
             }
             Ok(())
@@ -314,9 +309,7 @@ impl<R: io::Read + Send> Collection<R> {
                     }));
                 }
                 for handle in subhandles {
-                    handle
-                        .join()
-                        .map_err(|_| crate::ProcessError::JoinError)??;
+                    handle.join().map_err(|_| crate::Error::JoinError)??;
                 }
             }
             Ok(())
@@ -393,9 +386,7 @@ impl<R: io::Read + Send> Collection<R> {
                 //     _batch_idx, groups_in_batch
                 // );
                 for handle in subhandles {
-                    handle
-                        .join()
-                        .map_err(|_| crate::ProcessError::JoinError)??;
+                    handle.join().map_err(|_| crate::Error::JoinError)??;
                 }
             }
 
@@ -1159,11 +1150,11 @@ mod testing {
         }
     }
     impl<Rf: crate::Record> ParallelProcessor<Rf> for Processor {
-        fn process_record(&mut self, _record: Rf) -> crate::parallel::Result<()> {
+        fn process_record(&mut self, _record: Rf) -> crate::Result<()> {
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+        fn on_batch_complete(&mut self) -> crate::Result<()> {
             *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
@@ -1231,14 +1222,14 @@ mod testing {
         Fastq,
     }
     impl<Rf: crate::Record> ParallelProcessor<Rf> for WriteProcessor {
-        fn process_record(&mut self, record: Rf) -> crate::parallel::Result<()> {
+        fn process_record(&mut self, record: Rf) -> crate::Result<()> {
             match self.out_format {
                 FormatKind::Fasta => record.write_fasta(&mut self.local_buf)?,
                 FormatKind::Fastq => record.write_fastq(&mut self.local_buf)?,
             }
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+        fn on_batch_complete(&mut self) -> crate::Result<()> {
             self.global_buf
                 .lock()
                 .unwrap()
@@ -1285,22 +1276,22 @@ mod testing {
         }
     }
     impl<Rf: crate::Record> crate::prelude::PairedParallelProcessor<Rf> for PairProcessor {
-        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> crate::parallel::Result<()> {
+        fn process_record_pair(&mut self, _r1: Rf, _r2: Rf) -> crate::Result<()> {
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+        fn on_batch_complete(&mut self) -> crate::Result<()> {
             *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
         }
     }
     impl<Rf: crate::Record> crate::prelude::MultiParallelProcessor<Rf> for PairProcessor {
-        fn process_multi_record(&mut self, _records: &[Rf]) -> crate::parallel::Result<()> {
+        fn process_multi_record(&mut self, _records: &[Rf]) -> crate::Result<()> {
             self.local_count += 1;
             Ok(())
         }
-        fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
+        fn on_batch_complete(&mut self) -> crate::Result<()> {
             *self.global_count.lock().unwrap() += self.local_count;
             self.local_count = 0;
             Ok(())
