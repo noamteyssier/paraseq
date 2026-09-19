@@ -128,252 +128,94 @@ impl Collection<BoxedReader> {
     }
 }
 
-impl<R: io::Read + Send> Collection<R> {
-    // Generic handler for single-reader pattern
-    fn handle_single_readers<T, F>(
-        mut self,
-        processor: &mut T,
-        total_threads: usize,
-        threads_per_reader: Option<usize>,
-        scope_fn: F,
-    ) -> crate::Result<()>
-    where
-        T: Clone + Send,
-        F: Fn(Reader<R>, &mut T, usize) -> crate::Result<()> + Send + Sync,
-    {
-        let total_readers = self.inner.len();
+/// How a [`Collection`] run allocates threads: a fixed count (`usize`, 0 means
+/// all cores) or a share of a resizable [`crate::parallel::ThreadPool`].
+trait ThreadBudget {
+    /// What each concurrently running chunk of readers is handed.
+    type Handle: Send;
+    /// Total threads available across the run.
+    fn total(&self) -> usize;
+    /// Handle for one of `ways` chunks running at once, each given `per_chunk` threads.
+    fn handle(&self, per_chunk: usize, ways: usize) -> Self::Handle;
+}
 
-        // Determine the maximum number of threads available (or provided)
-        let total_threads = match total_threads {
+impl ThreadBudget for usize {
+    type Handle = usize;
+    fn total(&self) -> usize {
+        match *self {
             0 => num_cpus::get(),
-            _ => num_cpus::get().min(total_threads),
-        };
-
-        // Calculate the number of threads per reader
-        let threads_per_reader = match threads_per_reader {
-            Some(num) => num.min(total_threads),
-            None => (total_threads / total_readers).max(1),
-        };
-
-        // Find the batch size (i.e. number of readers per batch)
-        let batch_size = total_threads / threads_per_reader;
-
-        // Calculate the number of batches
-        let num_batches = total_readers.div_ceil(batch_size);
-        thread::scope(|scope| -> crate::Result<()> {
-            let scope_fn = &scope_fn;
-
-            for _batch_idx in 0..num_batches {
-                // Pull the readers for the batch
-                let mut batch = Vec::new();
-                let rbound = batch_size.min(self.inner.len());
-                batch.extend(self.inner.drain(..rbound));
-
-                // create threads for all readers in this batch
-                let mut subhandles = Vec::new();
-                for reader in batch {
-                    let mut thread_proc = processor.clone();
-                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
-                        scope_fn(reader, &mut thread_proc, threads_per_reader)?;
-                        Ok(())
-                    }));
-                }
-
-                // join all threads in this batch
-                for handle in subhandles {
-                    handle.join().map_err(|_| crate::Error::JoinError)??;
-                }
-            }
-
-            Ok(())
-        })
+            n => num_cpus::get().min(n),
+        }
     }
+    fn handle(&self, per_chunk: usize, _ways: usize) -> usize {
+        per_chunk
+    }
+}
 
-    /// As [`Self::handle_single_readers`], but every reader running at the same
-    /// time gets a share of one resizable pool.
-    ///
-    /// Readers within a batch run concurrently, so the pool is split
-    /// `batch_size` ways: the target the caller sets stays a *total* across the
-    /// run rather than a per-reader figure, matching what `total_threads` means
-    /// on the fixed path.
-    fn handle_single_readers_pool<T, F>(
+/// The pool's target is split across the chunks running concurrently, so it
+/// stays a *total* across the run rather than a per-reader figure, matching what
+/// `total_threads` means on the fixed path.
+impl ThreadBudget for &crate::parallel::ThreadPool {
+    type Handle = crate::parallel::ThreadPool;
+    fn total(&self) -> usize {
+        num_cpus::get().min(self.threads().max(1))
+    }
+    fn handle(&self, _per_chunk: usize, ways: usize) -> Self::Handle {
+        self.share(ways)
+    }
+}
+
+impl<R: io::Read + Send> Collection<R> {
+    /// Run `scope_fn` over the collection in chunks of `chunk_size` readers (1
+    /// for single, the arity for grouped), batching as many chunks concurrently
+    /// as `budget` allows and joining each batch before starting the next.
+    fn handle_readers<B, T, F>(
         mut self,
         processor: &mut T,
-        pool: &crate::parallel::ThreadPool,
-        threads_per_reader: Option<usize>,
+        budget: B,
+        threads_per_chunk: Option<usize>,
+        chunk_size: usize,
         scope_fn: F,
     ) -> crate::Result<()>
     where
+        B: ThreadBudget,
         T: Clone + Send,
-        F: Fn(Reader<R>, &mut T, &crate::parallel::ThreadPool) -> crate::Result<()> + Send + Sync,
+        F: Fn(Vec<Reader<R>>, &mut T, B::Handle) -> crate::Result<()> + Send + Sync,
     {
-        let total_readers = self.inner.len().max(1);
-        let total_threads = num_cpus::get().min(pool.threads().max(1));
-        let threads_per_reader = match threads_per_reader {
+        let total_chunks = (self.inner.len() / chunk_size).max(1);
+        let total_threads = budget.total();
+        let threads_per_chunk = match threads_per_chunk {
             Some(num) => num.min(total_threads).max(1),
-            None => (total_threads / total_readers).max(1),
+            None if total_threads >= chunk_size => (total_threads / total_chunks).max(chunk_size),
+            None => (total_threads / total_chunks).max(1),
         };
-        let batch_size = (total_threads / threads_per_reader).max(1);
-        let num_batches = total_readers.div_ceil(batch_size);
+        let batch_size = (total_threads / threads_per_chunk).max(1);
+        let num_batches = total_chunks.div_ceil(batch_size);
 
         thread::scope(|scope| -> crate::Result<()> {
             let scope_fn = &scope_fn;
 
-            for _batch_idx in 0..num_batches {
-                let mut batch = Vec::new();
-                let rbound = batch_size.min(self.inner.len());
-                batch.extend(self.inner.drain(..rbound));
-                // Split across the readers actually in this batch, not the
+            for batch_idx in 0..num_batches {
+                let chunks_in_batch =
+                    batch_size.min(total_chunks.saturating_sub(batch_idx * batch_size));
+                let batch: Vec<Vec<_>> = (0..chunks_in_batch)
+                    .map(|_| self.inner.drain(..chunk_size).collect())
+                    .collect();
+                // Split across the chunks actually in this batch, not the
                 // nominal batch size, or the last short batch would under-use
                 // the pool.
                 let ways = batch.len().max(1);
 
                 let mut subhandles = Vec::new();
-                for reader in batch {
+                for chunk in batch {
                     let mut thread_proc = processor.clone();
-                    let share = pool.share(ways);
-                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
-                        scope_fn(reader, &mut thread_proc, &share)?;
-                        Ok(())
-                    }));
+                    let handle = budget.handle(threads_per_chunk, ways);
+                    subhandles.push(scope.spawn(move || scope_fn(chunk, &mut thread_proc, handle)));
                 }
                 for handle in subhandles {
                     handle.join().map_err(|_| crate::Error::JoinError)??;
                 }
             }
-            Ok(())
-        })
-    }
-
-    /// As [`Self::handle_grouped_readers`], but every group running at the same
-    /// time gets a share of one resizable pool.
-    fn handle_grouped_readers_pool<T, F>(
-        mut self,
-        processor: &mut T,
-        pool: &crate::parallel::ThreadPool,
-        threads_per_group: Option<usize>,
-        arity: usize,
-        scope_fn: F,
-    ) -> crate::Result<()>
-    where
-        T: Clone + Send,
-        F: Fn(Vec<Reader<R>>, &mut T, &crate::parallel::ThreadPool) -> crate::Result<()>
-            + Send
-            + Sync,
-    {
-        let total_groups = (self.inner.len() / arity).max(1);
-        let total_threads = num_cpus::get().min(pool.threads().max(1));
-        let threads_per_group = match threads_per_group {
-            Some(num) => num.min(total_threads).max(1),
-            None => {
-                if total_threads >= arity {
-                    (total_threads / total_groups).max(arity)
-                } else {
-                    (total_threads / total_groups).max(1)
-                }
-            }
-        };
-        let batch_size = (total_threads / threads_per_group).max(1);
-        let num_batches = total_groups.div_ceil(batch_size);
-
-        thread::scope(|scope| -> crate::Result<()> {
-            let scope_fn = &scope_fn;
-
-            for _batch_idx in 0..num_batches {
-                let mut batch = Vec::new();
-                let groups_in_batch =
-                    batch_size.min(total_groups.saturating_sub(_batch_idx * batch_size));
-                for _ in 0..groups_in_batch {
-                    let group: Vec<_> = self.inner.drain(..arity).collect();
-                    batch.push(group);
-                }
-                let ways = batch.len().max(1);
-
-                let mut subhandles = Vec::new();
-                for group in batch {
-                    let mut thread_proc = processor.clone();
-                    let share = pool.share(ways);
-                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
-                        scope_fn(group, &mut thread_proc, &share)?;
-                        Ok(())
-                    }));
-                }
-                for handle in subhandles {
-                    handle.join().map_err(|_| crate::Error::JoinError)??;
-                }
-            }
-            Ok(())
-        })
-    }
-
-    /// Generic handler for arity-based (grouped readers) pattern
-    fn handle_grouped_readers<T, F>(
-        mut self,
-        processor: &mut T,
-        total_threads: usize,
-        threads_per_group: Option<usize>,
-        arity: usize,
-        scope_fn: F,
-    ) -> crate::Result<()>
-    where
-        T: Clone + Send,
-        F: Fn(Vec<Reader<R>>, &mut T, usize) -> crate::Result<()> + Send + Sync,
-    {
-        let total_groups = self.inner.len() / arity;
-
-        // Determine the maximum number of threads available (or provided)
-        let total_threads = match total_threads {
-            0 => num_cpus::get(),
-            _ => num_cpus::get().min(total_threads),
-        };
-
-        // Calculate the number of threads per group
-        let threads_per_group = match threads_per_group {
-            Some(num) => num.min(total_threads),
-            None => {
-                if total_threads >= arity {
-                    (total_threads / total_groups).max(arity)
-                } else {
-                    (total_threads / total_groups).max(1)
-                }
-            }
-        };
-
-        // Find the batch size (i.e. number of groups per batch)
-        let batch_size = total_threads / threads_per_group;
-
-        // Calculate the number of batches
-        let num_batches = total_groups.div_ceil(batch_size);
-
-        thread::scope(|scope| -> crate::Result<()> {
-            let scope_fn = &scope_fn;
-
-            for _batch_idx in 0..num_batches {
-                // Pull the groups for the batch
-                let mut batch = Vec::new();
-                let groups_in_batch = batch_size.min(total_groups - (_batch_idx * batch_size));
-
-                for _ in 0..groups_in_batch {
-                    let group: Vec<_> = self.inner.drain(..arity).collect();
-                    batch.push(group);
-                }
-
-                // Create threads for all groups in this batch
-                let mut subhandles = Vec::new();
-                for group in batch {
-                    let mut thread_proc = processor.clone();
-                    subhandles.push(scope.spawn(move || -> crate::Result<()> {
-                        scope_fn(group, &mut thread_proc, threads_per_group)?;
-                        Ok(())
-                    }));
-                }
-
-                // Join all threads in this batch
-                for handle in subhandles {
-                    handle.join().map_err(|_| crate::Error::JoinError)??;
-                }
-            }
-
             Ok(())
         })
     }
@@ -480,11 +322,13 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Single);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            |reader, proc, threads| {
+            1,
+            |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic(SingleReader::new(reader), proc, threads)
             },
         )
@@ -503,11 +347,13 @@ impl<R: io::Read + Send> Collection<R> {
     {
         self.warn_if_mismatch(CollectionType::Single);
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            |reader, proc, threads| {
+            1,
+            |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic_range(
                     SingleReader::new(reader),
                     proc,
@@ -529,7 +375,7 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Paired);
-        self.handle_grouped_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
@@ -555,7 +401,7 @@ impl<R: io::Read + Send> Collection<R> {
     {
         self.warn_if_mismatch(CollectionType::Paired);
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_grouped_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
@@ -584,11 +430,13 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Interleaved);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            |reader, proc, threads| {
+            1,
+            |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic(InterleavedPairedReader::new(reader), proc, threads)
             },
         )
@@ -607,11 +455,13 @@ impl<R: io::Read + Send> Collection<R> {
     {
         self.warn_if_mismatch(CollectionType::Interleaved);
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            |reader, proc, threads| {
+            1,
+            |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic_range(
                     InterleavedPairedReader::new(reader),
                     proc,
@@ -634,7 +484,7 @@ impl<R: io::Read + Send> Collection<R> {
         Self: Sized,
     {
         let arity = self.get_arity_for_multi();
-        self.handle_grouped_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
@@ -659,7 +509,7 @@ impl<R: io::Read + Send> Collection<R> {
     {
         let arity = self.get_arity_for_multi();
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_grouped_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
@@ -686,11 +536,13 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::MultiParallelProcessor<RefRecord<'a>>,
     {
         let arity = self.get_arity_for_interleaved_multi();
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            move |reader, proc, threads| {
+            1,
+            move |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic(InterleavedMultiReader::new(reader, arity), proc, threads)
             },
         )
@@ -709,11 +561,13 @@ impl<R: io::Read + Send> Collection<R> {
     {
         let arity = self.get_arity_for_interleaved_multi();
         let (start, limit) = range_to_offset_limit(range);
-        self.handle_single_readers(
+        self.handle_readers(
             processor,
             total_threads,
             threads_per_reader,
-            move |reader, proc, threads| {
+            1,
+            move |mut readers, proc, threads| {
+                let reader = readers.remove(0);
                 process_parallel_generic_range(
                     InterleavedMultiReader::new(reader, arity),
                     proc,
@@ -740,12 +594,14 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::ParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Single);
-        self.handle_single_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
-            |reader, proc, share| {
-                process_parallel_pool_range(SingleReader::new(reader), proc, share, 0, None)
+            1,
+            |mut readers, proc, share| {
+                let reader = readers.remove(0);
+                process_parallel_pool_range(SingleReader::new(reader), proc, &share, 0, None)
             },
         )
     }
@@ -761,7 +617,7 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Paired);
-        self.handle_grouped_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
@@ -769,7 +625,7 @@ impl<R: io::Read + Send> Collection<R> {
             |mut readers, proc, share| {
                 let r1 = readers.remove(0);
                 let r2 = readers.remove(0);
-                process_parallel_pool_range(PairedReader::new(r1, r2), proc, share, 0, None)
+                process_parallel_pool_range(PairedReader::new(r1, r2), proc, &share, 0, None)
             },
         )
     }
@@ -785,15 +641,17 @@ impl<R: io::Read + Send> Collection<R> {
         T: for<'a> crate::prelude::PairedParallelProcessor<RefRecord<'a>>,
     {
         self.warn_if_mismatch(CollectionType::Interleaved);
-        self.handle_single_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
-            |reader, proc, share| {
+            1,
+            |mut readers, proc, share| {
+                let reader = readers.remove(0);
                 process_parallel_pool_range(
                     InterleavedPairedReader::new(reader),
                     proc,
-                    share,
+                    &share,
                     0,
                     None,
                 )
@@ -813,13 +671,13 @@ impl<R: io::Read + Send> Collection<R> {
         Self: Sized,
     {
         let arity = self.get_arity_for_multi();
-        self.handle_grouped_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
             arity,
             |readers, proc, share| {
-                process_parallel_pool_range(MultiReader::new(readers), proc, share, 0, None)
+                process_parallel_pool_range(MultiReader::new(readers), proc, &share, 0, None)
             },
         )
     }
@@ -837,15 +695,17 @@ impl<R: io::Read + Send> Collection<R> {
         Self: Sized,
     {
         let arity = self.get_arity_for_interleaved_multi();
-        self.handle_single_readers_pool(
+        self.handle_readers(
             processor,
             pool,
             threads_per_reader,
-            move |reader, proc, share| {
+            1,
+            move |mut readers, proc, share| {
+                let reader = readers.remove(0);
                 process_parallel_pool_range(
                     InterleavedMultiReader::new(reader, arity),
                     proc,
-                    share,
+                    &share,
                     0,
                     None,
                 )
