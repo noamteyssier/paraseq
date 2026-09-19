@@ -1,5 +1,7 @@
 use std::io::{self, Read};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
+
+use super::ProcessReader;
 
 use thiserror::Error;
 
@@ -61,8 +63,7 @@ impl GcsUrl {
 /// - gcloud handles buffering and retries internally
 /// - No per-chunk network overhead
 pub struct GcsReader {
-    child: Child,
-    stdout: std::process::ChildStdout,
+    inner: ProcessReader,
     _url: GcsUrl, // Keep for debugging/logging
 }
 
@@ -89,26 +90,14 @@ impl GcsReader {
             cmd.arg(arg);
         }
 
-        cmd.arg(url.gs_path())
-            .arg("--quiet")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.arg(url.gs_path()).arg("--quiet");
 
-        let mut child = cmd.spawn().map_err(|e| match e.kind() {
+        let inner = ProcessReader::spawn(cmd).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => GcsError::GcloudNotFound,
             _ => GcsError::GcloudFailed(format!("Failed to spawn gcloud: {}", e)),
         })?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| GcsError::GcloudFailed("Failed to capture stdout".to_string()))?;
-
-        Ok(GcsReader {
-            child,
-            stdout,
-            _url: url,
-        })
+        Ok(GcsReader { inner, _url: url })
     }
 
     /// Create GCS reader with specific project (common use case)
@@ -119,14 +108,7 @@ impl GcsReader {
 
 impl Read for GcsReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.stdout.read(buf)
-    }
-}
-
-impl Drop for GcsReader {
-    fn drop(&mut self) {
-        // Clean up the gcloud process
-        let _ = self.child.wait();
+        self.inner.read(buf)
     }
 }
 

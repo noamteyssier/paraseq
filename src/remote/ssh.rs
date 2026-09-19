@@ -1,5 +1,7 @@
 use std::io::{self, Read};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
+
+use super::ProcessReader;
 
 use thiserror::Error;
 
@@ -103,8 +105,7 @@ impl SshUrl {
 
 /// Reader that streams file content via SSH cat
 pub struct SshReader {
-    child: Child,
-    stdout: std::process::ChildStdout,
+    inner: ProcessReader,
 }
 
 impl SshReader {
@@ -133,36 +134,20 @@ impl SshReader {
             cmd.arg("-p").arg(port.to_string());
         }
 
-        cmd.arg(url.ssh_host())
-            .arg("cat")
-            .arg(&url.path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.arg(url.ssh_host()).arg("cat").arg(&url.path);
 
-        let mut child = cmd.spawn().map_err(|e| match e.kind() {
+        let inner = ProcessReader::spawn(cmd).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => SshError::SshNotFound,
             _ => SshError::SshFailed(format!("Failed to spawn SSH: {}", e)),
         })?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| SshError::SshFailed("Failed to capture stdout".to_string()))?;
-
-        Ok(SshReader { child, stdout })
+        Ok(SshReader { inner })
     }
 }
 
 impl Read for SshReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.stdout.read(buf)
-    }
-}
-
-impl Drop for SshReader {
-    fn drop(&mut self) {
-        // Clean up the SSH process
-        let _ = self.child.wait();
+        self.inner.read(buf)
     }
 }
 
