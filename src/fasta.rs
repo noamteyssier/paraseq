@@ -391,9 +391,7 @@ impl<'a> RefRecord<'a> {
                 filtered.extend_from_slice(&seq_region[start..(end - cr).max(start)]);
                 start = end + 1;
             }
-            if start < seq_region.len() {
-                filtered.extend_from_slice(&seq_region[start..]);
-            }
+            filtered.extend_from_slice(&seq_region[start..]);
             Cow::Owned(filtered)
         }
     }
@@ -419,14 +417,9 @@ impl<'a> RefRecord<'a> {
     /// and there is nothing to strip.
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
-        let mut end = if right > left && self.buffer[right - 1] == b'\n' {
-            right - 1
-        } else {
-            right
-        };
-        if end > left && self.buffer[end - 1] == b'\r' {
-            end -= 1;
-        }
+        // The byte before `left` is always '>', so no `right > left` / `end > left` guards
+        let mut end = right - usize::from(self.buffer[right - 1] == b'\n');
+        end -= usize::from(self.buffer[end - 1] == b'\r');
         unsafe {
             // SAFETY: `left <= end <= right <= buffer.len()`, guaranteed by
             // `validate_record` and the check above.

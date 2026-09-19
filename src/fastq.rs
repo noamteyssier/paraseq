@@ -358,10 +358,9 @@ impl<'a> RefRecord<'a> {
     /// Performs the actual buffer access, stripping the '\n' (and a preceding '\r', if any)
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
+        // The byte before `left` is always '@' or '\n', never '\r', so no `end > left` guard
         let mut end = right - 1;
-        if end > left && self.buffer[end - 1] == b'\r' {
-            end -= 1;
-        }
+        end -= usize::from(self.buffer[end - 1] == b'\r');
         unsafe {
             // SAFETY: `left <= end < right`, and `right <= buffer.len()` is checked by
             // `validate_record` (except for `qual`/`sep`, which are bounded by `end`).
