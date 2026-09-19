@@ -152,7 +152,7 @@ impl RecordSet {
 
         let n_records = self.nl.len() / 4;
         let take = n_records.min(self.capacity - self.positions.len());
-        for c in self.nl.chunks_exact(4).take(take) {
+        for c in self.nl.as_chunks::<4>().0.iter().take(take) {
             self.positions.push(Positions {
                 start: self.record_start,
                 seq_start: c[0],
