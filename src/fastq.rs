@@ -42,7 +42,6 @@ fn simd_scan_newlines<S: Simd>(
                 seq_start: state.pending_nl_pos[0],
                 sep_start: state.pending_nl_pos[1],
                 qual_start: state.pending_nl_pos[2],
-                qual_end: abs - 1,
                 end: abs,
             });
             *state.record_start = abs;
@@ -236,7 +235,6 @@ impl RecordSet {
                 seq_start: self.pending_nl_pos[0],
                 sep_start: self.pending_nl_pos[1],
                 qual_start: self.pending_nl_pos[2],
-                qual_end: abs - 1,
                 end: abs,
             });
             self.record_start = abs;
@@ -272,7 +270,6 @@ struct Positions {
     seq_start: usize,
     sep_start: usize,
     qual_start: usize,
-    qual_end: usize,
     end: usize,
 }
 
@@ -320,14 +317,10 @@ impl<'a> RefRecord<'a> {
             ));
         }
 
-        // Check that sequence and quality lengths match
-        if self.positions.sep_start - self.positions.seq_start - 1
-            != self.positions.qual_end - self.positions.qual_start
-        {
-            return Err(Error::UnequalLengths(
-                self.positions.sep_start - self.positions.seq_start - 1, // subtract 1 for embedded newline
-                self.positions.qual_end - self.positions.qual_start,
-            ));
+        // Check that sequence and quality lengths match (ignoring any '\r' line terminators)
+        let (seq_len, qual_len) = (self.seq_raw().len(), self.qual_raw().len());
+        if seq_len != qual_len {
+            return Err(Error::UnequalLengths(seq_len, qual_len));
         }
 
         Ok(())
@@ -357,12 +350,22 @@ impl<'a> RefRecord<'a> {
         self.index
     }
 
-    /// Performs the actual buffer access
+    #[inline(always)]
+    fn qual_raw(&self) -> &[u8] {
+        self.access_buffer(self.positions.qual_start, self.positions.end)
+    }
+
+    /// Performs the actual buffer access, stripping the '\n' (and a preceding '\r', if any)
     #[inline(always)]
     fn access_buffer(&self, left: usize, right: usize) -> &[u8] {
+        let mut end = right - 1;
+        if end > left && self.buffer[end - 1] == b'\r' {
+            end -= 1;
+        }
         unsafe {
-            // SAFETY: We've checked that left and right are within bounds
-            self.buffer.get_unchecked(left..right - 1)
+            // SAFETY: `left <= end < right`, and `right <= buffer.len()` is checked by
+            // `validate_record` (except for `qual`/`sep`, which are bounded by `end`).
+            self.buffer.get_unchecked(left..end)
         }
     }
 }
@@ -382,10 +385,7 @@ impl Record for RefRecord<'_> {
     }
 
     fn qual(&self) -> Option<&[u8]> {
-        Some(self.access_buffer(
-            self.positions.qual_start,
-            self.positions.qual_end.max(self.positions.end),
-        ))
+        Some(self.qual_raw())
     }
 
     fn index(&self) -> u64 {
@@ -605,6 +605,23 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].id_str(), "test1");
         assert_eq!(records[1].id_str(), "test2");
+    }
+
+    #[test]
+    fn test_crlf() {
+        // second record has no trailing newline at EOF
+        let data = "@a\r\nACTG\r\n+\r\nIIII\r\n@b\r\nTG\r\n+\r\nII";
+        let mut reader = Reader::new(Cursor::new(data));
+        let mut record_set = RecordSet::new(2);
+        assert!(record_set.fill(&mut reader).unwrap());
+        let records: Vec<_> = record_set.iter().collect::<Result<_, _>>().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id_str(), "a");
+        assert_eq!(records[0].seq_str(), "ACTG");
+        assert_eq!(records[0].qual_str(), "IIII");
+        assert_eq!(records[1].id_str(), "b");
+        assert_eq!(records[1].seq_str(), "TG");
+        assert_eq!(records[1].qual_str(), "II");
     }
 
     #[test]
