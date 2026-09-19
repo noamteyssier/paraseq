@@ -20,11 +20,8 @@ pub mod htslib;
 #[cfg(feature = "htslib")]
 pub extern crate rust_htslib;
 
-#[cfg(feature = "ssh")]
-pub mod ssh;
-
-#[cfg(feature = "gcs")]
-pub mod gcs;
+#[cfg(any(feature = "ssh", feature = "gcs"))]
+pub mod remote;
 
 #[cfg(feature = "niffler")]
 pub use builder::ReaderBuilder;

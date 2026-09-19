@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - The resizable `ThreadPool`/`PoolParallelReader` API is now always available (no longer gated behind the `pool` feature flag), and is the sole implementation behind every parallel entry point: a fixed thread count is now a `ThreadPool` whose target never moves. Benchmarked against the previous fixed-thread implementation on a 50M-record FASTQ across 1/2/4/8/10 threads with no measurable overhead (within ~1% noise).
+- `paraseq::gcs` and `paraseq::ssh` moved to `paraseq::remote::gcs` and `paraseq::remote::ssh`, grouping the remote-transport backends under one module instead of the crate root. Most callers go through `ReaderBuilder` and are unaffected.
 
 ### Removed
 

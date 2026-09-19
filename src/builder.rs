@@ -140,14 +140,14 @@ impl ReaderBuilder {
             #[cfg(feature = "ssh")]
             Source::Ssh { url, args } => {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                let ssh_reader = crate::ssh::SshReader::with_ssh_args(&url, &args)?;
+                let ssh_reader = crate::remote::ssh::SshReader::with_ssh_args(&url, &args)?;
                 let (reader, _format) = niffler::send::get_reader(Box::new(ssh_reader))?;
                 reader
             }
             #[cfg(feature = "gcs")]
             Source::Gcs { url, args } => {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                let gcs_reader = crate::gcs::GcsReader::with_gcloud_args(&url, &args)?;
+                let gcs_reader = crate::remote::gcs::GcsReader::with_gcloud_args(&url, &args)?;
                 let (reader, _format) = niffler::send::get_reader(Box::new(gcs_reader))?;
                 reader
             }
