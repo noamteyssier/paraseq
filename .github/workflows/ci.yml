@@ -37,7 +37,6 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --verbose
 
@@ -46,7 +45,6 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
       - name: Check style
         run: cargo fmt --check
       - name: Check clippy
@@ -57,7 +55,6 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
       - name: Build examples
         run: cargo build --examples
       - name: naive
