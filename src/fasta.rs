@@ -392,6 +392,7 @@ impl<'a> RefRecord<'a> {
             return Cow::Owned(filtered);
         }
 
+        // generic fallback for non-regular layouts
         Cow::Owned(dewrap_general(seq_region, cr))
     }
 
