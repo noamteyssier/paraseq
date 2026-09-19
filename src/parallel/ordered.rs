@@ -229,7 +229,10 @@ mod tests {
         }
 
         fn on_batch_complete(&mut self) -> Result<(), ProcessError> {
-            self.emitted.lock().unwrap().extend(self.local_ids.drain(..));
+            self.emitted
+                .lock()
+                .unwrap()
+                .extend(self.local_ids.drain(..));
             Ok(())
         }
     }

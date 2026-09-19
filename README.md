@@ -30,6 +30,7 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 - Parallel processing of single-end, paired-end, interleaved, and multi-FASTX files with a consistent API.
 - Simple construction of readers from file paths and handles with optional transparent decompression support with [niffler](https://github.com/luizirber/niffler).
 - Generalized Map-Reduce pattern for processing sequencing data (single-end, paired-end, and interleaved)
+- A resizable `ThreadPool` and `PoolParallelReader` API for a worker count that can change while a run is in flight; the fixed-thread APIs are a `ThreadPool` whose target never moves.
 
 ### Optional Features (Feature Flags)
 
@@ -37,7 +38,6 @@ If you're interested in reading more about it, I wrote a small [blog post](https
 - Supports URLs as input for FASTX files over HTTP and HTTPS (with `url` feature flag)
 - Supports SSH paths as inputs respecting system configuration (with `ssh` feature flag)
 - Supports Google Cloud Storage (GCS) URIs (with `gcs` feature flag). _requires [`gcloud`](https://cloud.google.com/sdk/docs/install) to be installed and authenticated_
-- Enables the experimental resizable `ThreadPool` and `PoolParallelReader` APIs (with the non-default `pool` feature flag). The existing fixed-thread APIs are unchanged when this feature is enabled.
 
 ## Usage
 

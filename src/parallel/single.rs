@@ -1,11 +1,8 @@
 use itertools::Itertools;
 
-use crate::parallel::ordered::OrderGate;
 use crate::parallel::processor::GenericProcessor;
-use crate::parallel::{error::Result, ProcessError};
+use crate::parallel::{error::Result, pool::process_parallel_pool_range, ProcessError, ThreadPool};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
 
 /// A Sync version of GenericReader, i.e. for types with internal mutexes that can be shared between threads.
 pub(crate) trait MTGenericReader: Send + Sync {
@@ -57,7 +54,7 @@ where
     process_parallel_generic_range(reader, processor, num_threads, 0, None)
 }
 
-fn process_sequential_generic_range<S: MTGenericReader, T>(
+pub(crate) fn process_sequential_generic_range<S: MTGenericReader, T>(
     reader: S,
     processor: &mut T,
     offset: usize,
@@ -107,136 +104,31 @@ where
     Ok(())
 }
 
+/// Fixed thread count, backed by a non-resizing [`ThreadPool`]. The pool's
+/// fixed-spawn-set worker loop (see [`crate::parallel::pool`]) is the single
+/// implementation behind every parallel entry point; a plain thread count
+/// here just means a pool whose target never moves.
 pub(crate) fn process_parallel_generic_range<S: MTGenericReader, T>(
-    mut reader: S,
+    reader: S,
     processor: &mut T,
-    mut num_threads: usize,
+    num_threads: usize,
     offset: usize,
     limit: Option<usize>,
 ) -> Result<()>
 where
     T: for<'a> GenericProcessor<S::RefRecord<'a>>,
 {
-    if num_threads == 0 {
-        num_threads = num_cpus::get();
-    }
+    let num_threads = if num_threads == 0 {
+        num_cpus::get()
+    } else {
+        num_threads
+    };
     if num_threads == 1 {
         return process_sequential_generic_range(reader, processor, offset, limit);
     }
 
-    reader.set_num_threads(num_threads).map_err(Into::into)?;
-
-    let records_processed = Arc::new(AtomicUsize::default());
-    let order_gate = Arc::new(OrderGate::new());
-    let ordered = processor.requires_ordering();
-
-    thread::scope(|scope| -> Result<()> {
-        let reader = &reader;
-
-        let mut handles = Vec::new();
-        for thread_id in 0..num_threads {
-            let mut worker_processor = processor.clone();
-            let mut record_set = reader.new_record_set();
-            let records_processed = records_processed.clone();
-            let order_gate = order_gate.clone();
-
-            let handle = scope.spawn(move || {
-                // Run the worker body in a closure so any error path below can
-                // poison the order gate before propagating - otherwise other
-                // threads waiting on a batch that will never complete would
-                // deadlock instead of unwinding.
-                let result: Result<()> = (|| {
-                    worker_processor.set_thread_id(thread_id);
-
-                    loop {
-                        // Check limit before grabbing batch
-                        if let Some(lim) = limit {
-                            if records_processed.load(Ordering::Relaxed) >= lim {
-                                break;
-                            }
-                        }
-
-                        // Fill the batch; `fill` itself claims this batch's
-                        // stream position atomically (see the trait docs).
-                        let Some((batch_start, batch_end)) =
-                            reader.fill(&mut record_set).map_err(Into::into)?
-                        else {
-                            break; // EOF
-                        };
-                        let batch_size = batch_end - batch_start;
-
-                        // Determine overlap with target range [offset, offset+limit)
-                        let range_end = limit.map(|lim| offset + lim).unwrap_or(usize::MAX);
-
-                        if batch_end <= offset {
-                            // Entire batch before offset - skip it. Still catch
-                            // the order gate up to this point so the first
-                            // processed batch's wait_turn isn't stuck waiting
-                            // for skipped ground it will never claim.
-                            if ordered {
-                                order_gate.advance(batch_end);
-                            }
-                            continue;
-                        }
-
-                        if batch_start >= range_end {
-                            // Entire batch after limit - done
-                            break;
-                        }
-
-                        // Calculate slice of this batch within range
-                        let skip_in_batch = offset.saturating_sub(batch_start);
-                        let take_count = (batch_size - skip_in_batch)
-                            .min(range_end - batch_start - skip_in_batch);
-
-                        // Process the slice
-                        let records = S::iter(&record_set)
-                            .skip(skip_in_batch)
-                            .take(take_count)
-                            .map(|r| r.map_err(Into::into));
-
-                        records.process_results(|records| {
-                            worker_processor.process_record_batch(records)
-                        })??;
-
-                        records_processed.fetch_add(take_count, Ordering::Relaxed);
-
-                        // Only the commit step is serialized to stream order;
-                        // process_record_batch above already ran unordered.
-                        if ordered {
-                            order_gate.wait_turn(batch_start);
-                        }
-                        worker_processor.on_batch_complete()?;
-                        if ordered {
-                            order_gate.advance(batch_end);
-                        }
-                    }
-                    worker_processor.on_thread_complete()?;
-                    Ok(())
-                })();
-
-                if result.is_err() && ordered {
-                    order_gate.poison();
-                }
-                result
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for workers
-        for handle in handles {
-            match handle.join() {
-                Ok(Ok(())) => (),
-                Ok(Err(e)) => return Err(e),
-                Err(_) => return Err(ProcessError::JoinError),
-            }
-        }
-
-        Ok(())
-    })?;
-
-    Ok(())
+    let pool = ThreadPool::new(num_threads);
+    process_parallel_pool_range(reader, processor, &pool, offset, limit)
 }
 
 #[cfg(test)]

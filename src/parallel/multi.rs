@@ -89,9 +89,12 @@ where
     }
 
     fn set_num_threads(&mut self, num_threads: usize) -> std::result::Result<(), Self::Error> {
-        self.readers
-            .iter()
-            .try_for_each(|r| r.lock().unwrap().set_threads(num_threads).map_err(Into::into))
+        self.readers.iter().try_for_each(|r| {
+            r.lock()
+                .unwrap()
+                .set_threads(num_threads)
+                .map_err(Into::into)
+        })
     }
 }
 

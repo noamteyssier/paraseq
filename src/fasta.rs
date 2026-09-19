@@ -978,7 +978,7 @@ mod tests {
         // a scalar remainder -- none of which the other multiline tests
         // (all well under 64 bytes) actually exercise.
         let line = "ACGTACGTAC"; // 10 bytes
-        let lines: Vec<&str> = std::iter::repeat(line).take(100).collect();
+        let lines: Vec<&str> = std::iter::repeat_n(line, 100).collect();
         let record = format!(">long_multiline\n{}\n", lines.join("\n"));
         let expected: String = lines.concat();
 

@@ -11,10 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - `ReaderBuilder`, a single entry point for constructing `fasta`/`fastq`/`fastx` readers from a path, stdin, url, ssh, or gcs source, with chainable `.batch_size()`, `.record_limit()`, `.ssh_args()`, `.gcloud_args()`, and `.project()` config.
 
+### Changed
+
+- The resizable `ThreadPool`/`PoolParallelReader` API is now always available (no longer gated behind the `pool` feature flag), and is the sole implementation behind every parallel entry point: a fixed thread count is now a `ThreadPool` whose target never moves. Benchmarked against the previous fixed-thread implementation on a 50M-record FASTQ across 1/2/4/8/10 threads with no measurable overhead (within ~1% noise).
+
 ### Removed
 
 - `from_url`, `from_ssh`, `from_gcs`, `from_gcs_with_gcloud_args`, and `from_gcs_with_project` on `fasta::Reader`, `fastq::Reader`, and `fastx::Reader` — use `ReaderBuilder::url(..)`/`::ssh(..)`/`::gcs(..)` with `.build_fasta()`/`.build_fastq()`/`.build()` instead. `from_path`/`from_stdin`/`from_optional_path` are unaffected.
 - `parking_lot` dependency — all internal `Mutex`/`Condvar` usage now uses `std::sync`. Benchmarking on real FASTQ workloads showed no measurable difference, since these locks aren't contended enough to matter.
+- `pool` feature flag — see Changed.
 
 ### Performance
 
