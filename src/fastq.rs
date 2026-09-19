@@ -968,5 +968,4 @@ mod tests {
             println!("{}", parsed_record.id_str());
         }
     }
-
 }

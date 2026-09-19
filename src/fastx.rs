@@ -1239,7 +1239,10 @@ mod testing {
             Ok(())
         }
         fn on_batch_complete(&mut self) -> crate::parallel::Result<()> {
-            self.global_buf.lock().unwrap().extend_from_slice(&self.local_buf);
+            self.global_buf
+                .lock()
+                .unwrap()
+                .extend_from_slice(&self.local_buf);
             self.local_buf.clear();
             Ok(())
         }
