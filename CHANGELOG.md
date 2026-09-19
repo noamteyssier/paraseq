@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Record-boundary scanning (`\n` in `fastq`, `>` in `fasta`) now uses an explicit `u8x64` SIMD compare via `fearless_simd` instead of `memchr::memchr_iter`. On real data this measured ~1.5-2x throughput on FASTQ (newlines every ~220bp) and ~8-20% on FASTA (sparse `>`, once per multi-KB record). (tests are measuring in-memory parsing not I/O.)
 - `fasta` and `fastq` field accessors strip the trailing `\r`/`\n` without redundant bounds guards, and multiline `fasta` `seq()` copies its final line unconditionally. ~3-5% on in-memory FASTQ and single-line FASTA parsing; no change on multiline FASTA.
 - `fastq` newline scanning writes every newline offset in bulk (four unconditional writes per 64-byte chunk, advanced by popcount) and builds record positions from groups of four, replacing the per-newline state machine, with no `unsafe`. ~35% on variable-length reads (59.7 → 38.7 ms for 2M records) and no change on fixed-length reads, where branches already predict well.
+- `fasta` `seq()` detects single-line records with one `memchr` (no SIMD dispatch per record) and de-wraps multiline records straight into the output without building an intermediate newline-offset `Vec`. On in-memory parsing: ~42% on single-line fixed-length reads, ~21% single-line variable-length, ~29% and ~12% on short multiline records.
 
 ## 0.5.1
 
