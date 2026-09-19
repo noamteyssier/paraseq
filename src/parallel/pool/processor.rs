@@ -2,14 +2,15 @@ use itertools::Itertools;
 
 use crate::parallel::ordered::OrderGate;
 use crate::parallel::processor::GenericProcessor;
-use crate::parallel::single::{process_parallel_generic_range, MTGenericReader};
+use crate::parallel::single::{process_sequential_generic_range, MTGenericReader};
 use crate::parallel::{error::Result, ProcessError};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-/// As [`process_parallel_generic_range`], but the worker count may change while
-/// the run is in flight. See [`crate::parallel::ThreadPool`].
+/// The implementation behind every parallel entry point. A fixed thread
+/// count (see [`crate::parallel::single::process_parallel_generic_range`])
+/// is just a [`crate::parallel::ThreadPool`] whose target never moves.
 pub(crate) fn process_parallel_pool_range<S: MTGenericReader, T>(
     mut reader: S,
     processor: &mut T,
@@ -28,7 +29,7 @@ where
     // may be resized has to take the parallel path anyway, or it could never
     // honour a later `set_threads` -- there is no pool in the sequential path.
     if num_threads == 1 && pool.share_max() == 1 {
-        return process_parallel_generic_range(reader, processor, 1, offset, limit);
+        return process_sequential_generic_range(reader, processor, offset, limit);
     }
 
     reader.set_num_threads(num_threads).map_err(Into::into)?;

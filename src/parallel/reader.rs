@@ -105,10 +105,8 @@ pub trait ParallelReader {
 
 /// Opt-in parallel processing with a worker count that may change in flight.
 ///
-/// This extension trait is available only with the `pool` feature. Keeping it
-/// separate from [`ParallelReader`] ensures enabling the pool adds a new path
-/// without changing the original fixed-thread interface or implementation.
-#[cfg(feature = "pool")]
+/// Kept separate from [`ParallelReader`] so the resizable-pool API is opt-in
+/// without changing the fixed-thread-count interface.
 pub trait PoolParallelReader: ParallelReader {
     /// As [`ParallelReader::process_parallel`], but the worker count may change
     /// while the run is in flight. See [`crate::parallel::ThreadPool`].
@@ -279,7 +277,6 @@ where
     }
 }
 
-#[cfg(feature = "pool")]
 impl<S: GenericReader> PoolParallelReader for S
 where
     for<'a> <S as GenericReader>::RefRecord<'a>: Record,
