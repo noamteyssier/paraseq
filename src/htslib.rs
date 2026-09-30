@@ -220,6 +220,14 @@ impl GenericReader for Reader {
     }
 
     fn set_threads(&mut self, threads: usize) -> std::result::Result<(), Self::Error> {
+        // htslib's threaded SAM reader (`sam_dispatcher`) deadlocks when `read`
+        // is called from several threads behind a mutex, so leave SAM single-threaded.
+        if unsafe {
+            // checks if the file format is SAM (htsExactFormat_sam)
+            (*self.reader.htsfile()).format.format == rust_htslib::htslib::htsExactFormat_sam
+        } {
+            return Ok(());
+        }
         self.reader.set_threads(threads).map_err(Into::into)
     }
 }
@@ -312,6 +320,27 @@ mod tests {
         reader.process_parallel(&mut proc, 1).unwrap();
         let indices = proc.global_indices.lock().unwrap().clone();
         assert_eq!(indices, (0..100u64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_multi_threaded() {
+        // Regression: set_threads on a SAM reader used to hang process_parallel.
+        for ext in ["sam", "bam", "cram"] {
+            // Runs on a helper thread so a regression fails by timeout instead of stalling.
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let reader = Reader::from_path(format!("./data/sample.{ext}")).unwrap();
+                let mut proc = IndexCollectingProcessor::default();
+                reader.process_parallel(&mut proc, 2).unwrap();
+                let mut indices = proc.global_indices.lock().unwrap().clone();
+                indices.sort_unstable();
+                let _ = tx.send(indices);
+            });
+            let indices = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("{ext} process_parallel with 2 threads stalled"));
+            assert_eq!(indices, (0..100u64).collect::<Vec<_>>(), "{ext}");
+        }
     }
 
     #[test]
