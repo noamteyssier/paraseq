@@ -323,22 +323,24 @@ mod tests {
     }
 
     #[test]
-    fn test_sam_multi_threaded() {
+    fn test_multi_threaded() {
         // Regression: set_threads on a SAM reader used to hang process_parallel.
-        // Runs on a helper thread so a regression fails by timeout instead of stalling.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let reader = Reader::from_path("./data/sample.sam").unwrap();
-            let mut proc = IndexCollectingProcessor::default();
-            reader.process_parallel(&mut proc, 2).unwrap();
-            let mut indices = proc.global_indices.lock().unwrap().clone();
-            indices.sort_unstable();
-            let _ = tx.send(indices);
-        });
-        let indices = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("SAM process_parallel with 2 threads stalled");
-        assert_eq!(indices, (0..100u64).collect::<Vec<_>>());
+        for ext in ["sam", "bam", "cram"] {
+            // Runs on a helper thread so a regression fails by timeout instead of stalling.
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let reader = Reader::from_path(format!("./data/sample.{ext}")).unwrap();
+                let mut proc = IndexCollectingProcessor::default();
+                reader.process_parallel(&mut proc, 2).unwrap();
+                let mut indices = proc.global_indices.lock().unwrap().clone();
+                indices.sort_unstable();
+                let _ = tx.send(indices);
+            });
+            let indices = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("{ext} process_parallel with 2 threads stalled"));
+            assert_eq!(indices, (0..100u64).collect::<Vec<_>>(), "{ext}");
+        }
     }
 
     #[test]
