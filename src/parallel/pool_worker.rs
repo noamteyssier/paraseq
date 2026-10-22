@@ -158,7 +158,18 @@ fn spawn_worker<'scope, 'env, S, T>(
                     continue;
                 }
                 if !active {
-                    ctx.pool.enter_live();
+                    // Re-checks the target and counts this worker in one step
+                    // under the pool's gate, waiting while retirees from a
+                    // shrink still hold the slots. If a shrink landed since the
+                    // check above (or the run ended), go back round and park
+                    // or exit instead of running a batch the caller believes
+                    // has already been given up.
+                    if !ctx
+                        .pool
+                        .claim_live(worker_id, || ctx.finished.load(Ordering::Acquire))
+                    {
+                        continue;
+                    }
                     active = true;
                 }
                 let record_set = record_set.get_or_insert_with(|| ctx.reader.new_record_set());
@@ -456,6 +467,102 @@ mod tests {
         churner.join().unwrap();
 
         assert_eq!(proc.total.load(Ordering::Relaxed), N);
+    }
+
+    /// Shrink as soon as the first worker is live -- i.e. while the others are
+    /// between deciding to run and being counted -- wait for `total_live` to
+    /// acknowledge it, as a supervisor reallocating the freed CPUs would, and
+    /// return the peak number of batches in flight from then on.
+    fn batches_in_flight_after_acknowledged_shrink(exempt: Option<usize>) -> usize {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        #[derive(Clone, Default)]
+        struct InFlight {
+            now: Arc<AtomicUsize>,
+            /// Peak concurrent batches observed *after* the shrink completed.
+            peak_after: Arc<AtomicUsize>,
+            shrunk: Arc<AtomicBool>,
+            total: Arc<AtomicUsize>,
+        }
+        impl<Rf: Record> ParallelProcessor<Rf> for InFlight {
+            fn process_record_batch(
+                &mut self,
+                records: impl Iterator<Item = Rf>,
+            ) -> Result<(), Error> {
+                let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+                if self.shrunk.load(Ordering::SeqCst) {
+                    self.peak_after.fetch_max(now, Ordering::SeqCst);
+                }
+                self.total.fetch_add(records.count(), Ordering::Relaxed);
+                // Longer than the activation delay, so an early worker is
+                // still mid-batch when the delayed ones arrive.
+                std::thread::sleep(Duration::from_millis(5));
+                self.now.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        const N: usize = 800;
+        let pool = ThreadPool::with_max(8, 8);
+        pool.set_activation_delay(Duration::from_millis(2), exempt);
+        let mut proc = InFlight::default();
+
+        let supervisor = {
+            let pool = pool.clone();
+            let probe = proc.clone();
+            std::thread::spawn(move || {
+                while pool.total_live() == 0 {
+                    std::thread::yield_now();
+                }
+                pool.set_threads(1);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while pool.total_live() > 1 {
+                    assert!(Instant::now() < deadline, "shrink never completed");
+                    std::thread::yield_now();
+                }
+                // The CPUs would be handed away here. Batches already in hand
+                // are counted in `total_live`, so from now on at most one
+                // batch may be in flight.
+                probe.shrunk.store(true, Ordering::SeqCst);
+                let busy = probe.now.load(Ordering::SeqCst);
+                probe.peak_after.fetch_max(busy, Ordering::SeqCst);
+            })
+        };
+
+        let reader = fastq::Reader::with_batch_size(Cursor::new(make_fastq(N)), 16).unwrap();
+        reader.process_parallel_pool(&mut proc, &pool).unwrap();
+        supervisor.join().unwrap();
+
+        assert_eq!(proc.total.load(Ordering::Relaxed), N);
+        proc.peak_after.load(Ordering::SeqCst)
+    }
+
+    /// Regression: activation checked the target and counted the worker live
+    /// as two steps. A shrink landing between them saw `total_live` already at
+    /// the new target; every worker caught in that window then counted itself
+    /// and ran a batch over budget (7 extra here, ~1 in 10 runs unforced).
+    #[test]
+    fn a_shrink_between_check_and_count_admits_no_one() {
+        let peak = batches_in_flight_after_acknowledged_shrink(None);
+        assert!(
+            peak <= 1,
+            "{peak} batches in flight after a shrink to 1 was acknowledged"
+        );
+    }
+
+    /// Regression: admission by index alone. Worker 7 is counted first, the
+    /// shrink to 1 sees `total_live == 1` and completes -- but that one is a
+    /// retiree finishing its batch, and worker 0, entitled by index, was not
+    /// counted yet. It must wait for the retiree's slot rather than run beside
+    /// it.
+    #[test]
+    fn an_entitled_worker_waits_for_retirees_to_free_their_slots() {
+        let peak = batches_in_flight_after_acknowledged_shrink(Some(7));
+        assert!(
+            peak <= 1,
+            "{peak} batches in flight after a shrink to 1 was acknowledged"
+        );
     }
 
     /// A supervisor outside the run needs the aggregate live count.
