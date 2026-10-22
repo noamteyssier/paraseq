@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## 0.6.2
+
+### Fixed
+
+- `ThreadPool`: once `total_live()` has fallen to a shrunk target, no further worker is admitted until a slot is free, so a supervisor that waits for that count before handing the freed CPUs elsewhere can no longer be over-subscribed. Previously a worker checked the target and counted itself live as two separate steps, and admission was by worker index alone: a shrink landing between the two steps, or a not-yet-counted worker under the new target starting beside retirees still finishing their last batch, let up to one batch per such worker run after the shrink had been acknowledged (seen as +1 to +3 workers at startup under CPU contention, and every worker but one when the window is held open). Workers are now admitted under the pool's gate, against both their index and the live count; parking and exiting notify waiting workers. No change on the per-batch path.
+
 ## 0.6.0
 
 ### Added

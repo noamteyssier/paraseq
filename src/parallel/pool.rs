@@ -48,10 +48,14 @@ struct Inner {
     max: usize,
     /// Workers active across *every* share of this pool.
     ///
-    /// Purely telemetry: an external supervisor normalising work against
-    /// "threads running" reads this. Nothing in the pool decides anything from
-    /// it — activation is by stable worker index against the target, so this
-    /// count can lag reality by a batch without consequence.
+    /// A supervisor reads this both to normalise work against "threads
+    /// running" and to learn when a shrink has taken effect -- typically before
+    /// handing the freed CPUs to something else. That second use needs more
+    /// than telemetry: once the count has fallen to a shrunk target it must
+    /// *stay* there. So it is also the pool's admission count. Workers retire
+    /// by index (at a batch boundary), but they are admitted by
+    /// [`ThreadPool::claim_live`], under `gate`, only while this count is below
+    /// the target; every increment happens there.
     total_live: AtomicUsize,
     /// Orders `set_threads` against a worker's check-then-park.
     ///
@@ -64,6 +68,13 @@ struct Inner {
     /// never catch, because the next notify repairs the loss.
     gate: Mutex<()>,
     signal: Condvar,
+    /// Test hook: sleep this long (µs) before a worker claims its live slot,
+    /// to hold open the window between deciding to run and being counted...
+    #[cfg(test)]
+    activation_delay: std::sync::atomic::AtomicU64,
+    /// ...except for this worker index, which claims immediately.
+    #[cfg(test)]
+    activation_exempt: AtomicUsize,
 }
 
 /// A shared, resizable worker count.
@@ -102,6 +113,10 @@ impl ThreadPool {
                 total_live: AtomicUsize::new(0),
                 gate: Mutex::new(()),
                 signal: Condvar::new(),
+                #[cfg(test)]
+                activation_delay: std::sync::atomic::AtomicU64::new(0),
+                #[cfg(test)]
+                activation_exempt: AtomicUsize::new(usize::MAX),
             }),
             live: Arc::new(AtomicUsize::new(0)),
             divisor: 1,
@@ -131,12 +146,23 @@ impl ThreadPool {
     /// and shrinking parks workers after they finish the batch in hand. Never
     /// interrupts work in progress, so no record is processed twice or
     /// dropped.
+    ///
+    /// A caller that hands the CPUs freed by a shrink to something else should
+    /// wait for [`Self::total_live`] to reach the new target first: that is
+    /// when the retiring workers have finished their batches, and from then on
+    /// no worker is admitted while it would push the count back over. (This
+    /// holds while the target is at least the number of shares running; below
+    /// that every share still keeps one worker, see [`Self::share`].)
     pub fn set_threads(&self, threads: usize) {
+        // Store under the gate so it is ordered against `claim_live`: a worker
+        // being admitted either is admitted first, and is then visible in
+        // `total_live` to whoever reads it after this returns, or is admitted
+        // afterwards and sees the new target.
+        // Lock-then-notify: see `Inner::gate` for why the lock is not optional.
+        let _gate = self.inner.gate.lock().unwrap();
         self.inner
             .target
             .store(threads.clamp(1, self.inner.max), Ordering::Release);
-        // Lock-then-notify: see `Inner::gate` for why the lock is not optional.
-        let _gate = self.inner.gate.lock().unwrap();
         self.inner.signal.notify_all();
     }
 
@@ -194,15 +220,77 @@ impl ThreadPool {
         self.inner.signal.notify_all();
     }
 
-    /// Record this worker as active. Telemetry only.
+    /// Admit a parked or newly spawned worker, counting it live.
+    ///
+    /// Waits under the gate while the pool is full -- while workers retiring
+    /// from a shrink still hold the slots -- and returns `false` without
+    /// admitting if the worker's index is (now) over its share's target or
+    /// `stop()` is true; the caller goes back round its loop and parks or
+    /// exits.
+    ///
+    /// Both halves matter. Checking the target and counting the worker as two
+    /// separate steps lets a shrink land between them: a supervisor sees
+    /// `total_live` already at the new target, hands the freed CPUs away, and
+    /// the worker then counts itself and runs a batch over budget. And
+    /// admitting by index alone is not enough either: a worker under the new
+    /// target that had not been counted yet (just spawned, or just woken by a
+    /// growth) would start alongside the retirees still finishing their last
+    /// batch, again after the supervisor has seen the shrink complete.
+    pub(crate) fn claim_live(&self, worker_id: usize, mut stop: impl FnMut() -> bool) -> bool {
+        #[cfg(test)]
+        {
+            let delay = self.inner.activation_delay.load(Ordering::Relaxed);
+            if delay > 0 && worker_id != self.inner.activation_exempt.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_micros(delay));
+            }
+        }
+        let mut gate = self.inner.gate.lock().unwrap();
+        loop {
+            if stop() || worker_id >= self.share_target() {
+                return false;
+            }
+            if self.inner.total_live.load(Ordering::Relaxed) < self.live_cap() {
+                self.enter_live();
+                return true;
+            }
+            gate = self.inner.signal.wait(gate).unwrap();
+        }
+    }
+
+    /// How many workers may be live across every share at once: the target,
+    /// or one per share if there are more shares than that (each share keeps
+    /// at least one worker, so no reader is starved).
+    fn live_cap(&self) -> usize {
+        self.threads().max(self.divisor)
+    }
+
+    /// Test hook: widen the window between a worker deciding to run and
+    /// being counted live, for every worker but `exempt`.
+    #[cfg(test)]
+    pub(crate) fn set_activation_delay(&self, delay: std::time::Duration, exempt: Option<usize>) {
+        self.inner
+            .activation_delay
+            .store(delay.as_micros() as u64, Ordering::Relaxed);
+        self.inner
+            .activation_exempt
+            .store(exempt.unwrap_or(usize::MAX), Ordering::Relaxed);
+    }
+
+    /// Count this worker live. Workers are admitted through
+    /// [`Self::claim_live`], which calls this under the gate.
     pub(crate) fn enter_live(&self) {
         self.live.fetch_add(1, Ordering::AcqRel);
         self.inner.total_live.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Record this worker as parked or exited. Telemetry only.
+    /// Record this worker as parked or exited, and wake anyone waiting in
+    /// [`Self::claim_live`] for the slot it frees. Parking and exiting are
+    /// rare (resizes and end of input), so the locked notify costs nothing on
+    /// the per-batch path.
     pub(crate) fn exit_live(&self) {
         self.live.fetch_sub(1, Ordering::AcqRel);
         self.inner.total_live.fetch_sub(1, Ordering::AcqRel);
+        let _gate = self.inner.gate.lock().unwrap();
+        self.inner.signal.notify_all();
     }
 }
