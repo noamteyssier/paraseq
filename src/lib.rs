@@ -11,6 +11,7 @@ pub mod fastx;
 pub mod parallel;
 pub mod prelude;
 mod record;
+mod validation;
 
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -28,6 +29,7 @@ pub mod remote;
 pub use builder::ReaderBuilder;
 pub use error::{Error, IntoParaseqError, Result};
 pub use record::Record;
+pub use validation::{NucleotideAlphabet, RecordValidation, ValidationError};
 
 /// Default maximum number of records in a record set.
 pub const DEFAULT_MAX_RECORDS: usize = 1024;
