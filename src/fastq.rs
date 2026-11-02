@@ -90,6 +90,8 @@ pub struct RecordSet {
     avg_record_size: usize,
     /// Global index of the first record in this set within the original file
     base_index: u64,
+    /// The name of the input it was filled from, for its errors
+    source: Option<std::sync::Arc<str>>,
 }
 impl Default for RecordSet {
     fn default() -> Self {
@@ -111,6 +113,7 @@ impl RecordSet {
             capacity,
             avg_record_size: 1024, // 1KB default
             base_index: 0,
+            source: None,
         }
     }
 
@@ -178,6 +181,9 @@ impl RecordSet {
     pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
         self.clear();
         self.base_index = reader.total_records;
+        if self.source != reader.source {
+            self.source.clone_from(&reader.source);
+        }
 
         // Copy any overflow from the previous read
         if !reader.overflow.is_empty() {
@@ -259,7 +265,7 @@ impl RecordSet {
         if reader.eof && self.positions.is_empty() {
             let tail = &self.buffer[self.record_start..];
             if tail.iter().any(|b| !b.is_ascii_whitespace()) {
-                return Err(Error::TruncatedRecord(tail.len()));
+                return Err(Error::TruncatedRecord(tail.len()).in_input(reader.source.as_ref()));
             }
         }
 
@@ -279,10 +285,10 @@ impl RecordSet {
     // Iterator over complete records
     pub fn iter(&self) -> impl Iterator<Item = Result<RefRecord<'_>, Error>> {
         let base_index = self.base_index;
-        self.positions
-            .iter()
-            .enumerate()
-            .map(move |(i, &pos)| RefRecord::new(&self.buffer, pos, base_index + i as u64))
+        self.positions.iter().enumerate().map(move |(i, &pos)| {
+            RefRecord::new(&self.buffer, pos, base_index + i as u64)
+                .map_err(|e| e.in_input(self.source.as_ref()))
+        })
     }
 }
 
@@ -467,6 +473,7 @@ where
             .enumerate()
             .map(move |(i, &pos)| {
                 Self::RefRecord::new(&record_set.buffer, pos, base_index + i as u64)
+                    .map_err(|e| e.in_input(record_set.source.as_ref()))
             })
     }
 }
@@ -763,6 +770,39 @@ mod tests {
                 &whole[..cut]
             );
         }
+    }
+
+    #[test]
+    fn test_format_errors_name_the_input() {
+        let read = |input: &str, name: Option<&str>| -> Result<usize, Error> {
+            let mut reader = Reader::new(Cursor::new(input.to_owned()));
+            if let Some(name) = name {
+                reader.set_source_name(name);
+            }
+            let mut record_set = RecordSet::new(2);
+            let mut n = 0;
+            while record_set.fill(&mut reader)? {
+                for record in record_set.iter() {
+                    record?;
+                    n += 1;
+                }
+            }
+            Ok(n)
+        };
+        let truncated = make_fastq(3) + "@cut\nACGT\n";
+        let malformed = make_fastq(3) + "@bad\nACGT\n-\nIIII\n";
+        for (input, root) in [
+            (&truncated, "TruncatedRecord"),
+            (&malformed, "InvalidSeparator"),
+        ] {
+            let err = read(input, Some("reads_2.fq")).unwrap_err();
+            assert!(err.to_string().starts_with("reads_2.fq: "), "{err}");
+            assert!(format!("{:?}", err.root()).starts_with(root), "{err:?}");
+            // Unnamed, the error is as before.
+            let err = read(input, None).unwrap_err();
+            assert!(format!("{err:?}").starts_with(root), "{err:?}");
+        }
+        assert_eq!(read(&make_fastq(3), Some("reads_2.fq")).unwrap(), 3);
     }
 
     #[test]
