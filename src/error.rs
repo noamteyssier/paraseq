@@ -52,6 +52,13 @@ pub enum Error {
     #[error("FASTQ Sequence length ({0}) and quality length ({1}) do not match")]
     UnequalLengths(usize, usize),
 
+    /// The input ended inside a FASTQ record: bytes other than whitespace
+    /// follow the last complete record.
+    #[error(
+        "The input ends inside a FASTQ record ({0} bytes after the last complete record): it is probably truncated"
+    )]
+    TruncatedRecord(usize),
+
     #[error("Unexpected format request. Found fastx: {0}, requested: {1}")]
     UnexpectedFormatRequest(String, String),
 
