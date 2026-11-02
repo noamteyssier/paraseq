@@ -257,12 +257,15 @@ impl RecordSet {
             self.pending_nl = 0;
         }
 
-        // At EOF, nothing but whitespace may be left once no record can take
-        // it: one, two or three lines of a record, or a header without its
-        // newline, mean the input was cut short (a truncated file or an
-        // interrupted stream), and dropping them would present a partial input
-        // as a whole one. The records before them are still returned first.
-        if reader.eof && self.positions.is_empty() {
+        // At EOF, once every byte has been scanned (the set is below capacity),
+        // nothing but whitespace may be left: one, two or three lines of a
+        // record, or a header without its newline, mean the input was cut
+        // short (a truncated file or an interrupted stream), and dropping them
+        // would present a partial input as a whole one. This fails the fill
+        // that reaches the cut, before its records are handed on, so a caller
+        // reading paired inputs in lockstep sees the truncation rather than a
+        // mismatch in the number of records.
+        if reader.eof && self.positions.len() < self.capacity {
             let tail = &self.buffer[self.record_start..];
             if tail.iter().any(|b| !b.is_ascii_whitespace()) {
                 return Err(Error::TruncatedRecord(tail.len()).in_input(reader.source.as_ref()));
@@ -803,6 +806,24 @@ mod tests {
             assert!(format!("{err:?}").starts_with(root), "{err:?}");
         }
         assert_eq!(read(&make_fastq(3), Some("reads_2.fq")).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_truncation_fails_the_fill_that_reaches_it() {
+        // Two whole records and a cut one fit in one set: the fill fails rather
+        // than returning the two and deferring the error.
+        let input = make_fastq(2) + "@cut\nACGT\n";
+        let mut reader = Reader::new(Cursor::new(input));
+        let mut record_set = RecordSet::new(16);
+        assert!(record_set.fill(&mut reader).is_err());
+        // A set filled to capacity has not scanned the rest, which may hold
+        // whole records: no error until the cut is reached.
+        let input = make_fastq(5) + "@cut\nACGT\n";
+        let mut reader = Reader::new(Cursor::new(input));
+        let mut record_set = RecordSet::new(2);
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert!(record_set.fill(&mut reader).is_err());
     }
 
     #[test]
