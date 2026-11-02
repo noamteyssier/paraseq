@@ -251,6 +251,18 @@ impl RecordSet {
             self.pending_nl = 0;
         }
 
+        // At EOF, nothing but whitespace may be left once no record can take
+        // it: one, two or three lines of a record, or a header without its
+        // newline, mean the input was cut short (a truncated file or an
+        // interrupted stream), and dropping them would present a partial input
+        // as a whole one. The records before them are still returned first.
+        if reader.eof && self.positions.is_empty() {
+            let tail = &self.buffer[self.record_start..];
+            if tail.iter().any(|b| !b.is_ascii_whitespace()) {
+                return Err(Error::TruncatedRecord(tail.len()));
+            }
+        }
+
         if !self.positions.is_empty() {
             let last_end = self.record_start;
             self.update_avg_record_size(last_end);
@@ -714,6 +726,54 @@ mod tests {
 
         assert!(record_set.fill(&mut reader).unwrap());
         assert!(record_set.iter().next().unwrap().is_err());
+    }
+
+    /// Reads every record from `input`, failing on the first error.
+    fn read_all(input: &str) -> Result<usize, Error> {
+        let mut reader = Reader::new(Cursor::new(input.to_owned()));
+        let mut record_set = RecordSet::new(2);
+        let mut n = 0;
+        while record_set.fill(&mut reader)? {
+            for record in record_set.iter() {
+                record?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    #[test]
+    fn test_truncated_tail_is_an_error() {
+        let whole = make_fastq(3);
+        assert_eq!(read_all(&whole).unwrap(), 3);
+        // Every other cut must fail, whatever line it lands in, with or without
+        // a newline before it.
+        let record_len = whole.len() / 3;
+        for cut in 1..whole.len() {
+            // A cut on a record boundary, or just before its newline, leaves
+            // whole records.
+            if cut % record_len == 0 || (cut + 1) % record_len == 0 {
+                let whole_records = (cut + 1) / record_len;
+                assert_eq!(read_all(&whole[..cut]).unwrap(), whole_records);
+                continue;
+            }
+            assert!(
+                read_all(&whole[..cut]).is_err(),
+                "cut at {cut} ({:?}) was accepted",
+                &whole[..cut]
+            );
+        }
+    }
+
+    #[test]
+    fn test_trailing_whitespace_is_not_truncation() {
+        for tail in ["\n", "\n\n", "\r\n", "  \n"] {
+            let input = make_fastq(3) + tail;
+            assert_eq!(read_all(&input).unwrap(), 3, "tail {tail:?}");
+        }
+        // A final record without its newline is still whole.
+        let input = make_fastq(2) + "@last\nACTG\n+\nIIII";
+        assert_eq!(read_all(&input).unwrap(), 3);
     }
 
     #[test]
