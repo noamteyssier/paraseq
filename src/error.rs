@@ -52,6 +52,15 @@ pub enum Error {
     #[error("FASTQ Sequence length ({0}) and quality length ({1}) do not match")]
     UnequalLengths(usize, usize),
 
+    /// A format error in the records of a named input: see
+    /// `fastq::Reader::set_source_name`.
+    /// [`Error::root`] gives the error it wraps.
+    #[error("{input}: {error}")]
+    InInput {
+        input: std::sync::Arc<str>,
+        error: Box<Error>,
+    },
+
     /// The input ended inside a FASTQ record: bytes other than whitespace
     /// follow the last complete record.
     #[error(
@@ -139,6 +148,27 @@ where
 impl From<anyhow::Error> for Error {
     fn from(err: anyhow::Error) -> Self {
         Error::Process(err.into())
+    }
+}
+
+impl Error {
+    /// This error, naming `input` when there is one.
+    pub(crate) fn in_input(self, input: Option<&std::sync::Arc<str>>) -> Self {
+        match input {
+            Some(input) => Self::InInput {
+                input: input.clone(),
+                error: Box::new(self),
+            },
+            None => self,
+        }
+    }
+
+    /// The error itself, without the input it was found in.
+    pub fn root(&self) -> &Error {
+        match self {
+            Self::InInput { error, .. } => error.root(),
+            other => other,
+        }
     }
 }
 

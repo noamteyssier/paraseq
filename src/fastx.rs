@@ -768,6 +768,23 @@ impl<R: io::Read> Reader<R> {
         }
     }
 
+    /// Name the input in the format errors its records raise; see
+    /// `fastq::Reader::set_source_name`.
+    pub fn set_source_name(&mut self, name: impl Into<std::sync::Arc<str>>) {
+        match self {
+            Self::Fasta(inner) => inner.set_source_name(name),
+            Self::Fastq(inner) => inner.set_source_name(name),
+        }
+    }
+
+    /// The name set by [`Self::set_source_name`].
+    pub fn source_name(&self) -> Option<&str> {
+        match self {
+            Self::Fasta(inner) => inner.source_name(),
+            Self::Fastq(inner) => inner.source_name(),
+        }
+    }
+
     /// Limit processing to the first `n` records.
     ///
     /// When used with parallel processing, `fill()` will truncate batches to
