@@ -246,13 +246,21 @@ impl RecordSet {
         if reader.eof && self.pending_nl == 3 {
             self.buffer.push(b'\n');
             let abs = self.buffer.len();
-            self.positions.push(Positions {
+            let last = Positions {
                 start: self.record_start,
                 seq_start: self.pending_nl_pos[0],
                 sep_start: self.pending_nl_pos[1],
                 qual_start: self.pending_nl_pos[2],
                 end: abs,
-            });
+            };
+            // A final record without its newline may instead be one cut
+            // inside its quality line. Check it now rather than when the set
+            // is iterated, so a caller reading paired inputs in lockstep sees
+            // the cut rather than a mismatch in the number of records.
+            if let Err(e) = RefRecord::new(&self.buffer, last, 0) {
+                return Err(e.in_input(reader.source.as_ref()));
+            }
+            self.positions.push(last);
             self.record_start = abs;
             self.pending_nl = 0;
         }
@@ -734,8 +742,11 @@ mod tests {
         let mut reader = Reader::new(Cursor::new(partial_record));
         let mut record_set = RecordSet::new(1);
 
-        assert!(record_set.fill(&mut reader).unwrap());
-        assert!(record_set.iter().next().unwrap().is_err());
+        // The final record is checked as it is formed, so the fill fails.
+        assert!(matches!(
+            record_set.fill(&mut reader),
+            Err(Error::UnequalLengths(4, 2))
+        ));
     }
 
     /// Reads every record from `input`, failing on the first error.
@@ -813,6 +824,11 @@ mod tests {
         // Two whole records and a cut one fit in one set: the fill fails rather
         // than returning the two and deferring the error.
         let input = make_fastq(2) + "@cut\nACGT\n";
+        let mut reader = Reader::new(Cursor::new(input));
+        let mut record_set = RecordSet::new(16);
+        assert!(record_set.fill(&mut reader).is_err());
+        // A record cut inside its quality line fails the fill too.
+        let input = make_fastq(2) + "@cut\nACGT\n+\nII";
         let mut reader = Reader::new(Cursor::new(input));
         let mut record_set = RecordSet::new(16);
         assert!(record_set.fill(&mut reader).is_err());
