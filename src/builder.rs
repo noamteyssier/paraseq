@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::{fasta, fastq, fastx, BoxedReader, Error};
 
@@ -156,7 +157,7 @@ impl ReaderBuilder {
     }
 
     /// The name a reader built from a path gives its input in format errors.
-    fn source_name(&self) -> Option<std::sync::Arc<str>> {
+    fn source_name(&self) -> Option<Arc<str>> {
         match &self.source {
             Source::Path(path) => Some(path.display().to_string().into()),
             _ => None,
@@ -167,9 +168,7 @@ impl ReaderBuilder {
         let name = self.source_name();
         let (reader, batch_size, record_limit) = self.open()?;
         let mut reader = fasta::Reader::new(reader);
-        if let Some(name) = name {
-            reader.set_source_name(name);
-        }
+        reader.source = name;
         if let Some(n) = batch_size {
             reader.set_batch_size(n)?;
         }
@@ -183,9 +182,7 @@ impl ReaderBuilder {
         let name = self.source_name();
         let (reader, batch_size, record_limit) = self.open()?;
         let mut reader = fastq::Reader::new(reader);
-        if let Some(name) = name {
-            reader.set_source_name(name);
-        }
+        reader.source = name;
         if let Some(n) = batch_size {
             reader.set_batch_size(n)?;
         }

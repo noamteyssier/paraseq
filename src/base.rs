@@ -2,6 +2,7 @@
 //! Only the per-format `RecordSet` (scanning/parsing) differs; it plugs in via [`BatchSet`].
 
 use std::io;
+use std::sync::Arc;
 
 use crate::{Error, DEFAULT_MAX_RECORDS};
 
@@ -35,7 +36,7 @@ pub struct ReaderBase<R: io::Read, S> {
     /// assign each parsed record its stable, global index in the file.
     pub(crate) total_records: u64,
     /// What the input is called in format errors, if anything.
-    pub(crate) source: Option<std::sync::Arc<str>>,
+    pub(crate) source: Option<Arc<str>>,
     _set: std::marker::PhantomData<fn() -> S>,
 }
 
@@ -58,7 +59,7 @@ impl<R: io::Read, S: BatchSet> ReaderBase<R, S> {
     /// not say which input they came from, which is ambiguous for paired or
     /// multiple inputs. Readers built from a path by [`ReaderBuilder`](crate::ReaderBuilder)
     /// are named already.
-    pub fn set_source_name(&mut self, name: impl Into<std::sync::Arc<str>>) {
+    pub fn set_source_name(&mut self, name: impl Into<Arc<str>>) {
         self.source = Some(name.into());
     }
 

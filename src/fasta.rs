@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::io;
+use std::sync::Arc;
 
 use fearless_simd::{dispatch, prelude::*, u8x64, Level};
 
@@ -78,7 +79,7 @@ pub struct RecordSet {
     /// Global index of the first record in this set within the original file
     base_index: u64,
     /// The name of the input it was filled from, for its errors
-    source: Option<std::sync::Arc<str>>,
+    source: Option<Arc<str>>,
 }
 
 impl Default for RecordSet {

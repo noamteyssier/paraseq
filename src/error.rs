@@ -1,5 +1,6 @@
 use std::error::Error as StdError;
 use std::io;
+use std::sync::Arc;
 
 use crossbeam_channel::SendError;
 use thiserror::Error as ThisError;
@@ -56,10 +57,7 @@ pub enum Error {
     /// `fastq::Reader::set_source_name`.
     /// [`Error::root`] gives the error it wraps.
     #[error("{input}: {error}")]
-    InInput {
-        input: std::sync::Arc<str>,
-        error: Box<Error>,
-    },
+    InInput { input: Arc<str>, error: Box<Error> },
 
     /// The input ended inside a FASTQ record: bytes other than whitespace
     /// follow the last complete record.
@@ -153,7 +151,7 @@ impl From<anyhow::Error> for Error {
 
 impl Error {
     /// This error, naming `input` when there is one.
-    pub(crate) fn in_input(self, input: Option<&std::sync::Arc<str>>) -> Self {
+    pub(crate) fn in_input(self, input: Option<&Arc<str>>) -> Self {
         match input {
             Some(input) => Self::InInput {
                 input: input.clone(),

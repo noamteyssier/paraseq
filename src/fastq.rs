@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::io;
+use std::sync::Arc;
 
 use fearless_simd::{dispatch, prelude::*, u8x64, Level};
 
@@ -91,7 +92,7 @@ pub struct RecordSet {
     /// Global index of the first record in this set within the original file
     base_index: u64,
     /// The name of the input it was filled from, for its errors
-    source: Option<std::sync::Arc<str>>,
+    source: Option<Arc<str>>,
 }
 impl Default for RecordSet {
     fn default() -> Self {
@@ -253,10 +254,8 @@ impl RecordSet {
                 qual_start: self.pending_nl_pos[2],
                 end: abs,
             };
-            // A final record without its newline may instead be one cut
-            // inside its quality line. Check it now rather than when the set
-            // is iterated, so a caller reading paired inputs in lockstep sees
-            // the cut rather than a mismatch in the number of records.
+            // A final record without its newline may instead be one cut inside
+            // its quality line: check it as it is formed (see the tail check below).
             if let Err(e) = RefRecord::new(&self.buffer, last, 0) {
                 return Err(e.in_input(reader.source.as_ref()));
             }
@@ -751,7 +750,14 @@ mod tests {
 
     /// Reads every record from `input`, failing on the first error.
     fn read_all(input: &str) -> Result<usize, Error> {
+        read_named(input, None)
+    }
+
+    fn read_named(input: &str, name: Option<&str>) -> Result<usize, Error> {
         let mut reader = Reader::new(Cursor::new(input.to_owned()));
+        if let Some(name) = name {
+            reader.set_source_name(name);
+        }
         let mut record_set = RecordSet::new(2);
         let mut n = 0;
         while record_set.fill(&mut reader)? {
@@ -788,21 +794,7 @@ mod tests {
 
     #[test]
     fn test_format_errors_name_the_input() {
-        let read = |input: &str, name: Option<&str>| -> Result<usize, Error> {
-            let mut reader = Reader::new(Cursor::new(input.to_owned()));
-            if let Some(name) = name {
-                reader.set_source_name(name);
-            }
-            let mut record_set = RecordSet::new(2);
-            let mut n = 0;
-            while record_set.fill(&mut reader)? {
-                for record in record_set.iter() {
-                    record?;
-                    n += 1;
-                }
-            }
-            Ok(n)
-        };
+        let read = read_named;
         let truncated = make_fastq(3) + "@cut\nACGT\n";
         let malformed = make_fastq(3) + "@bad\nACGT\n-\nIIII\n";
         for (input, root) in [
