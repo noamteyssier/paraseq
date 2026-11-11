@@ -204,6 +204,18 @@ MIT
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+### Development
+
+Commit hooks are managed with [prek](https://github.com/j178/prek). Install the
+hooks once per clone (no permanent install needed with [uv](https://docs.astral.sh/uv/)):
+
+```sh
+uvx prek install
+```
+
+On each commit this runs `cargo fmt --check` and `cargo clippy -- -D warnings`.
+Run the checks by hand with `uvx prek run --all-files`.
+
 ## Similar Projects
 
 This work is inspired by the following projects:

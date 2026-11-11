@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::{fasta, fastq, fastx, BoxedReader, Error};
 
@@ -155,9 +156,19 @@ impl ReaderBuilder {
         Ok((reader, self.batch_size, self.record_limit))
     }
 
+    /// The name a reader built from a path gives its input in format errors.
+    fn source_name(&self) -> Option<Arc<str>> {
+        match &self.source {
+            Source::Path(path) => Some(path.display().to_string().into()),
+            _ => None,
+        }
+    }
+
     pub fn build_fasta(self) -> Result<fasta::Reader<BoxedReader>, Error> {
+        let name = self.source_name();
         let (reader, batch_size, record_limit) = self.open()?;
         let mut reader = fasta::Reader::new(reader);
+        reader.source = name;
         if let Some(n) = batch_size {
             reader.set_batch_size(n)?;
         }
@@ -168,8 +179,10 @@ impl ReaderBuilder {
     }
 
     pub fn build_fastq(self) -> Result<fastq::Reader<BoxedReader>, Error> {
+        let name = self.source_name();
         let (reader, batch_size, record_limit) = self.open()?;
         let mut reader = fastq::Reader::new(reader);
+        reader.source = name;
         if let Some(n) = batch_size {
             reader.set_batch_size(n)?;
         }
@@ -180,8 +193,12 @@ impl ReaderBuilder {
     }
 
     pub fn build(self) -> Result<fastx::Reader<BoxedReader>, Error> {
+        let name = self.source_name();
         let (reader, batch_size, record_limit) = self.open()?;
-        let mut reader = fastx::Reader::new(reader)?;
+        let mut reader = fastx::Reader::new(reader).map_err(|e| e.in_input(name.as_ref()))?;
+        if let Some(name) = name {
+            reader.set_source_name(name);
+        }
         if let Some(n) = batch_size {
             reader.set_batch_size(n)?;
         }

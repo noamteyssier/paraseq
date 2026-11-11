@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::io;
+use std::sync::Arc;
 
 use fearless_simd::{dispatch, prelude::*, u8x64, Level};
 
@@ -77,6 +78,8 @@ pub struct RecordSet {
     avg_record_size: usize,
     /// Global index of the first record in this set within the original file
     base_index: u64,
+    /// The name of the input it was filled from, for its errors
+    source: Option<Arc<str>>,
 }
 
 impl Default for RecordSet {
@@ -96,6 +99,7 @@ impl RecordSet {
             capacity,
             avg_record_size: 1024, // 1KB default
             base_index: 0,
+            source: None,
         }
     }
 
@@ -148,6 +152,9 @@ impl RecordSet {
         // Clear previous data
         self.clear();
         self.base_index = reader.total_records;
+        if self.source != reader.source {
+            self.source.clone_from(&reader.source);
+        }
 
         // First, copy any overflow from previous read
         if !reader.overflow.is_empty() {
@@ -283,10 +290,10 @@ impl RecordSet {
     // Iterator over complete records
     pub fn iter(&self) -> impl Iterator<Item = Result<RefRecord<'_>, Error>> {
         let base_index = self.base_index;
-        self.positions
-            .iter()
-            .enumerate()
-            .map(move |(i, &pos)| RefRecord::new(&self.buffer, pos, base_index + i as u64))
+        self.positions.iter().enumerate().map(move |(i, &pos)| {
+            RefRecord::new(&self.buffer, pos, base_index + i as u64)
+                .map_err(|e| e.in_input(self.source.as_ref()))
+        })
     }
 }
 
@@ -503,6 +510,7 @@ where
             .enumerate()
             .map(move |(i, &pos)| {
                 Self::RefRecord::new(&record_set.buffer, pos, base_index + i as u64)
+                    .map_err(|e| e.in_input(record_set.source.as_ref()))
             })
     }
 }

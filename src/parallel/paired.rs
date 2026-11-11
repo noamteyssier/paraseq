@@ -319,6 +319,40 @@ mod tests {
         assert_eq!(processor.count(), 200);
     }
 
+    // A mate cut inside its last record must be reported as truncation of
+    // that mate's input, not as a count mismatch against its partner.
+
+    fn paired_with_cut(cut_r1: bool, threads: usize) -> (Error, usize) {
+        let whole = make_fastq(250);
+        let mut cut = make_fastq(249);
+        cut.extend_from_slice(b"@cut\nACGT\n");
+        let (a, b) = if cut_r1 { (cut, whole) } else { (whole, cut) };
+        let mut r1 = fastq::Reader::with_batch_size(Cursor::new(a), 100).unwrap();
+        let mut r2 = fastq::Reader::with_batch_size(Cursor::new(b), 100).unwrap();
+        r1.set_source_name("r1.fq");
+        r2.set_source_name("r2.fq");
+        let mut processor = CountingPairProcessor::default();
+        let err = r1
+            .process_parallel_paired(r2, &mut processor, threads)
+            .unwrap_err();
+        (err, processor.count())
+    }
+
+    #[test]
+    fn test_paired_truncated_mate_is_named() {
+        for threads in [1, 4] {
+            for cut_r1 in [false, true] {
+                let (err, _) = paired_with_cut(cut_r1, threads);
+                let msg = err.to_string();
+                let name = if cut_r1 { "r1.fq" } else { "r2.fq" };
+                assert!(msg.starts_with(&format!("{name}: ")), "{msg}");
+                assert!(msg.contains("ends inside a FASTQ record"), "{msg}");
+                assert!(!msg.contains("Incompatible"), "{msg}");
+                assert!(!msg.contains("less records"), "{msg}");
+            }
+        }
+    }
+
     #[test]
     fn test_paired_length_mismatch_errors_parallel() {
         let r1 = fastq::Reader::with_batch_size(Cursor::new(make_fastq(250)), 100).unwrap();

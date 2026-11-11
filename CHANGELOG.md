@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## 0.6.3
+
+### Added
+
+- `set_source_name` / `source_name` on `fasta`, `fastq` and `fastx` readers: name the input (a path, typically) in the format errors its records raise, shown as `<name>: <error>`. Readers built from a path by `ReaderBuilder` are named already. Wrapped errors are `Error::InInput`; `Error::root()` gives the error inside. Unnamed readers report errors as before.
+- `Error::TruncatedRecord`, returned when a FASTQ input ends inside a record.
+
+### Fixed
+
+- A FASTQ cut short inside its last record is now an error. Previously a cut one or two lines into the record, or partway through a header, read as complete and the cut record was dropped, and so was a cut inside the quality line when it was caught only on iteration. Trailing whitespace and a final record without its newline are still accepted. The error is raised by the `fill` that reaches the cut, before its records are handed on, so paired inputs read in lockstep report the truncation (naming the file) instead of "Incompatible record set sizes". Truncation is now detected for every input, including pipes, with no extra pass.
+
+### Changed
+
+- A final newline-less FASTQ record cut inside its quality line now fails the `fill` that forms it (as `UnequalLengths`) instead of failing when the record set is iterated.
+
 ## 0.6.2
 
 ### Fixed
