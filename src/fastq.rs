@@ -90,6 +90,8 @@ pub struct RecordSet {
     avg_record_size: usize,
     /// Global index of the first record in this set within the original file
     base_index: u64,
+    /// The name of the input it was filled from, for its errors
+    source: Option<std::sync::Arc<str>>,
 }
 impl Default for RecordSet {
     fn default() -> Self {
@@ -111,6 +113,7 @@ impl RecordSet {
             capacity,
             avg_record_size: 1024, // 1KB default
             base_index: 0,
+            source: None,
         }
     }
 
@@ -178,6 +181,9 @@ impl RecordSet {
     pub fn fill<R: io::Read>(&mut self, reader: &mut Reader<R>) -> Result<bool, Error> {
         self.clear();
         self.base_index = reader.total_records;
+        if self.source != reader.source {
+            self.source.clone_from(&reader.source);
+        }
 
         // Copy any overflow from the previous read
         if !reader.overflow.is_empty() {
@@ -240,15 +246,38 @@ impl RecordSet {
         if reader.eof && self.pending_nl == 3 {
             self.buffer.push(b'\n');
             let abs = self.buffer.len();
-            self.positions.push(Positions {
+            let last = Positions {
                 start: self.record_start,
                 seq_start: self.pending_nl_pos[0],
                 sep_start: self.pending_nl_pos[1],
                 qual_start: self.pending_nl_pos[2],
                 end: abs,
-            });
+            };
+            // A final record without its newline may instead be one cut
+            // inside its quality line. Check it now rather than when the set
+            // is iterated, so a caller reading paired inputs in lockstep sees
+            // the cut rather than a mismatch in the number of records.
+            if let Err(e) = RefRecord::new(&self.buffer, last, 0) {
+                return Err(e.in_input(reader.source.as_ref()));
+            }
+            self.positions.push(last);
             self.record_start = abs;
             self.pending_nl = 0;
+        }
+
+        // At EOF, once every byte has been scanned (the set is below capacity),
+        // nothing but whitespace may be left: one, two or three lines of a
+        // record, or a header without its newline, mean the input was cut
+        // short (a truncated file or an interrupted stream), and dropping them
+        // would present a partial input as a whole one. This fails the fill
+        // that reaches the cut, before its records are handed on, so a caller
+        // reading paired inputs in lockstep sees the truncation rather than a
+        // mismatch in the number of records.
+        if reader.eof && self.positions.len() < self.capacity {
+            let tail = &self.buffer[self.record_start..];
+            if tail.iter().any(|b| !b.is_ascii_whitespace()) {
+                return Err(Error::TruncatedRecord(tail.len()).in_input(reader.source.as_ref()));
+            }
         }
 
         if !self.positions.is_empty() {
@@ -267,10 +296,10 @@ impl RecordSet {
     // Iterator over complete records
     pub fn iter(&self) -> impl Iterator<Item = Result<RefRecord<'_>, Error>> {
         let base_index = self.base_index;
-        self.positions
-            .iter()
-            .enumerate()
-            .map(move |(i, &pos)| RefRecord::new(&self.buffer, pos, base_index + i as u64))
+        self.positions.iter().enumerate().map(move |(i, &pos)| {
+            RefRecord::new(&self.buffer, pos, base_index + i as u64)
+                .map_err(|e| e.in_input(self.source.as_ref()))
+        })
     }
 }
 
@@ -455,6 +484,7 @@ where
             .enumerate()
             .map(move |(i, &pos)| {
                 Self::RefRecord::new(&record_set.buffer, pos, base_index + i as u64)
+                    .map_err(|e| e.in_input(record_set.source.as_ref()))
             })
     }
 }
@@ -712,8 +742,115 @@ mod tests {
         let mut reader = Reader::new(Cursor::new(partial_record));
         let mut record_set = RecordSet::new(1);
 
+        // The final record is checked as it is formed, so the fill fails.
+        assert!(matches!(
+            record_set.fill(&mut reader),
+            Err(Error::UnequalLengths(4, 2))
+        ));
+    }
+
+    /// Reads every record from `input`, failing on the first error.
+    fn read_all(input: &str) -> Result<usize, Error> {
+        let mut reader = Reader::new(Cursor::new(input.to_owned()));
+        let mut record_set = RecordSet::new(2);
+        let mut n = 0;
+        while record_set.fill(&mut reader)? {
+            for record in record_set.iter() {
+                record?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    #[test]
+    fn test_truncated_tail_is_an_error() {
+        let whole = make_fastq(3);
+        assert_eq!(read_all(&whole).unwrap(), 3);
+        // Every other cut must fail, whatever line it lands in, with or without
+        // a newline before it.
+        let record_len = whole.len() / 3;
+        for cut in 1..whole.len() {
+            // A cut on a record boundary, or just before its newline, leaves
+            // whole records.
+            if cut % record_len == 0 || (cut + 1) % record_len == 0 {
+                let whole_records = (cut + 1) / record_len;
+                assert_eq!(read_all(&whole[..cut]).unwrap(), whole_records);
+                continue;
+            }
+            assert!(
+                read_all(&whole[..cut]).is_err(),
+                "cut at {cut} ({:?}) was accepted",
+                &whole[..cut]
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_errors_name_the_input() {
+        let read = |input: &str, name: Option<&str>| -> Result<usize, Error> {
+            let mut reader = Reader::new(Cursor::new(input.to_owned()));
+            if let Some(name) = name {
+                reader.set_source_name(name);
+            }
+            let mut record_set = RecordSet::new(2);
+            let mut n = 0;
+            while record_set.fill(&mut reader)? {
+                for record in record_set.iter() {
+                    record?;
+                    n += 1;
+                }
+            }
+            Ok(n)
+        };
+        let truncated = make_fastq(3) + "@cut\nACGT\n";
+        let malformed = make_fastq(3) + "@bad\nACGT\n-\nIIII\n";
+        for (input, root) in [
+            (&truncated, "TruncatedRecord"),
+            (&malformed, "InvalidSeparator"),
+        ] {
+            let err = read(input, Some("reads_2.fq")).unwrap_err();
+            assert!(err.to_string().starts_with("reads_2.fq: "), "{err}");
+            assert!(format!("{:?}", err.root()).starts_with(root), "{err:?}");
+            // Unnamed, the error is as before.
+            let err = read(input, None).unwrap_err();
+            assert!(format!("{err:?}").starts_with(root), "{err:?}");
+        }
+        assert_eq!(read(&make_fastq(3), Some("reads_2.fq")).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_truncation_fails_the_fill_that_reaches_it() {
+        // Two whole records and a cut one fit in one set: the fill fails rather
+        // than returning the two and deferring the error.
+        let input = make_fastq(2) + "@cut\nACGT\n";
+        let mut reader = Reader::new(Cursor::new(input));
+        let mut record_set = RecordSet::new(16);
+        assert!(record_set.fill(&mut reader).is_err());
+        // A record cut inside its quality line fails the fill too.
+        let input = make_fastq(2) + "@cut\nACGT\n+\nII";
+        let mut reader = Reader::new(Cursor::new(input));
+        let mut record_set = RecordSet::new(16);
+        assert!(record_set.fill(&mut reader).is_err());
+        // A set filled to capacity has not scanned the rest, which may hold
+        // whole records: no error until the cut is reached.
+        let input = make_fastq(5) + "@cut\nACGT\n";
+        let mut reader = Reader::new(Cursor::new(input));
+        let mut record_set = RecordSet::new(2);
         assert!(record_set.fill(&mut reader).unwrap());
-        assert!(record_set.iter().next().unwrap().is_err());
+        assert!(record_set.fill(&mut reader).unwrap());
+        assert!(record_set.fill(&mut reader).is_err());
+    }
+
+    #[test]
+    fn test_trailing_whitespace_is_not_truncation() {
+        for tail in ["\n", "\n\n", "\r\n", "  \n"] {
+            let input = make_fastq(3) + tail;
+            assert_eq!(read_all(&input).unwrap(), 3, "tail {tail:?}");
+        }
+        // A final record without its newline is still whole.
+        let input = make_fastq(2) + "@last\nACTG\n+\nIIII";
+        assert_eq!(read_all(&input).unwrap(), 3);
     }
 
     #[test]

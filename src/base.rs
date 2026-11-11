@@ -34,6 +34,8 @@ pub struct ReaderBase<R: io::Read, S> {
     /// Running count of records already yielded by this reader, used to
     /// assign each parsed record its stable, global index in the file.
     pub(crate) total_records: u64,
+    /// What the input is called in format errors, if anything.
+    pub(crate) source: Option<std::sync::Arc<str>>,
     _set: std::marker::PhantomData<fn() -> S>,
 }
 
@@ -46,8 +48,23 @@ impl<R: io::Read, S: BatchSet> ReaderBase<R, S> {
             batch_size: None,
             record_limit: None,
             total_records: 0,
+            source: None,
             _set: std::marker::PhantomData,
         }
+    }
+
+    /// Name the input (a path, typically) in the format errors its records
+    /// raise, such as a truncated or malformed record. Without a name they do
+    /// not say which input they came from, which is ambiguous for paired or
+    /// multiple inputs. Readers built from a path by [`ReaderBuilder`](crate::ReaderBuilder)
+    /// are named already.
+    pub fn set_source_name(&mut self, name: impl Into<std::sync::Arc<str>>) {
+        self.source = Some(name.into());
+    }
+
+    /// The name set by [`Self::set_source_name`].
+    pub fn source_name(&self) -> Option<&str> {
+        self.source.as_deref()
     }
     pub fn with_batch_size(reader: R, batch_size: usize) -> Result<Self, Error> {
         let mut reader = Self::new(reader);
